@@ -1,0 +1,3 @@
+# Build products and agent state
+build/
+.codewhale/
