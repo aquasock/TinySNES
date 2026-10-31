@@ -275,3 +275,38 @@ Write the ARAM port-1 self-test, in the shape of `sdram_bist.v`, because the SPC
 - User Test: PASS
 
 ---
+
+## 9 COMMIT Unreleased 2026-10-31T11:43:35-07:00
+
+#### Coming From:
+
+Unreleased f677e58
+
+#### Purpose:
+
+Test ARAM through the port the SPC700 loads its driver through, the one memory this project had never verified, because entry 8 found the SPC executing code in ARAM at $F4xx instead of echoing the 65816's byte.
+
+#### Outcome:
+
+`fpga/snes/src/aram_bist.v` is a new self-test in `sdram_bist.v`'s shape that owns the controller's ARAM port outright while no ROM is loaded and the machine is disabled, and it is deliberately byte-lane aware because lane selection is the part of this port most likely to be wrong and a word-wide test cannot see it: for each word it writes a different byte to the even address and the odd address, so the second write must not disturb the first and a swapped pair fails on all 16 bits rather than passing by symmetry. Four sets run, each written in full and then read back -- walking one on the even lane with the odd lane complementary, walking one on the odd lane with the even lane complementary, walking zero on both lanes, and four high words across the 64 KiB space -- and the sticky mismatch mask is drawn as 16 bars over a status band, bits 0-7 the even lane and 8-15 the odd, so one decoder reads this test and the SDRAM test alike. `tools/tests/aram_bist_tb.sv` compiles the shipping module against a model of the port that stores one byte per lane, and it runs four memory models so the test cannot pass vacuously: a correct model must report pass, a swapped-lane model must be caught on all 16 bits, a stuck-low bit must be caught in either lane, and a port that never acknowledges must report no-acknowledge; all four behave as required. `tools/tests/probe_tb.sh` gained a `run_module` case so the memory benches sit behind the same entry point as the four sampled probes, and all five benches pass. The first build and deployment drew a black screen, and the fault was a toolchain trap rather than the design: `elsif TINYSNES_SDRAM_TEST || TINYSNES_ARAM_TEST` does not evaluate as written in slang, and with only the second macro defined the whole expression resolves false, so `snes2hdmi` compiled its production branch and drew the machine's dead picture over the test result. Preprocessing the file with `slang --preprocess` showed the bar branch present for `TINYSNES_SDRAM_TEST` and absent for `TINYSNES_ARAM_TEST`, which is what identified it; the fix is two nested `ifdef`s that set a shared `TINYSNES_BIST_BARS`, the shape the file already uses for `TINYSNES_PROBE_BARS`, and the preprocessor now selects the bars for either define and neither branch for a production build. Seed 5 built with `TINYSNES_ARAM_TEST` in `build/aram2_s5`, zero hold violations, passing the timing gate at fclk 226.552 against 64.516 MHz, hclk 165.071 against 74.250 and iosys.clk 31.494 against 21.505, giving `tinysnes.fs` SHA-256 `8787d6a1cc805197bd440c5eea264d9fd2c8990f95a7c773fcb08748c34ac963`; it was loaded one-wire and needs no ROM. The readout is unambiguous: 16 green bars and a green status band in all 173 captured frames, zero red pixels in any frame, so every bit of both byte lanes read back correctly at every test address and the port, the lane selection and the ARAM storage are all working. That refutes the ARAM hypothesis that entry 8 left standing as the last link. The conclusion is bounded by what the test actually exercises: the SPC700's ARAM traffic does not reach the controller directly but passes through `dsp.v`, which arbitrates between the SMP's bus and its own sample and echo fetches in an RS_SMP state, and this build disables the machine so the sound engine is not competing for the port. What is proven is the port and the storage, not the arbitration on top of them, and the next cycle has to close that gap or look elsewhere. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 8 were not rewritten, revised TCL-008 in place and added TCL-012, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the nine-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Two things are now known good -- the ARAM port and storage through direct access, and the APU port in both directions -- and the SPC700 still ends up executing at $F4xx, an address inside its own register bank where no code can live, so the next question is what the IPL computed before it took its `JMP [$0000+X]` at $FFFB. The instrument is a latch, not a sample: capture the SPC700's PC and A at the first moment its PC leaves the IPL ROM range $FFC0-$FFFF, together with the four bytes at ARAM $0000-$0003 that the IPL reads its transfer address from, and draw them beside the two port banks, so one frame says what byte went into the jump and whether the bytes the IPL read were the ones the 65816 sent. A transfer address of $0000 or a low byte of $F0 would put the jump inside the port bank and explain $F4xx without any memory fault, while a plausible address whose target holds wrong bytes moves the fault into the upload. Because `dsp.v` sits between the SPC and ARAM, a test that rules the arbitration in or out is worth writing next as well: run the ARAM self-test with the machine enabled and the DSP arbitrating rather than with the port taken over, and confirm the SPC's own reads still return what it wrote. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros, since that shape silently selects the wrong branch under slang. Keep all ten diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` after any sampler or memory-test change, and use `tools/decode_probe_frame.py` rather than reading stripes by eye.
+
+#### Files Modified:
+
+- fpga/snes/src/aram_bist.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/build_tinysnes.sh
+- tools/tests/probe_tb.sh
+- tools/tests/aram_bist_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

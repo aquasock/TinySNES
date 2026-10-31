@@ -25,6 +25,19 @@
   `define TINYSNES_PROBE_BARS 1
 `endif
 
+// The two memory self-tests share one display, so they are folded into a single
+// define rather than tested in one `elsif` expression.  `elsif A || B does NOT
+// work here: with only B defined, slang resolves the whole expression false, so
+// a build defining the second macro alone silently drew the production picture
+// instead of the test result.  The nested form above for TINYSNES_PROBE_BARS is
+// the shape that does work.
+`ifdef TINYSNES_SDRAM_TEST
+  `define TINYSNES_BIST_BARS 1
+`endif
+`ifdef TINYSNES_ARAM_TEST
+  `define TINYSNES_BIST_BARS 1
+`endif
+
 module snes2hdmi (
 	input clk,      // snes clock
 	input resetn,
@@ -373,13 +386,16 @@ module snes2hdmi (
             rgb <= {xx[7:5]==3'd0 ? 8'hFF : 8'h00,
                     xx[7:5]==3'd1 ? 8'hFF : (xx[7:5]==3'd3 ? 8'hC0 : 8'h00),
                     xx[7:5]==3'd2 ? 8'hFF : 8'h00};
-`elsif TINYSNES_SDRAM_TEST
+`elsif TINYSNES_BIST_BARS
             // Diagnostic build: one bar per SDRAM data bit, 16 pixels apart with a
             // 2-pixel black gap between bars so a run of same-coloured bars can
             // never read as one block.  bist_mask is a MISMATCH mask, so a set bit
             // is drawn red (that bit was wrong at least once) and a clear bit
             // green (it read back correctly at every test address).  The bottom
-            // 32 rows are a solid status band in the dbg colour.
+            // 32 rows are a solid status band in the dbg colour.  Under
+            // TINYSNES_ARAM_TEST the same 16 bits are the two byte lanes of the
+            // ARAM port, bits 0-7 even and 8-15 odd, which is why one display
+            // serves both tests.
             if (yy[7:5] == 3'd6)
                 rgb <= {dbg[2] ? 8'hC0 : 8'h00, dbg[1] ? 8'hC0 : 8'h00, dbg[0] ? 8'hC0 : 8'h00};
             else if (xx[3:0] > 4'd13)

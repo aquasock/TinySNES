@@ -3,11 +3,13 @@
 #
 # Simulate the diagnostic samplers in fpga/snes/src/snestang_top.v.
 #
-#   tools/tests/probe_tb.sh            # every probe
+#   tools/tests/probe_tb.sh            # every probe, then the memory benches
 #   tools/tests/probe_tb.sh fetch      # TINYSNES_FETCH_PROBE only
 #   tools/tests/probe_tb.sh cpu        # TINYSNES_CPU_PROBE only
 #   tools/tests/probe_tb.sh trace      # TINYSNES_TRACE_PROBE only
 #   tools/tests/probe_tb.sh apu        # TINYSNES_APU_PROBE only
+#   tools/tests/probe_tb.sh aram       # the ARAM self-test controller only
+#   tools/tests/probe_tb.sh sram       # the SDRAM self-test controller only
 #
 # The benches need the sampler text itself, so each block is extracted from the
 # shipping source into a temporary file rather than retyped: a copy would drift,
@@ -44,6 +46,15 @@ run_one() {
     "$tmp/$dest.vvp"
 }
 
+# The memory self-tests are whole modules, not samplers lifted out of the top
+# level, so their benches compile the shipping source directly.
+run_module() {
+    local module="$1" bench="$2" dest="$3"
+    echo "== $module =="
+    iverilog -g2012 -o "$tmp/$dest.vvp" "$root/tools/tests/$bench" "$root/fpga/snes/src/$module"
+    "$tmp/$dest.vvp"
+}
+
 case "$which" in
     # TINYSNES_CPU_PROBE and TINYSNES_LIVE_PROBE both select the one CPU
     # sampler, so its block is guarded by TINYSNES_CPU_SAMPLER and that is what
@@ -51,10 +62,12 @@ case "$which" in
     all)   run_one TINYSNES_FETCH_PROBE  fetch_probe_tb.sv fetch_sampler
            run_one TINYSNES_CPU_SAMPLER  cpu_probe_tb.sv   cpu_sampler
            run_one TINYSNES_TRACE_PROBE  trace_probe_tb.sv trace_sampler
-           run_one TINYSNES_APU_PROBE    apu_probe_tb.sv   apu_sampler ;;
+           run_one TINYSNES_APU_PROBE    apu_probe_tb.sv   apu_sampler
+           run_module aram_bist.v aram_bist_tb.sv aram_tb ;;
     fetch) run_one TINYSNES_FETCH_PROBE  fetch_probe_tb.sv fetch_sampler ;;
     cpu)   run_one TINYSNES_CPU_SAMPLER  cpu_probe_tb.sv   cpu_sampler ;;
     trace) run_one TINYSNES_TRACE_PROBE  trace_probe_tb.sv trace_sampler ;;
     apu)   run_one TINYSNES_APU_PROBE    apu_probe_tb.sv   apu_sampler ;;
-    *)     echo "usage: $0 [all|fetch|cpu|trace|apu]" >&2; exit 2 ;;
+    aram)  run_module aram_bist.v aram_bist_tb.sv aram_tb ;;
+    *)     echo "usage: $0 [all|fetch|cpu|trace|apu|aram]" >&2; exit 2 ;;
 esac

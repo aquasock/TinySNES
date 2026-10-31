@@ -798,6 +798,26 @@ always @(posedge mclk) begin
     end
 end
 
+`ifdef TINYSNES_ARAM_TEST
+// Diagnostic build: ARAM self-test through the port the SPC700 loads through.
+// Same 16-bar display and status band as TINYSNES_SDRAM_TEST, so one decoder
+// reads both.  See fpga/snes/src/aram_bist.v.  Bits 0-7 are the even-lane byte
+// and bits 8-15 the odd-lane byte, red where that bit mismatched.  Declared
+// before the controller instance that connects them: an undeclared identifier
+// in a port connection becomes an implicit net whose width is taken from the
+// port, which would work by luck for the wide ports and not at all for the
+// concatenated data port, so the widths are stated here instead.
+wire [15:0] aram_bist_addr;
+wire  [7:0] aram_bist_din;
+wire        aram_bist_we, aram_bist_req, aram_bist_ack;
+wire [15:0] aram_bist_mask;
+wire  [1:0] aram_bist_status;
+wire  [2:0] aram_bist_dbg = aram_bist_status == 2'd1 ? 3'b010 :   // done, all bits correct
+                            aram_bist_status == 2'd2 ? 3'b100 :   // done, mismatch
+                            aram_bist_status == 2'd3 ? 3'b110 :   // no acknowledge
+                                                      3'b001;   // running
+`endif
+
 sdram_snes sdram(
     .clk(fclk), .mclk(mclk), .clkref(DOT_CLK_CE), .resetn(resetn), .busy(sdram_busy),
 
@@ -840,8 +860,17 @@ sdram_snes sdram(
     .bsram_req(bsram_req), .bsram_req_ack(), .bsram_we(bsram_wr),
 
     // ARAM accesses
+`ifdef TINYSNES_ARAM_TEST
+    // Diagnostic build: aram_bist owns the ARAM port; the machine's ARAM
+    // requests are left unconnected because no ROM is loaded and the SNES is
+    // never enabled.
+    .aram_16(1'b0), .aram_addr(aram_bist_addr), .aram_din({aram_bist_din, aram_bist_din}),
+    .aram_dout(aram_dout), .aram_req(aram_bist_req), .aram_req_ack(aram_bist_ack),
+    .aram_we(aram_bist_we),
+`else
     .aram_16(aram_16), .aram_addr(ARAM_ADDR), .aram_din({ARAM_D, ARAM_D}), 
     .aram_dout(aram_dout), .aram_req(aram_req), .aram_req_ack(), .aram_we(aram_wr),
+`endif
 
 `ifdef SDRAM_3CH
     // VRAM accesses
@@ -878,6 +907,15 @@ sdram_bist bist (
     .clk(fclk), .resetn(resetn), .ready(~sdram_busy),
     .addr(bist_addr), .din(bist_din), .we(bist_we), .req(bist_req), .ack(bist_ack),
     .dout(cpu_port0), .mask(bist_mask), .status(bist_status)
+);
+`endif
+
+`ifdef TINYSNES_ARAM_TEST
+aram_bist aram_bist (
+    .clk(fclk), .resetn(resetn), .ready(~sdram_busy),
+    .addr(aram_bist_addr), .din(aram_bist_din), .we(aram_bist_we),
+    .req(aram_bist_req), .ack(aram_bist_ack),
+    .dout(aram_dout), .mask(aram_bist_mask), .status(aram_bist_status)
 );
 `endif
 
@@ -1092,6 +1130,9 @@ snes2hdmi s2h(
 `elsif TINYSNES_SDRAM_TEST
     .dbg(bist_dbg),
     .bist_mask(bist_mask),
+`elsif TINYSNES_ARAM_TEST
+    .dbg(aram_bist_dbg),
+    .bist_mask(aram_bist_mask),
 `else
   `ifdef TINYSNES_DBG_MACHINE
     // Diagnostic build: why the machine is or is not running.  R = enable,
