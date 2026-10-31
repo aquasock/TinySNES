@@ -666,3 +666,33 @@ Measure the reset and enable sequencing directly, because every memory is now ve
 - User Test: NOT RUN
 
 ---
+
+## 21 COMMIT Unreleased 2026-10-31T16:16:12-07:00
+
+#### Coming From:
+
+Unreleased f06a217
+
+#### Purpose:
+
+Examine the reset and enable path in the RTL before spending another hardware cycle, since entry 20 left the sequencing between the two processors as the last explanation standing.
+
+#### Outcome:
+
+The examination was done first, as entry 20's Next Steps required, and it refutes the hypothesis it was meant to test. Both processors derive from one signal: `snestang_top` raises its `enable` register, `main` passes it to `SNES` as `ENABLE`, `dsp.v` forms `SMP_EN_INT = SUBSTEP == 3 ? ENABLE : 1'b0` and `smp.v` forms `SPC700_CE = ENABLE & CE`, whose `RDY` reaches `spc700.v` as `EN = RDY & ~STPExec`. So the SPC700 cannot start before the 65816: neither runs until the same `ENABLE` is high, and the SPC's one-in-four `SUBSTEP` gate only divides its own clock rate, as the 1.024 MHz SPC requires. Nor can pausing separate them: the only thing that lowers `enable` after it rises is `pause_snes_for_frame_sync`, which is asserted at scanline 2 while a refresh is pending and held for thirteen mclk, and it lowers `ENABLE` for both processors at once. Two further candidates were checked and also cleared. The DSP's clock-enable generator is held in reset whenever `ENABLE` is low, because `CEGEN_RST_N = RST_N & ENABLE`, which re-seeds its fractional divider on every transition -- but that makes the phase deterministic given fixed `ENABLE` edges rather than a source of variation, and `CEGen` zeroes only `CLK_SUM` and `CE`. And `tools/load_snes_rom.py` already waits 0.5 s after the last data frame before releasing the core, which is the tail drain that `EXT-003` requires, so the image is not being truncated at the end of the stream. The result is a negative one and is recorded as such: there is no sequencing defect in the reset and enable path. That matters because it was the last explanation entry 20 left standing, so the diagnosis needs a new hypothesis rather than a new build of the same shape. What survives the whole session is narrower and worth stating plainly: the APU handshake completes on every boot measured, all three memories plus read stability are verified byte-lane correct on hardware, and the 65816 nevertheless ends somewhere different on each of five boots of one identical image and bitstream. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 20 were not rewritten, revised EXT-006 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-one-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Test ARAM with the DSP arbitrating, because that is the one memory path this project has deliberately never exercised under load and it is now the best remaining candidate: entry 9's ARAM self-test owns the port with the machine disabled, so `dsp.v`'s `RS_SMP` state was never competing, and the SPC700's own ARAM traffic does not reach the controller directly but passes through that arbiter while the sound engine is concurrently fetching samples and echo. A corrupted arbitration would leave the SPC executing driver code that is subtly wrong, which is exactly the behaviour every boot shows -- it leaves its IPL, it advances Y, and it nonetheless fails to keep step with the 65816. The instrument is not another self-test but a comparison: have the 65816 write a known byte stream into ARAM through its own port while the machine runs, then read that region back through the SPC's view and compare, which catches a fault that appears only when both masters are active. If ARAM under arbitration is clean, the next candidate is the DSP's own sample fetch racing the SPC's fetch of the same addresses, which the same instrument can separate by directing the test region away from the echo buffer. Do not build another test of the CPU port at rest: every memory has passed that, and a sixth would add nothing. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, and do not reintroduce the ODDR on fclk. Keep all thirteen diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` -- nine benches -- after any sampler change, and use `tools/sample_boot_states.py` for any comparison across boots. Read the RTL before each build the way this cycle did: it cost no hardware and it removed the hypothesis it was written to test.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
