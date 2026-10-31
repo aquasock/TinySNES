@@ -435,52 +435,129 @@ assign dbg_dat_in = 8'h00;
 `endif
 
 `ifdef TINYSNES_APU_PROBE
-// Diagnostic build: read both directions of the APU port link.  The two sides
-// are separate register banks -- CPUI[0:3] is what the 65816 writes and the
-// SPC700 reads, CPUO[0:3] is what the SPC700 writes and the 65816 reads -- so a
-// deadlock between them looks identical from one side and is obvious from both.
+// Diagnostic build: read the APU handshake from the side that is stuck on it.
+//
+// The two port banks are separate registers -- CPUI[0:3] is what the 65816
+// writes and the SPC700 reads, CPUO[0:3] is what the SPC700 writes and the
+// 65816 reads -- and the IPL's stage machine decides what both CPUs are waiting
+// for.  Decoded from the IPLROM in smp.v: at $FFC3 the SPC700 sets A to $00 and
+// clears ARAM, at $FFC9/$FFCC it publishes $AA to CPUO[0] and $BB to CPUO[1],
+// and at $FFCF it sits in `CMP $F4,#$CC / BNE $FFCF` until CPUI[0] holds $CC.
+// Its A, X and Y are therefore all $00 for as long as it waits, which is also
+// exactly what an undriven debug path would return -- so the SPC700's A and Y
+// cannot tell a correct wait from a dead port, and this probe does not read
+// them.  The 65816 is the informative side: zelda.smc at $888E does
+// `LDA #$BBAA` and at $8891 `CMP $2140 / BNE $8891`, so it compares against a
+// value CPUO already holds.  A of $BBAA with M and X clear beside a CPUO of
+// $BBAA and a PC still at $8891 proves the port read is broken and not the
+// CPU's own operand; any other A moves the fault to the instruction stream.
 //
 // probe_bus fields, low to high:
-//   [15:0]  CPUI ports 1 and 0         (SMP debug 0x01, 0x00)
-//   [31:16] CPUO ports 1 and 0         (SMP debug 0x05, 0x04)
-//   [47:32] SPC700 PC                  (DBG_SEL[3], 0x03 low and 0x04 high)
-//   [63:48] 65816 PC                   (DBG_SEL[0], 0x06 low and 0x07 high)
-//   [79:64] unused, zero
-// During the sound-driver upload the 65816 puts a byte in port 0 and waits for
-// the SPC700 to echo a block counter back through CPUO[0]: CPUI moving while
-// CPUO is frozen is the SPC700 failing to answer, and both frozen is a stalled
-// upload with nothing new sent.
-reg [2:0] apu_ph = 3'd0;
-reg [7:0] i0 = 8'd0, i1 = 8'd0, o0 = 8'd0, o1 = 8'd0;
-reg [7:0] spc_lo = 8'd0, spc_hi = 8'd0, cpu_lo = 8'd0, cpu_hi = 8'd0;
+//   [15:0]  CPUO ports 1 and 0         (SMP debug 0x05, 0x04)
+//   [31:16] 65816 A                    (DBG_SEL[0], 0x01 high and 0x00 low)
+//   [47:32] 65816 PC                   (DBG_SEL[0], 0x07 high and 0x06 low)
+//   [63:48] SPC700 PC                  (DBG_SEL[3], 0x04 high and 0x03 low)
+//   [79:64] 65816 P, then CPUI port 0  (DBG_SEL[0] 0x08, SMP debug 0x00)
+// P bit 5 is M and bit 4 is X: the $8889 `REP #$30` clears both, so the top
+// byte should read with those two bits clear -- if either is set the CPU is
+// comparing 8-bit operands and the $8891 CMP is not the instruction it looks
+// like.  A, P and the port banks are single bytes; the two PCs are 16 bits read
+// through an 8-bit port one mclk apart and can tear across a byte boundary, so
+// each PC's high byte is read twice and the pair is accepted only when the two
+// high reads agree.  Both CPUs execute while this reads them, so an unguarded
+// PC would be a different instruction's halves almost every time.
+//
+// The display also has to stand still to be photographed, which cost a hardware
+// cycle to learn: a live 80-bit bus changes every mclk and the raster scans a
+// frame out over ~14 ms, so one captured frame carried a different value in
+// every row and no stripe could be read.  fp_bus is therefore a latched
+// snapshot, refreshed once every 2^19 revolutions of the phase counter -- about
+// 0.29 s, roughly three refreshes a second -- the same practice the CPU probe
+// uses and the same reason.  A readout is one snapshot of a moving machine, not
+// an average.
+reg [3:0] apu_ph = 4'd0;
+reg [7:0] o0 = 8'd0, o1 = 8'd0;                  // CPUO 0 and 1
+reg [7:0] a_lo = 8'd0, a_hi = 8'd0;              // 65816 A
+reg [7:0] p_r = 8'd0, i0 = 8'd0;                 // 65816 P, CPUI 0
+reg [7:0] pch1 = 8'd0, pcl = 8'd0, pch2 = 8'd0;  // 65816 PC, high read twice
+reg [7:0] sph1 = 8'd0, spl = 8'd0, sph2 = 8'd0;  // SPC700 PC, high read twice
+reg [7:0] pc_hi = 8'd0, pc_lo = 8'd0;            // last accepted 65816 PC
+reg [7:0] spc_hi = 8'd0, spc_lo = 8'd0;          // last accepted SPC700 PC
+reg [18:0] apu_wrap = 19'd0;                     // counts phase revolutions
 reg [79:0] fp_bus = 80'd0;
 
-always @(*) dbg_sel = (apu_ph <= 3'd3) ? 8'h10 :     // the SMP wrapper's ports
-                      (apu_ph <= 3'd5) ? 8'h08 :     // the SPC700 core
-                                         8'h01;      // the 65816
-always @(*) dbg_reg = (apu_ph == 3'd0) ? 8'h00 :     // CPUI 0
-                      (apu_ph == 3'd1) ? 8'h01 :     // CPUI 1
-                      (apu_ph == 3'd2) ? 8'h04 :     // CPUO 0
-                      (apu_ph == 3'd3) ? 8'h05 :     // CPUO 1
-                      (apu_ph == 3'd4) ? 8'h03 :     // SPC700 PC low
-                      (apu_ph == 3'd5) ? 8'h04 :     // SPC700 PC high
-                      (apu_ph == 3'd6) ? 8'h06 :     // 65816 PC low
-                                         8'h07;      // 65816 PC high
+// A case rather than a chained ternary: twelve phases do not fit three bits, and
+// a phase that fell off the end of a shorter select would silently read the
+// 65816 for an SMP register number.  apu_ph is on the right-hand side, so this
+// always block has sensitivity; a constant on the right of `always @(*)` never
+// drives at all, which is a defect this project has already shipped once.
+always @(*) begin
+    case (apu_ph)
+    4'd0, 4'd1, 4'd5:        dbg_sel = 8'h10;     // the SMP wrapper's port banks
+    4'd9, 4'd10, 4'd11:      dbg_sel = 8'h08;     // the SPC700 core
+    default:                 dbg_sel = 8'h01;     // the 65816
+    endcase
+end
+always @(*) begin
+    case (apu_ph)
+    4'd0:    dbg_reg = 8'h04;                    // CPUO 0
+    4'd1:    dbg_reg = 8'h05;                    // CPUO 1
+    4'd2:    dbg_reg = 8'h00;                    // 65816 A low
+    4'd3:    dbg_reg = 8'h01;                    // 65816 A high
+    4'd4:    dbg_reg = 8'h08;                    // 65816 P
+    4'd5:    dbg_reg = 8'h00;                    // CPUI 0
+    4'd6:    dbg_reg = 8'h07;                    // 65816 PC high, first read
+    4'd7:    dbg_reg = 8'h06;                    // 65816 PC low
+    4'd8:    dbg_reg = 8'h07;                    // 65816 PC high, second read
+    4'd9:    dbg_reg = 8'h04;                    // SPC700 PC high, first read
+    4'd10:   dbg_reg = 8'h03;                    // SPC700 PC low
+    default: dbg_reg = 8'h04;                    // SPC700 PC high, second read
+    endcase
+end
 
 always @(posedge mclk) begin
     dbg_reg_wr <= 1'b0;
-    apu_ph     <= apu_ph + 3'd1;
+    apu_ph     <= (apu_ph == 4'd11) ? 4'd0 : apu_ph + 4'd1;
     case (apu_ph)
-    3'd0: i0     <= dbg_dat_out;
-    3'd1: i1     <= dbg_dat_out;
-    3'd2: o0     <= dbg_dat_out;
-    3'd3: o1     <= dbg_dat_out;
-    3'd4: spc_lo <= dbg_dat_out;
-    3'd5: spc_hi <= dbg_dat_out;
-    3'd6: cpu_lo <= dbg_dat_out;
-    3'd7: cpu_hi <= dbg_dat_out;
+    4'd0:  o0    <= dbg_dat_out;
+    4'd1:  o1    <= dbg_dat_out;
+    4'd2:  a_lo  <= dbg_dat_out;
+    4'd3:  a_hi  <= dbg_dat_out;
+    4'd4:  p_r   <= dbg_dat_out;
+    4'd5:  i0    <= dbg_dat_out;
+    4'd6:  pch1  <= dbg_dat_out;
+    4'd7:  pcl   <= dbg_dat_out;
+    4'd8:  pch2  <= dbg_dat_out;
+    4'd9:  sph1  <= dbg_dat_out;
+    4'd10: spl   <= dbg_dat_out;
+    4'd11: sph2  <= dbg_dat_out;
     endcase
-    fp_bus <= {16'd0, cpu_hi, cpu_lo, spc_hi, spc_lo, o1, o0, i1, i0};
+
+    // Accept a 16-bit PC only when the high byte read on both sides of the low
+    // byte agreed; otherwise keep the last accepted value and let the next
+    // revolution try again.  dbg_dat_out on this edge is the current phase's
+    // register, so the comparison at phase 8 is against the phase-6 high read.
+    if (apu_ph == 4'd8 && pch1 == dbg_dat_out) begin
+        pc_hi <= pch1;
+        pc_lo <= pcl;
+    end
+    if (apu_ph == 4'd11 && sph1 == dbg_dat_out) begin
+        spc_hi <= sph1;
+        spc_lo <= spl;
+    end
+
+    // Latch the display snapshot once every 2^19 revolutions of the phase
+    // counter, which is 6.29M mclk or about 0.29 s -- roughly three refreshes a
+    // second, slow enough that a captured frame carries one value in every row.
+    // Counting revolutions rather than mclk keeps the refresh independent of the
+    // phase count, so it cannot silently drift into never firing: gating on
+    // (tick == terminal) AND (phase == last) instead makes the refresh fire only
+    // when two independent counters happen to coincide.
+    if (apu_ph == 4'd11) begin
+        apu_wrap <= apu_wrap + 19'd1;
+        if (apu_wrap == 19'd0)
+            fp_bus <= {p_r, i0, spc_hi, spc_lo, pc_hi, pc_lo, a_hi, a_lo, o1, o0};
+    end
 end
 
 assign dbg_dat_in = 8'h00;
@@ -963,8 +1040,9 @@ snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
 `ifdef TINYSNES_APU_PROBE
     // Diagnostic build: R = header_finished, G = loaded, B = loading, so the
-    // border says whether the core is released; probe_bus carries the SPC700's
-    // PC, PSW and SP, the SMP wrapper's state and the 65816's PC.
+    // border says whether the core is released; probe_bus carries CPUO's two
+    // ports, the 65816's A, PC and P, the SPC700's PC and CPUI port 0, in the
+    // field order set out in the TINYSNES_APU_PROBE block above.
     .dbg({header_finished, loaded, loading}),
     .bist_mask(fp_bus[15:0]),
     .probe_bus(fp_bus),

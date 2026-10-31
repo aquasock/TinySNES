@@ -241,3 +241,37 @@ None.
 - User Test: N/A
 
 ---
+
+## 8 COMMIT Unreleased 2026-10-31T11:27:12-07:00
+
+#### Coming From:
+
+Unreleased dbf599f
+
+#### Purpose:
+
+Answer whether the SPC700 can see the APU port, which entry 7 left as the last open question between the machine and a running game.
+
+#### Outcome:
+
+The APU probe was rebuilt around the side of the handshake that is stuck rather than around the SPC700's registers, because decoded against the IPL at $FFC3 the SPC700 sets A to $00 and never writes Y before its wait at $FFCF, so its A and Y read $00 whether it is waiting correctly or its debug path is dead and could not have answered the question. The probe now carries ten bytes over twelve phases -- CPUO ports 1 and 0, the 65816's A, its PC and its P, the SPC700's PC and CPUI port 0 -- each 16-bit PC read with its high byte sampled on both sides of the low byte and accepted only when the two high reads agree, and the field decode expressed as two `case` statements because twelve phases do not fit three bits. The first hardware pass was unreadable and the fault was the instrument, not the machine: `fp_bus` was driven live, so every row of the raster carried a different value and 0 of 353 captured frames decoded, and the first repair gated the refresh on a tick counter and the phase counter coinciding, which is a one-in-twelve coincidence that fired by luck on hardware and never in simulation. The display is now a latched snapshot refreshed once every 2^19 phase revolutions, about 0.29 s, and 349 of 353 frames decode with all three sample rows of every stripe agreeing. Simulation earned its place again: the bench caught the phase watcher racing the combinational select on the rising edge and caught a tear guard that accepted a torn pair, and it corrected a polarity error of the author's own, since `REP #$30` clears M and X and the fifth stripe was first checked for the opposite. `tools/decode_probe_frame.py` was added so the five stripes are decoded from frames and torn frames discarded rather than read by eye. Seed 5 built with `TINYSNES_APU_PROBE` in `build/apu5_s5`, zero hold violations, passing the timing gate at fclk 201.086 against 64.516 MHz, hclk 164.501 against 74.250 and iosys.clk 31.769 against 21.505, giving `tinysnes.fs` SHA-256 `d04658c522715075529d3ee15db67619629ba8c0b1037245314f88daf05f3e06`. Deployment was one-wire with `openFPGALoader -b tangconsole` and `tools/load_snes_rom.py --uart /dev/ttyUSB1` streaming the bench's 1 MiB `zelda.smc`. The readout is stable and identical across captures a minute apart: CPUO reads $10BB, the 65816's A $0089, its P $75 with M and X set and I clear, its PC sweeping $88EC-$88F1, the SPC700's PC $F4B5-$F4D1, and CPUI port 0 $89. That answers the cycle's question and refutes the reasoning this cycle was approved on: the 65816's PC is inside the upload loop at $88EC, which the routine entered at $8888 can only reach by passing the `CMP $2140` handshake at $8891, so the port read path does deliver CPUO to the CPU and the APU read path is not broken; what fails is the per-byte echo inside the upload, where the 65816 wrote $89 to $2140 and reads back $10. Both directions of the link are proven to carry data, since CPUO[1] holds the $BB the IPL publishes at $FFCC and CPUI port 0 holds the $89 the 65816 wrote, and the SPC700's PC sitting in ARAM rather than in the IPL ROM at $FFC0-$FFFF means it took the IPL's `JMP [$0000+X]` into uploaded code and is running whatever arrived through ARAM port 1. The machine is stalled rather than slow: two captures a minute apart returned the same CPUO, the same A, the same P and the same CPUI byte. `SPC700_D_IN` is therefore exonerated, and ARAM port 1 -- the SPC's only path to load its driver, re-timed in entry 3 and untested since -- is the one link both surviving explanations run through. The user confirmed the five-stripe readout on the board with a yellow status band, which is `header_finished` and `loaded` with `loading` clear, so the core is released and the ROM loaded. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 7 were not rewritten, revised EXT-005 and TCL-008 in place and added TCL-011, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eight-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Write the ARAM port-1 self-test, in the shape of `sdram_bist.v`, because the SPC700 is executing code that arrived through that port and the byte it echoes back is not the byte the 65816 sent: drive the ARAM port directly with walking-one and walking-zero patterns plus a few high addresses, read each back and compare, and draw the per-bit result as bars with a status band, gated on the IPL having completed its upload rather than on the bar readout alone, since a port that answers its own test still has to deliver a working driver. If the test passes, the fault is in what the 65816 sends rather than in what ARAM stores, and the next instrument is the upload's own protocol state -- the transfer address in $2142/$2143 and the byte in $2141 -- read through the same debug port. If it fails, the port-1 path or its `cycle[2]` sample is the fault and the fix belongs in `sdram_cl2_2ch.v`. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock while that question is open, and do not reintroduce the ODDR on fclk. Keep all nine diagnostic builds as the regression set, re-run `tools/tests/probe_tb.sh` after any sampler change, and use `tools/decode_probe_frame.py` rather than reading stripes by eye. One bench note worth keeping: the capture card is argued over -- OBS held `/dev/video0` and blocked a grab until it was closed -- so a capture failure is the host's, not the board's.
+
+#### Files Modified:
+
+- .gitignore
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/apu_probe_tb.sv
+- tools/decode_probe_frame.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

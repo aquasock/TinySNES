@@ -81,8 +81,8 @@ module snes2hdmi (
     //     4 IsIRQInterrupt, 3 RDY_IN, 2 EN, 1 WAIExec, 0 STPExec)
     //   TINYSNES_TRACE_PROBE: the last four ROM addresses, newest first, then
     //     ROM_ADDR[23:8] of the newest
-    //   TINYSNES_APU_PROBE:   the SPC700's PC, its PSW, the 65816's PC, the SMP
-    //     wrapper's state byte and the SPC700's SP
+    //   TINYSNES_APU_PROBE:   CPUO ports 1 and 0, the 65816's A, the 65816's
+    //     PC, the SPC700's PC, then the 65816's P above CPUI port 0
     input [79:0] probe_bus,
 `endif
 
