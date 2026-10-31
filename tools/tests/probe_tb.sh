@@ -8,6 +8,7 @@
 #   tools/tests/probe_tb.sh cpu        # TINYSNES_CPU_PROBE only
 #   tools/tests/probe_tb.sh trace      # TINYSNES_TRACE_PROBE only
 #   tools/tests/probe_tb.sh apu        # TINYSNES_APU_PROBE only
+#   tools/tests/probe_tb.sh ipl        # TINYSNES_IPL_PROBE only
 #   tools/tests/probe_tb.sh aram       # the ARAM self-test controller only
 #   tools/tests/probe_tb.sh sram       # the SDRAM self-test controller only
 #
@@ -63,11 +64,13 @@ case "$which" in
            run_one TINYSNES_CPU_SAMPLER  cpu_probe_tb.sv   cpu_sampler
            run_one TINYSNES_TRACE_PROBE  trace_probe_tb.sv trace_sampler
            run_one TINYSNES_APU_PROBE    apu_probe_tb.sv   apu_sampler
+           run_one TINYSNES_IPL_PROBE    ipl_probe_tb.sv   ipl_sampler
            run_module aram_bist.v aram_bist_tb.sv aram_tb ;;
     fetch) run_one TINYSNES_FETCH_PROBE  fetch_probe_tb.sv fetch_sampler ;;
     cpu)   run_one TINYSNES_CPU_SAMPLER  cpu_probe_tb.sv   cpu_sampler ;;
     trace) run_one TINYSNES_TRACE_PROBE  trace_probe_tb.sv trace_sampler ;;
     apu)   run_one TINYSNES_APU_PROBE    apu_probe_tb.sv   apu_sampler ;;
+    ipl)   run_one TINYSNES_IPL_PROBE    ipl_probe_tb.sv   ipl_sampler ;;
     aram)  run_module aram_bist.v aram_bist_tb.sv aram_tb ;;
-    *)     echo "usage: $0 [all|fetch|cpu|trace|apu|aram]" >&2; exit 2 ;;
+    *)     echo "usage: $0 [all|fetch|cpu|trace|apu|ipl|aram]" >&2; exit 2 ;;
 esac

@@ -310,3 +310,36 @@ Two things are now known good -- the ARAM port and storage through direct access
 - User Test: NOT RUN
 
 ---
+
+## 10 COMMIT Unreleased 2026-10-31T11:54:03-07:00
+
+#### Coming From:
+
+Unreleased 137f4bb
+
+#### Purpose:
+
+Catch the address the SPC700's IPL jumps to, because entry 8 left the machine executing at an address it had inferred rather than measured.
+
+#### Outcome:
+
+`TINYSNES_IPL_PROBE` polls the SPC700's program counter every nine mclk through `DBG_SEL[3]`, reads its high byte on both sides of its low byte, and latches the first program counter below $FFC0 once the IPL range has been seen -- that first out-of-range value is the target of the IPL's `JMP [$0000+X]` at $FFFB, so the answer needed no ARAM access at all and there is no debug path to ARAM to need. The same snapshot carries A and X at that moment, the current program counter, and all four CPUI bytes, since the IPL loads its jump base from CPUI[2] and CPUI[3] at $FFEF-$FFF1 and puts CPUI[1] in X at $FFF8. Sampling is fast enough by construction: one SPC700 cycle is about 21 mclk at 21.505 MHz against 1.024, the shortest instruction is two cycles, so PC cannot change more often than every ~42 mclk and a nine-mclk revolution samples it at least four times per instruction. The bench caught a real defect in the instrument before hardware: the tear guard compared the two stored high-byte registers, and at the moment of comparison the second register still held the PREVIOUS revolution's byte, so it compared across revolutions and let a genuine tear through -- the bench's tear model showed `cur_pc` changing 32 times in 300 mclk, against zero after the fix, which compares the stored first read against the register being read on the same edge, the shape the APU probe already uses. The bench also had to be repaired twice for reading the latched display where it meant to read the sampler's own register. Seed 5 built with `TINYSNES_IPL_PROBE` in `build/ipl_s5`, zero hold violations, passing the timing gate at fclk 238.379 against 64.516 MHz, hclk 149.970 against 74.250 and iosys.clk 31.564 against 21.505, giving `tinysnes.fs` SHA-256 `25df60d6a5fa8deb17c46b94cab02dbe1d8e356af3f7b83ce8c6c6e4a6e4af8c`; it was loaded one-wire and the bench's 1 MiB `zelda.smc` streamed at the core's UART. The readout refutes the premise this cycle was built on: `exit_seen` never fired in any of 172 captured frames, 170 of which decoded cleanly, and the status band reads cyan, which is R clear, G set and B set -- no exit, ROM loaded, core enabled. The SPC700's current program counter sits at $FFDA, $FFDC and $FFEA, all inside the IPL ROM, so it has not left the IPL at all and there is no jump to explain. The three port values are coherent and plausible: CPUI port 0 reads $80, the transfer index the 65816 has reached; CPUI port 1 reads $92, the data byte at that index with bit 7 set; and CPUI ports 3 and 2 read $08 and $2A, the transfer address $082A. The SPC is therefore spinning in the IPL's block-copy loop at $FFDA-$FFE9, which compares its Y against CPUI port 0 and waits, while the 65816 spins at $88EC waiting for an echo -- two processors waiting on each other, with the disagreement between Y and the index in CPUI port 0 as the thing to measure. This contradicts core-log entry 8, which read the SPC700's program counter as $F4B5-$F4D1 and inferred it had taken the IPL's jump into uploaded code in ARAM; the machine's failure point is already recorded as varying between boots, and the two readings were taken on different boots from different bitstreams, but the inference drawn in entry 8 does not survive as a general statement and the ARAM-execution hypothesis it produced is now unsupported, which also removes the premise for this cycle's planned second part, the DSP arbitration test, since the SPC is not executing uploaded code for the DSP to contend with. Entry 9's ARAM result stands on its own: it measured the port and the storage directly and did not depend on the wrong inference. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 9 were not rewritten, revised EXT-005 and TCL-008 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the ten-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Read the SPC700's Y in the same frame as CPUI port 0, because the IPL's block loop at $FFDA-$FFE9 turns entirely on `CMP Y,$F4` and the deadlock is now two processors waiting on a value that should be equal and is not: replace the A-and-X stripe, which is only meaningful when the exit latch fires and has never fired, with live Y and A, rebuild, and read Y beside the $80 in CPUI port 0. A Y of $80 with the 65816 still spinning means the compare is not the fault and the echo path at $FFE0 is, since that is where the SPC writes Y into $F4 for the CPU to read; a Y below $80 means the SPC is behind and missing bytes, which points at the copy loop storing through ARAM port 1 during a live machine -- the one case entry 9 could not test, because its build disabled the machine and the DSP was not arbitrating; a Y above $80 means the SPC has advanced past the index the CPU sent, which points at the block-restart path through $FFEB-$FFF9. Keep the DSP arbitration question, since it returns as soon as Y shows the SPC is behind. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all ten diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` after any sampler change -- it now runs six benches -- and use `tools/decode_probe_frame.py` rather than reading stripes by eye. Treat a readout that contradicts a recorded one as a boot-depth question first and a measurement question second, and say which of the two it is rather than letting the newer reading quietly replace the older.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/ipl_probe_tb.sv
+- tools/tests/probe_tb.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

@@ -563,6 +563,126 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_IPL_PROBE
+// Diagnostic build: catch the address the IPL jumps to.  Decoded from the
+// IPLROM in smp.v, the path after the $CC handshake is
+//
+//   $FFEF  MOVW YA,$F6      A = CPUI[2], Y = CPUI[3]
+//   $FFF1  MOVW $00,YA      ARAM[$0000] = CPUI[2], ARAM[$0001] = CPUI[3]
+//   $FFF3  MOVW YA,$F4      A = CPUI[0], Y = CPUI[1]
+//   $FFF5  MOV $F4,A        CPUO[0] = echo of CPUI[0]
+//   $FFF8  MOV X,A          X = CPUI[1]
+//   $FFFB  JMP [$0000+X]    jump to ARAM[$0000]+X
+//
+// so the jump target is the transfer address the 65816 wrote to $2142/$2143,
+// plus CPUI[1] in X.  The first program counter outside $FFC0-$FFFF *is* that
+// target, which means the answer needs no ARAM access at all -- there is no
+// debug path to ARAM, and none is required.  Latching that first out-of-range PC
+// together with A and X and the three CPUI bytes says in one frame whether the
+// SPC jumped where the 65816 told it to.
+//
+// Sampling rate: one SPC cycle is about 21 mclk (21.505 MHz against 1.024) and
+// the shortest instruction is two cycles, so PC cannot change more often than
+// every ~42 mclk.  A nine-phase revolution samples PC every 9 mclk, at least
+// four times per instruction, so the jump cannot be missed.  A and X are read
+// within 2 mclk of the exit, which is inside the same instruction for the same
+// reason, so they are the values the jump used.
+//
+// probe_bus fields, low to high:
+//   [15:0]  PC at the first sample outside $FFC0-$FFFF -- the jump target
+//   [31:16] A and X latched at that moment
+//   [47:32] the current SPC700 PC, refreshed every latch
+//   [63:48] CPUI ports 3 and 2, the transfer address the 65816 sent
+//   [79:64] CPUI ports 1 and 0, of which port 1 becomes X above
+// A jump target of $0000, or one inside $00F0-$00FF, would land in the port or
+// timer bank where no code can run; a target that merely holds the wrong bytes
+// moves the fault into the upload itself.
+reg [3:0] ipl_ph = 4'd0;
+reg [7:0] pch1 = 8'd0, pcl = 8'd0;
+reg [7:0] a_r = 8'd0, x_r = 8'd0;
+reg [7:0] i0 = 8'd0, i1 = 8'd0, i2 = 8'd0, i3 = 8'd0;
+reg [7:0] exit_a = 8'd0, exit_x = 8'd0;
+reg [15:0] exit_pc = 16'd0;
+reg [15:0] cur_pc = 16'd0;
+reg        in_ipl = 1'b0;         // the IPL range has been seen at least once
+reg        exit_seen = 1'b0;      // latched once and never rewritten
+reg [18:0] ipl_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// Case statements, not chained ternaries: a phase that fell off the end of a
+// shorter select would silently read the wrong chip's register, and a constant
+// on the right of `always @(*)` never drives at all.  ipl_ph is on the right-hand
+// side of both, so both blocks have sensitivity.
+always @(*) begin
+    case (ipl_ph)
+    4'd0, 4'd1, 4'd2, 4'd3, 4'd4: dbg_sel = 8'h08;   // the SPC700 core
+    default:                      dbg_sel = 8'h10;   // the SMP wrapper's ports
+    endcase
+end
+always @(*) begin
+    case (ipl_ph)
+    4'd0:    dbg_reg = 8'h04;                    // PC high, first read
+    4'd1:    dbg_reg = 8'h03;                    // PC low
+    4'd2:    dbg_reg = 8'h04;                    // PC high, second read
+    4'd3:    dbg_reg = 8'h00;                    // SPC700 A
+    4'd4:    dbg_reg = 8'h01;                    // SPC700 X
+    4'd5:    dbg_reg = 8'h00;                    // CPUI 0
+    4'd6:    dbg_reg = 8'h01;                    // CPUI 1
+    4'd7:    dbg_reg = 8'h02;                    // CPUI 2
+    default: dbg_reg = 8'h03;                    // CPUI 3
+    endcase
+end
+
+always @(posedge mclk) begin
+    dbg_reg_wr <= 1'b0;
+    ipl_ph     <= (ipl_ph == 4'd8) ? 4'd0 : ipl_ph + 4'd1;
+    case (ipl_ph)
+    4'd0: pch1 <= dbg_dat_out;
+    4'd1: pcl  <= dbg_dat_out;
+    4'd3: a_r  <= dbg_dat_out;
+    4'd4: x_r  <= dbg_dat_out;
+    4'd5: i0   <= dbg_dat_out;
+    4'd6: i1   <= dbg_dat_out;
+    4'd7: i2   <= dbg_dat_out;
+    4'd8: i3   <= dbg_dat_out;
+    endcase
+
+    // The PC pair is accepted only when the high byte read on both sides of the
+    // low byte agreed, so a jump between the two reads is rejected rather than
+    // assembled into an address the SPC was never at.  The second high read is
+    // compared against dbg_dat_out -- the register being read on THIS edge -- not
+    // against a stored copy: at the moment ipl_ph is 2, a register assigned from
+    // the same edge still holds the PREVIOUS revolution's byte, so comparing the
+    // two registers compares across revolutions and a real tear slips through.
+    // The APU probe already carries this fix; it was not carried over here, and
+    // the bench below is what caught it.
+    if (ipl_ph == 4'd2 && pch1 == dbg_dat_out) begin
+        cur_pc <= {pch1, pcl};
+        if ({pch1, pcl} >= 16'hFFC0)
+            in_ipl <= 1'b1;
+        // The first PC below the IPL, once the IPL has been seen, is the address
+        // the IPL's JMP arrived at.  Latched once: a machine that later wanders
+        // must not overwrite the evidence.
+        if (in_ipl && {pch1, pcl} < 16'hFFC0 && ~exit_seen) begin
+            exit_pc   <= {pch1, pcl};
+            exit_a    <= a_r;
+            exit_x    <= x_r;
+            exit_seen <= 1'b1;
+        end
+    end
+
+    // Latched display snapshot, refreshed once every 2^19 phase revolutions for
+    // the reason in core-reference TCL-011: a live bus cannot be photographed.
+    if (ipl_ph == 4'd8) begin
+        ipl_wrap <= ipl_wrap + 19'd1;
+        if (ipl_wrap == 19'd0)
+            fp_bus <= {i1, i0, i3, i2, cur_pc, exit_a, exit_x, exit_pc};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_TRACE_PROBE
 // Diagnostic build: keep the last four ROM addresses the CPU asked for.  The
 // ring only advances on a ROM access, so on a machine that has left the ROM it
@@ -1076,7 +1196,17 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_APU_PROBE
+`ifdef TINYSNES_IPL_PROBE
+    // Diagnostic build: R = exit_seen, G = loaded, B = enable.  A red band means
+    // the SPC700 has been seen leaving its IPL ROM, which is the state this build
+    // exists to measure, so the band confirms the instrument fired before the
+    // stripes are read.  probe_bus carries the jump target, A and X at that
+    // moment, the current PC and the three CPUI bytes, per the field order in the
+    // TINYSNES_IPL_PROBE block above.
+    .dbg({exit_seen, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_APU_PROBE
     // Diagnostic build: R = header_finished, G = loaded, B = loading, so the
     // border says whether the core is released; probe_bus carries CPUO's two
     // ports, the 65816's A, PC and P, the SPC700's PC and CPUI port 0, in the

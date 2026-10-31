@@ -24,6 +24,9 @@
 `ifdef TINYSNES_APU_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_IPL_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 
 // The two memory self-tests share one display, so they are folded into a single
 // define rather than tested in one `elsif` expression.  `elsif A || B does NOT
@@ -96,6 +99,9 @@ module snes2hdmi (
     //     ROM_ADDR[23:8] of the newest
     //   TINYSNES_APU_PROBE:   CPUO ports 1 and 0, the 65816's A, the 65816's
     //     PC, the SPC700's PC, then the 65816's P above CPUI port 0
+    //   TINYSNES_IPL_PROBE:   the SPC700 PC at the first sample outside the IPL
+    //     ROM, then A and X at that moment, the current SPC700 PC, CPUI ports 3
+    //     and 2, and CPUI ports 1 and 0
     input [79:0] probe_bus,
 `endif
 
