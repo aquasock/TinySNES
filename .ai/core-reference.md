@@ -82,6 +82,7 @@ rules:
 | Why does the machine show a static tile grid after a ROM loads? | TCL | TCL-007, TCL-008 |
 | Which diagnostic build shows what, and what should it read? | TCL | TCL-008 |
 | How do I read a CPU register from the bench without changing upstream? | EXT | EXT-004 |
+| The 65816 is stuck in `CMP $2140`: which side of the APU link failed? | EXT | EXT-005 |
 | Why did an ODDR SDRAM clock kill the picture? | TCL | TCL-009 |
 | How long does a CPU-port ROM read take, and when does the CPU latch it? | TCL | TCL-010 |
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
@@ -100,7 +101,7 @@ TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported cons
 TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch path
 TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route · TCL-010 read latency and the CPU's latch
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
-EXT-004 the SCPU debug port as a bench instrument
+EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot
 
 ---
 
@@ -196,6 +197,19 @@ EXT-004 the SCPU debug port as a bench instrument
     - "SNESTang commit 5f0ef19, src/hdmi2/hdmi.sv and src/hdmi2/serializer.sv"
     - "TinyTang commit 207f9af, fpga/desktop/hdmi/*.sv; TinyTang fpga/desktop/README.md records that build as exercising HDMI on hardware"
   verification: "The failure messages are from this session's yosys runs with SNESTang's copy; the swap to TinyTang's copy removed them and synthesis then completed."
+
+- record_id: EXT-005
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The S-SMP's APU ports are two separate register banks, CPUI and CPUO, and the IPL boot is a four-way handshake over them"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "smp.v keeps CPUI[0:3] and CPUO[0:3] as distinct arrays: a CPU write to $2140-$2143 lands in CPUI[PA], the SPC700 reads CPUI[$00F4-$00F7], an SPC700 write to $00F4-$00F7 lands in CPUO, and the CPU reads $2140-$2143 from CPUO[PA].  The SMP's own debug registers expose them separately, 0x00-0x03 being CPUI and 0x04-0x07 CPUO, so a probe that reads only 0x00-0x03 measures one direction of the link.  The IPL ROM in the same file is the standard 64-byte dump at $FFC0-$FFFF: it clears ARAM, publishes $AA in port 0 and $BB in port 1, then loops exchanging data and block counters with the 65816, which in turn sits in `CMP $2140 / BNE` at $8891 of the loaded image."
+  consequence: "Any statement about the APU link has to name the direction it was measured in.  A 65816 waiting for an echo after writing a byte, with CPUO still holding the initial $AA, means the SPC700 published once and never consumed what came next; that is a deadlock at the SPC's read of $00F4 or at ARAM behind it, not a CPU fault.  This is also the cheapest place to observe the SPC700 without a logic analyser: DBG_SEL[3] selects it, and A, X, Y, PC, PSW and SP are readable at 0x00-0x06."
+  sources:
+    - "SNESTang commit 5f0ef19, src/smp.v: CPUI/CPUO arrays, the $00F4-$00F7 read and write paths, and the IPLROM array"
+    - "SNESTang commit 5f0ef19, src/spc700/spc700.v: the debug case at DBG_REG 0x00-0x08"
+  verification: "Read from the RTL on 2026-10-31 and then measured on the board (core-log entry 6): the APU probe read CPUI as 0x0080 and CPUO as 0xBBAA in the same frame, which is the observation the fault location rests on."
 
 - record_id: TCL-001
   kind: TOOLCHAIN
@@ -319,16 +333,16 @@ EXT-004 the SCPU debug port as a bench instrument
 - record_id: TCL-008
   kind: TOOLCHAIN
   topic_id: TCL
-  title: "Five diagnostic builds behind TINYSNES_* defines, each with a known-good readout"
+  title: "Eight diagnostic builds behind TINYSNES_* defines, each with a known-good readout"
   status: VERIFIED
   verified_date: 2026-10-31
-  statement: "Each diagnostic is selected with TINYSNES_DEFINES and drawn by snes2hdmi, so the result is read off the screen with no logic analyser and no loader changes.  TINYSNES_SDRAM_TEST runs sdram_bist.v before the machine starts: 16 gapped bars, one per DQ bit, red where a bit mismatched, plus a status band (green pass, red mismatch, blue running, yellow no acknowledge).  TINYSNES_LOAD_COUNT shows eight gated thresholds on the count of the loader's own SDRAM write issues, >=1 up to >=500000 words, and all eight green means a full 1 MiB image was issued.  TINYSNES_ROM_CHECK runs rom_probe.v after loaded and searches eight candidate word addresses for a named image word, green where found in either byte order.  TINYSNES_FETCH_PROBE and TINYSNES_CPU_PROBE share one display behind TINYSNES_PROBE_BARS: five stripes of 16 bars, bit 0 on the left and green for 1, 24 rows tall with an 8-row gap, plus a status band in rows 192-223.  The fetch probe's stripes are ROM_Q at the first assertion of ROMSEL and two and four mclk later plus ROM_ADDR[15:0] and ROM_ADDR[23:8] for that access; the CPU probe's are the ROM access counter's two halves, then PC at the most recent sample, PC one sample earlier and SP."
+  statement: "Each diagnostic is selected with TINYSNES_DEFINES and drawn by snes2hdmi, so the result is read off the screen with no logic analyser and no loader changes.  Eight are defined: TINYSNES_SDRAM_TEST, TINYSNES_LOAD_COUNT, TINYSNES_ROM_CHECK, TINYSNES_FETCH_PROBE, TINYSNES_CPU_PROBE, TINYSNES_TRACE_PROBE, TINYSNES_LIVE_PROBE and TINYSNES_APU_PROBE.  TINYSNES_SDRAM_TEST runs sdram_bist.v before the machine starts: 16 gapped bars, one per DQ bit, red where a bit mismatched, plus a status band (green pass, red mismatch, blue running, yellow no acknowledge).  TINYSNES_LOAD_COUNT shows eight gated thresholds on the count of the loader's own SDRAM write issues, >=1 up to >=500000 words, and all eight green means a full 1 MiB image was issued.  TINYSNES_ROM_CHECK runs rom_probe.v after loaded and searches eight candidate word addresses for a named image word, green where found in either byte order.  TINYSNES_FETCH_PROBE and TINYSNES_CPU_PROBE share one display behind TINYSNES_PROBE_BARS: five stripes of 16 bars, bit 0 on the left and green for 1, 24 rows tall with an 8-row gap, plus a status band in rows 192-223.  The fetch probe's stripes are ROM_Q at the first assertion of ROMSEL and two and four mclk later plus ROM_ADDR[15:0] and ROM_ADDR[23:8] for that access; the CPU probe's are the ROM access counter's two halves, then PC at the most recent sample, SP and the CPU status byte from DBG_REG 0x15; the trace probe's are the last four ROM addresses, newest first, plus ROM_ADDR[23:8] of the newest; the APU probe's are the two APU port banks, the SPC700's PC and the 65816's PC.  The live probe is the exception: it draws only two stripes over the machine's own picture, so one frame shows what the CPU is doing and what the PPU is drawing."
   consequence: "Use these to bisect the machine rather than adding new probes: memory, loader, fetch and CPU state each have an instrument with a recorded expected readout.  The letterbox border doubles as a three-bit state display under TINYSNES_DBG_BORDER, and its bit assignment changes between builds, so always read the comment at the snes2hdmi instantiation before decoding a colour.  A probe's own correctness is not self-evident and has been wrong more often than the machine: simulate the sampler with tools/tests/probe_tb.sh, which extracts the block verbatim from snestang_top.v, before reading anything into a readout."
   sources:
     - "This repository, fpga/snes/src/sdram_bist.v, fpga/snes/src/rom_probe.v, fpga/snes/src/snes2hdmi.v (the ifdef'd rgb branches), fpga/snes/src/snestang_top.v (the ifdef'd CPU-port mux, write counter, fetch sampler and CPU sampler)"
     - "tools/build_tinysnes.sh: TINYSNES_DEFINES, and tools/rom_probe_expect.py for the expectations"
     - "tools/tests/probe_tb.sh, tools/tests/fetch_probe_tb.sv, tools/tests/cpu_probe_tb.sv"
-  verification: "Each build was run on the board on 2026-10-30 and its readout recorded in core-log entry 3.  Two instrument defects were found and fixed during that work and are worth remembering: a probe that owned the CPU port from reset disconnected the loader's writes, and expectations passed as -DTINYSNES_EXP* never reached the module's EXP parameters, so every comparison ran against zero.  Revised 2026-10-31 (core-log entry 4): TINYSNES_FETCH_PROBE now samples the access three times instead of once and also carries the mapper's address, because the single sample at the first ROMSEL assertion could never see data and its all-zero readout was read as a machine fault for a cycle.  Revised 2026-10-31 (core-log entry 5): TINYSNES_CPU_PROBE was added and both probes were put behind one display, and its bench caught two defects of its own before hardware -- a constant on the right of always @(*) never drives, and 16-bit registers holding one byte truncated the assembled PC to its high byte."
+  verification: "Each build was run on the board and its readout recorded in core-log entries 3, 5 and 6.  A counter in each sampler must detect a real edge: storing the inverted level and testing asserted-level AND stored-level counts every master clock a select is held, which read as 21.5 M accesses per second and tore the trace ring, and the benches now hold the select low for six clocks so the defect cannot return.  Two instrument defects were found and fixed during that work and are worth remembering: a probe that owned the CPU port from reset disconnected the loader's writes, and expectations passed as -DTINYSNES_EXP* never reached the module's EXP parameters, so every comparison ran against zero.  Revised 2026-10-31 (core-log entry 4): TINYSNES_FETCH_PROBE now samples the access three times instead of once and also carries the mapper's address, because the single sample at the first ROMSEL assertion could never see data and its all-zero readout was read as a machine fault for a cycle.  Revised 2026-10-31 (core-log entry 5): TINYSNES_CPU_PROBE was added and both probes were put behind one display, and its bench caught two defects of its own before hardware -- a constant on the right of always @(*) never drives, and 16-bit registers holding one byte truncated the assembled PC to its high byte."
 
 - record_id: TCL-009
   kind: TOOLCHAIN

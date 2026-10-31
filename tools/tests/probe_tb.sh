@@ -3,9 +3,11 @@
 #
 # Simulate the diagnostic samplers in fpga/snes/src/snestang_top.v.
 #
-#   tools/tests/probe_tb.sh            # both probes
+#   tools/tests/probe_tb.sh            # every probe
 #   tools/tests/probe_tb.sh fetch      # TINYSNES_FETCH_PROBE only
 #   tools/tests/probe_tb.sh cpu        # TINYSNES_CPU_PROBE only
+#   tools/tests/probe_tb.sh trace      # TINYSNES_TRACE_PROBE only
+#   tools/tests/probe_tb.sh apu        # TINYSNES_APU_PROBE only
 #
 # The benches need the sampler text itself, so each block is extracted from the
 # shipping source into a temporary file rather than retyped: a copy would drift,
@@ -43,9 +45,16 @@ run_one() {
 }
 
 case "$which" in
-    all)   run_one TINYSNES_FETCH_PROBE fetch_probe_tb.sv fetch_sampler
-           run_one TINYSNES_CPU_PROBE   cpu_probe_tb.sv   cpu_sampler ;;
-    fetch) run_one TINYSNES_FETCH_PROBE fetch_probe_tb.sv fetch_sampler ;;
-    cpu)   run_one TINYSNES_CPU_PROBE   cpu_probe_tb.sv   cpu_sampler ;;
-    *)     echo "usage: $0 [all|fetch|cpu]" >&2; exit 2 ;;
+    # TINYSNES_CPU_PROBE and TINYSNES_LIVE_PROBE both select the one CPU
+    # sampler, so its block is guarded by TINYSNES_CPU_SAMPLER and that is what
+    # the bench compiles and extracts.
+    all)   run_one TINYSNES_FETCH_PROBE  fetch_probe_tb.sv fetch_sampler
+           run_one TINYSNES_CPU_SAMPLER  cpu_probe_tb.sv   cpu_sampler
+           run_one TINYSNES_TRACE_PROBE  trace_probe_tb.sv trace_sampler
+           run_one TINYSNES_APU_PROBE    apu_probe_tb.sv   apu_sampler ;;
+    fetch) run_one TINYSNES_FETCH_PROBE  fetch_probe_tb.sv fetch_sampler ;;
+    cpu)   run_one TINYSNES_CPU_SAMPLER  cpu_probe_tb.sv   cpu_sampler ;;
+    trace) run_one TINYSNES_TRACE_PROBE  trace_probe_tb.sv trace_sampler ;;
+    apu)   run_one TINYSNES_APU_PROBE    apu_probe_tb.sv   apu_sampler ;;
+    *)     echo "usage: $0 [all|fetch|cpu|trace|apu]" >&2; exit 2 ;;
 esac

@@ -58,6 +58,7 @@ module tb;
             8'h07: reg_data = 8'h12;   // PC[15:8]
             8'h09: reg_data = 8'hFF;   // SP[7:0]
             8'h0A: reg_data = 8'h01;   // SP[15:8]
+            8'h15: reg_data = 8'hA5;   // status byte
             default: reg_data = 8'hEE;
         endcase
     endfunction
@@ -82,7 +83,8 @@ module tb;
         // the assembled value is read from the live pixel here and from the bus
         // after the tick below.
         check(pc_now, 16'h1234, "live PC assembled from 0x07 then 0x06");
-        check(probe_bus[79:64], 16'h01FF, "field 4: SP assembled from 0x0A/0x09");
+        check(probe_bus[63:48], 16'h01FF, "field 3: SP assembled from 0x0A/0x09");
+        check(probe_bus[79:64], 16'h00A5, "field 4: status byte from 0x15");
         if (dbg_sel !== 8'b0000_0001) begin
             $display("FAIL dbg_sel is %02x, want 0000_0001", dbg_sel);
             errors = errors + 1;
@@ -96,9 +98,11 @@ module tb;
             errors = errors + 1;
         end
 
-        // Five ROM accesses; ROMSEL must be released between two to count.
+        // Five ROM accesses, each held for six master clocks like a real slow
+        // access.  An edge-detection bug that counts assert cycles instead of
+        // accesses shows up here as five increments per access.
         for (i = 1; i <= 5; i = i + 1) begin
-            ROM_CE_N = 0; repeat (2) @(posedge mclk); #1;
+            ROM_CE_N = 0; repeat (6) @(posedge mclk); #1;
             ROM_CE_N = 1; repeat (2) @(posedge mclk); #1;
             if (probe_bus[15:0] !== i[15:0]) begin
                 $display("FAIL counter after %0d accesses: %04x", i, probe_bus[15:0]);
@@ -111,8 +115,8 @@ module tb;
         // PC is sampled every 2^22 mclk; one sample takes that long to appear.
         repeat (22'h3F_FFFF + 4) @(posedge mclk);
         #1;
-        check(probe_bus[47:32], 16'h1234, "field 2: most recent PC sample");
-        check(probe_bus[63:48], 16'h0000, "field 3: older sample still at reset");
+        check(probe_bus[47:32], 16'h1234, "field 2: PC sample");
+        check(probe_bus[63:48], 16'h01FF, "field 3: SP unchanged by the sample");
         if (pc_changed !== 1'b1) begin
             $display("FAIL pc_changed is %b after two different samples", pc_changed);
             errors = errors + 1;

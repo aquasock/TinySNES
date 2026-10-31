@@ -344,6 +344,13 @@ end
 `endif
 
 `ifdef TINYSNES_CPU_PROBE
+  `define TINYSNES_CPU_SAMPLER 1
+`endif
+`ifdef TINYSNES_LIVE_PROBE
+  `define TINYSNES_CPU_SAMPLER 1
+`endif
+
+`ifdef TINYSNES_CPU_SAMPLER
 // Diagnostic build: ask the CPU where it is.  The core already carries a debug
 // port that nothing drives: DBG_SEL[0] selects the CPU, DBG_REG picks a
 // register and 0x06/0x07 return PC[7:0] and PC[15:8], 0x09/0x0A return SP, and
@@ -354,31 +361,37 @@ end
 //   [15:0]  ROM accesses since reset, low half of the count
 //   [31:16] the same counter's high half, so the count reads unambiguously
 //   [47:32] PC at the most recent sample
-//   [63:48] PC one sample earlier
-//   [79:64] SP, which is 0x01FF out of reset, so a plausible value proves the
-//           debug port is answering and an all-zero PC means zero PC
-// A counter that stands still with a PC that does not move means the CPU is not
-// executing; a counter that races puts the fault past the CPU.
+//   [63:48] SP, which is 0x01FF out of reset, so a plausible value proves the
+//           debug port is answering
+//   [79:64] the CPU's status byte from DBG_REG 0x15, eight bits used:
+//           7 GotInterrupt, 6 IsResetInterrupt, 5 IsNMIInterrupt,
+//           4 IsIRQInterrupt, 3 RDY_IN, 2 EN, 1 WAIExec, 0 STPExec
+// A counter that races with a PC that does not move means the CPU is stalled
+// rather than looping, and the status byte says which kind: WAIExec or STPExec
+// is a CPU that stopped itself and is waiting for an event, while RDY_IN low is
+// a CPU held off the bus by something else in the machine.
 //
 // PC is read as two bytes one mclk apart, so a sample can tear across a byte
-// boundary if the CPU crosses one between the two reads.  Tearing only ever
-// makes a sample wrong, never makes a stuck CPU look alive: the counter and the
-// disagreement between the two samples are what the reading rests on.
-reg  [1:0]  dbg_ph = 2'd0;              // 0 = PC low, 1 = PC high, 2/3 = SP
+// boundary if the CPU crosses one between the two reads.  The status byte and
+// SP are single reads and do not tear.
+reg  [2:0]  dbg_ph = 3'd0;      // 0 PC low, 1 PC high, 2 SP low, 3 SP high, 4 status
 reg  [7:0]  pc_lo_r = 8'd0, pc_hi_r = 8'd0;   // bytes, as DBG_REG returns them
 reg [15:0]  sp_r = 16'd0;
+reg  [7:0]  flags_r = 8'd0;
 reg [15:0]  pc_s0 = 16'd0, pc_s1 = 16'd0;
 reg [31:0]  rom_acc = 32'd0;
 reg         rom_ce_d = 1'b1;
 reg [21:0]  pc_tick = 22'd0;
+reg [31:0]  live_bus = 32'd0;             // latched for the split display
 reg [79:0]  fp_bus = 80'd0;
 wire [15:0] pc_now = {pc_hi_r, pc_lo_r};
 wire        pc_changed = (pc_s0 != pc_s1);
 
-always @(*) dbg_reg = (dbg_ph == 2'd0) ? 8'h06 : // PC[7:0]
-                      (dbg_ph == 2'd1) ? 8'h07 : // PC[15:8]
-                      (dbg_ph == 2'd2) ? 8'h09 : // SP[7:0]
-                                         8'h0A;   // SP[15:8]
+always @(*) dbg_reg = (dbg_ph == 3'd0) ? 8'h06 : // PC[7:0]
+                      (dbg_ph == 3'd1) ? 8'h07 : // PC[15:8]
+                      (dbg_ph == 3'd2) ? 8'h09 : // SP[7:0]
+                      (dbg_ph == 3'd3) ? 8'h0A : // SP[15:8]
+                                         8'h15;   // status byte
 
 always @(posedge mclk) begin
     // Driven from a clocked block, not from always @(*): a constant on the right
@@ -387,16 +400,20 @@ always @(posedge mclk) begin
     // in synthesis.
     dbg_sel    <= 8'b0000_0001;
     dbg_reg_wr <= 1'b0;
-    dbg_ph     <= dbg_ph + 2'd1;
+    dbg_ph     <= (dbg_ph == 3'd4) ? 3'd0 : dbg_ph + 3'd1;
     case (dbg_ph)
-    2'd0: pc_lo_r      <= dbg_dat_out;
-    2'd1: pc_hi_r      <= dbg_dat_out;
-    2'd2: sp_r[7:0]    <= dbg_dat_out;
-    2'd3: sp_r[15:8]   <= dbg_dat_out;
+    3'd0: pc_lo_r      <= dbg_dat_out;
+    3'd1: pc_hi_r      <= dbg_dat_out;
+    3'd2: sp_r[7:0]    <= dbg_dat_out;
+    3'd3: sp_r[15:8]   <= dbg_dat_out;
+    3'd4: flags_r      <= dbg_dat_out;
     endcase
 
-    // One count per assertion of ROMSEL, which is one CPU access to the ROM.
-    rom_ce_d <= ~ROM_CE_N;
+    // One count per ROM access.  rom_ce_d holds ROMSEL as it was on the previous
+    // mclk, so the test is a genuine falling edge; storing the inverted level
+    // instead counts every cycle ROMSEL is asserted, which reads as one access
+    // per master clock on a machine whose bus is busy.
+    rom_ce_d <= ROM_CE_N;
     if (~ROM_CE_N && rom_ce_d)
         rom_acc <= rom_acc + 32'd1;
 
@@ -405,12 +422,117 @@ always @(posedge mclk) begin
     if (pc_tick == 22'h3F_FFFF) begin
         pc_s1 <= pc_s0;
         pc_s0 <= pc_now;
+        // The split display redraws on top of a live picture, so what it shows
+        // has to stand still long enough to be photographed: the counter and
+        // the PC are latched here at the same 0.2 s cadence as the samples.
+        live_bus <= {pc_now, rom_acc[15:0]};
     end
 
-    fp_bus <= {sp_r, pc_s1, pc_s0, rom_acc[31:16], rom_acc[15:0]};
+    fp_bus <= {8'd0, flags_r, sp_r, pc_s0, rom_acc[31:16], rom_acc[15:0]};
 end
 
 assign dbg_dat_in = 8'h00;
+`endif
+
+`ifdef TINYSNES_APU_PROBE
+// Diagnostic build: read both directions of the APU port link.  The two sides
+// are separate register banks -- CPUI[0:3] is what the 65816 writes and the
+// SPC700 reads, CPUO[0:3] is what the SPC700 writes and the 65816 reads -- so a
+// deadlock between them looks identical from one side and is obvious from both.
+//
+// probe_bus fields, low to high:
+//   [15:0]  CPUI ports 1 and 0         (SMP debug 0x01, 0x00)
+//   [31:16] CPUO ports 1 and 0         (SMP debug 0x05, 0x04)
+//   [47:32] SPC700 PC                  (DBG_SEL[3], 0x03 low and 0x04 high)
+//   [63:48] 65816 PC                   (DBG_SEL[0], 0x06 low and 0x07 high)
+//   [79:64] unused, zero
+// During the sound-driver upload the 65816 puts a byte in port 0 and waits for
+// the SPC700 to echo a block counter back through CPUO[0]: CPUI moving while
+// CPUO is frozen is the SPC700 failing to answer, and both frozen is a stalled
+// upload with nothing new sent.
+reg [2:0] apu_ph = 3'd0;
+reg [7:0] i0 = 8'd0, i1 = 8'd0, o0 = 8'd0, o1 = 8'd0;
+reg [7:0] spc_lo = 8'd0, spc_hi = 8'd0, cpu_lo = 8'd0, cpu_hi = 8'd0;
+reg [79:0] fp_bus = 80'd0;
+
+always @(*) dbg_sel = (apu_ph <= 3'd3) ? 8'h10 :     // the SMP wrapper's ports
+                      (apu_ph <= 3'd5) ? 8'h08 :     // the SPC700 core
+                                         8'h01;      // the 65816
+always @(*) dbg_reg = (apu_ph == 3'd0) ? 8'h00 :     // CPUI 0
+                      (apu_ph == 3'd1) ? 8'h01 :     // CPUI 1
+                      (apu_ph == 3'd2) ? 8'h04 :     // CPUO 0
+                      (apu_ph == 3'd3) ? 8'h05 :     // CPUO 1
+                      (apu_ph == 3'd4) ? 8'h03 :     // SPC700 PC low
+                      (apu_ph == 3'd5) ? 8'h04 :     // SPC700 PC high
+                      (apu_ph == 3'd6) ? 8'h06 :     // 65816 PC low
+                                         8'h07;      // 65816 PC high
+
+always @(posedge mclk) begin
+    dbg_reg_wr <= 1'b0;
+    apu_ph     <= apu_ph + 3'd1;
+    case (apu_ph)
+    3'd0: i0     <= dbg_dat_out;
+    3'd1: i1     <= dbg_dat_out;
+    3'd2: o0     <= dbg_dat_out;
+    3'd3: o1     <= dbg_dat_out;
+    3'd4: spc_lo <= dbg_dat_out;
+    3'd5: spc_hi <= dbg_dat_out;
+    3'd6: cpu_lo <= dbg_dat_out;
+    3'd7: cpu_hi <= dbg_dat_out;
+    endcase
+    fp_bus <= {16'd0, cpu_hi, cpu_lo, spc_hi, spc_lo, o1, o0, i1, i0};
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
+`ifdef TINYSNES_TRACE_PROBE
+// Diagnostic build: keep the last four ROM addresses the CPU asked for.  The
+// ring only advances on a ROM access, so on a machine that has left the ROM it
+// freezes on exactly the fetches before the jump, and the newest address names
+// the instruction that did it -- which the loaded image can then be
+// disassembled at, because LoROM bank 0 is the image offset directly.
+//
+// probe_bus fields, low to high:
+//   [15:0]  ROM_ADDR[15:0] of the newest access
+//   [31:16] the access before it
+//   [47:32] the one before that
+//   [63:48] the one before that
+//   [79:64] ROM_ADDR[23:8] of the newest, so the whole image offset is visible
+//           across stripes 1 and 5 for a ROM up to 1 MiB
+// Assertions of ROMSEL that are really SRAM or OBC1 are excluded, because their
+// addresses come from the same mapper but are not code fetches and would read as
+// plausible ROM addresses in the trace.
+reg [15:0] tr0 = 16'd0, tr1 = 16'd0, tr2 = 16'd0, tr3 = 16'd0;
+reg [15:0] tr_hi = 16'd0;
+reg        tr_ce_d = 1'b1;
+reg        rom_recent = 1'b0;           // a ROM access inside the last window
+reg [21:0] tr_tick = 22'd0;
+reg [79:0] fp_bus = 80'd0;
+wire       tr_sel = enable && ~ROM_CE_N && BSRAM_CE_N;
+
+always @(posedge mclk) begin
+    // tr_ce_d holds the previous level, so this is a real start-of-access edge;
+    // storing the inverted level would shift the ring every cycle ROMSEL is held.
+    tr_ce_d <= tr_sel;
+    if (tr_sel && ~tr_ce_d) begin
+        tr3   <= tr2;
+        tr2   <= tr1;
+        tr1   <= tr0;
+        tr0   <= ROM_ADDR[15:0];
+        tr_hi <= ROM_ADDR[23:8];
+        rom_recent <= 1'b1;
+    end
+
+    // The band's first bit reports a ROM access inside the last 0.2 s window, so
+    // a machine that has stopped fetching shows it dark without spending a
+    // stripe on the counter.
+    tr_tick <= tr_tick + 22'd1;
+    if (tr_tick == 22'h3F_FFFF)
+        rom_recent <= 1'b0;
+
+    fp_bus <= {tr_hi, tr3, tr2, tr1, tr0};
+end
 `endif
 
 wire sysclkf_ce, sysclkr_ce;
@@ -839,7 +961,33 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_CPU_PROBE
+`ifdef TINYSNES_APU_PROBE
+    // Diagnostic build: R = header_finished, G = loaded, B = loading, so the
+    // border says whether the core is released; probe_bus carries the SPC700's
+    // PC, PSW and SP, the SMP wrapper's state and the 65816's PC.
+    .dbg({header_finished, loaded, loading}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_LIVE_PROBE
+    // Diagnostic build: the machine's own picture, with two latched stripes laid
+    // over its top 64 rows so the CPU's state and what the PPU draws are read
+    // from one screenshot.  Stripe 1 is the ROM access count's low half and
+    // stripe 2 is the CPU's PC, both latched every 0.2 s.  The port carries the
+    // three machine gates rather than the probe's activity, because a build like
+    // this is used to ask why the machine is not running: under
+    // TINYSNES_DBG_BORDER the border reads R = header_finished, G = loaded,
+    // B = loading, and a blue border means the core is still held in reset.
+    .dbg({header_finished, loaded, loading}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus({48'd0, live_bus}),
+`elsif TINYSNES_TRACE_PROBE
+    // Diagnostic build: R = a ROM access in the last sample window, G = loaded,
+    // B = enable; probe_bus carries the last four ROM addresses, newest first,
+    // and the high half of the newest one.
+    .dbg({rom_recent, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_CPU_PROBE
     // Diagnostic build: R = pc_changed, G = loaded, B = enable; probe_bus
     // carries the ROM access count, two PC samples and SP.
     .dbg({pc_changed, loaded, enable}),

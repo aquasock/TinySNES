@@ -176,3 +176,38 @@ Find the address where execution left the ROM, because the CPU runs and then jum
 - User Test: PASS
 
 ---
+
+## 6 COMMIT Unreleased 2026-10-31T10:09:45-07:00
+
+#### Coming From:
+
+Unreleased 0c276e2
+
+#### Purpose:
+
+Find where the machine stops, now that the CPU is known to execute and the fetch path is proven.
+
+#### Outcome:
+
+The diagnostic set grew from one CPU probe to four, all sharing one display and simulated before use. `TINYSNES_TRACE_PROBE` keeps the last four `ROM_ADDR` values on a ring; `TINYSNES_LIVE_PROBE` draws two latched stripes over the machine's own picture so CPU state and PPU output are read from one frame; `TINYSNES_APU_PROBE` reads both directions of the APU port link through the debug port, `CPUI[0:3]` being what the 65816 writes and `CPUO[0:3]` what the SPC700 writes back. The CPU probe also stopped counting wrong: its edge detector stored the inverted level and so counted every master clock while ROMSEL was asserted, which is why an earlier reading looked like 21.5 M accesses per second, and the trace ring had the same inversion, which is why its stripes tore and flickered; both now detect a real edge, and the benches hold ROMSEL low for six clocks so the defect cannot return. `tools/tests/probe_tb.sh` extracts each sampler verbatim and runs all four benches, and they caught three more instrument defects before hardware: a constant on the right of `always @(*)` never drives, 16-bit registers holding one byte truncated the assembled PC, and the APU probe's bench first reported the SMP's `CPUO` register as if it were `CPUI`. The board was exercised in one-wire throughout with `openFPGALoader` from oss-cad-suite, the ROM streamed at the core's UART, and the picture read back from the bench's own capture card at `/dev/video0` rather than from screenshots. Readings so far: the production image still ends on the static grid; the CPU runs and its status byte showed `RDY_IN` set with SP at 0x01FA; the 65816 sits in `CMP $2140 / BNE` at `$8891`, which the loaded image decodes as the APU boot handshake; the SPC700's PC moves inside its IPL ROM; and with both port banks visible, `CPUI` holds 0x80 while `CPUO` holds the original `$AA`/`$BB` echo, so the SPC700 answered once and never read the byte the 65816 wrote next. The picture never initialises in any boot, and the machine's failure point still varies between boots, which is why entry 5's frozen counter and this cycle's upload stall are the same fault seen at different depths. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 5 were not rewritten, revised TCL-008 in place and added EXT-005, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the six-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Prove whether the SPC700 can see the port at all, because the two banks now say the 65816 wrote 0x80 and the SPC700 did not consume it: read the SPC700's A and Y through `DBG_SEL[3]` in the same frame as `CPUI[0]`, and a Y of 0x00 next to a `CPUI[0]` of 0x80 means the SPC's read of `$00F4` is not returning the `CPUI` byte, which points at the `SPC700_D_IN` path in `smp.v` rather than at either CPU. If the SPC does read the byte, the fault moves to ARAM, which is the one memory this project has never verified: the SDRAM controller's ARAM sample moved from `cycle[1]` to `cycle[2]` in core-log entry 3 to match the new DQ capture and nothing has tested port 1 since, so a write/read-back self-test on port 1 in the shape of `sdram_bist.v` is the instrument, with the IPL completing its upload as the gate. Do not re-time the port-0 path or the capture while that question is open; keep all six diagnostic builds as the regression set and re-run `tools/tests/probe_tb.sh` after any change to a sampler.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/probe_tb.sh
+- tools/tests/cpu_probe_tb.sv
+- tools/tests/trace_probe_tb.sv
+- tools/tests/apu_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

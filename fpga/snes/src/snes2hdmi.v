@@ -14,6 +14,16 @@
 `ifdef TINYSNES_CPU_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_TRACE_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
+`ifdef TINYSNES_LIVE_PROBE
+  `define TINYSNES_PROBE_BARS 1
+  `define TINYSNES_PROBE_SPLIT 1
+`endif
+`ifdef TINYSNES_APU_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 
 module snes2hdmi (
 	input clk,      // snes clock
@@ -66,7 +76,13 @@ module snes2hdmi (
     //   TINYSNES_FETCH_PROBE: ROM_Q at the first ROMSEL assertion, at +2 mclk,
     //     at +4 mclk, then ROM_ADDR[15:0] and ROM_ADDR[23:8] for that access
     //   TINYSNES_CPU_PROBE:   ROM access counter low and high halves, then PC at
-    //     the most recent sample, PC one sample earlier, and SP
+    //     the most recent sample, SP, and the CPU's status byte from DBG_REG
+    //     0x15 (7 GotInterrupt, 6 IsResetInterrupt, 5 IsNMIInterrupt,
+    //     4 IsIRQInterrupt, 3 RDY_IN, 2 EN, 1 WAIExec, 0 STPExec)
+    //   TINYSNES_TRACE_PROBE: the last four ROM addresses, newest first, then
+    //     ROM_ADDR[23:8] of the newest
+    //   TINYSNES_APU_PROBE:   the SPC700's PC, its PSW, the 65816's PC, the SMP
+    //     wrapper's state byte and the SPC700's SP
     input [79:0] probe_bus,
 `endif
 
@@ -320,10 +336,30 @@ module snes2hdmi (
     end
 `endif
 
+`ifdef TINYSNES_PROBE_SPLIT
+    // The split build draws over the machine's own picture instead of replacing
+    // it, so the two stripes it shows are selected here: the top 32 rows carry
+    // probe_bus[15:0] and the next 32 rows probe_bus[47:32].
+    wire [15:0] live_stripe = yy[5] ? probe_bus[47:32] : probe_bus[15:0];
+`endif
+
     // calc rgb value to hdmi
     always @(posedge clk_pixel) begin
         if (active) begin
-`ifdef TINYSNES_OVERLAY_ONLY
+`ifdef TINYSNES_PROBE_SPLIT
+            // Diagnostic build: the machine's picture with the probe laid over
+            // its top 64 rows, so one screenshot shows both what the CPU is
+            // doing and what the PPU is drawing.  Bars are 16 pixels wide with
+            // a 2-pixel gap, green = 1 and red = 0, and both fields are latched
+            // every 0.2 s by the sampler so they can be photographed.
+            if (yy < 8'd64)
+                rgb <= (xx[3:0] > 4'd13) ? 24'h000000
+                                         : (live_stripe[xx[7:4]] ? 24'h00C000 : 24'hC00000);
+            else if (overlay)
+                rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};
+            else
+                rgb <= {mem_portB_rdata[4:0], 3'b0, mem_portB_rdata[9:5], 3'b0, mem_portB_rdata[14:10], 3'b0};
+`elsif TINYSNES_OVERLAY_ONLY
             // Diagnostic build: the overlay path only, no line-buffer BRAM read,
             // so the picture proves the raster and the overlay meter without
             // involving the SNES-side clock domain.
@@ -361,8 +397,12 @@ module snes2hdmi (
             // mapper's ROM_ADDR halves.  Under TINYSNES_CPU_PROBE they are the
             // ROM access counter and the CPU's program counter, so a counter
             // that stands still and a PC that does not move mean the CPU is not
-            // executing.  The band in rows 192-223 is R = fetch_seen (fetch
-            // probe) or pc_changed (CPU probe), G = loaded, B = enable.
+            // executing.  Under TINYSNES_TRACE_PROBE they are the last four ROM
+            // addresses the CPU asked for, newest in the top stripe, and the
+            // high half of the newest, so a machine that has left the ROM shows
+            // the fetches it made just before that.  The band in rows 192-223 is
+            // R = fetch_seen, pc_changed or a recent ROM access depending on the
+            // probe, G = loaded, B = enable.
             if (yy[7:5] == 3'd6)                        // status band
                 rgb <= {dbg[2] ? 8'hC0 : 8'h00, dbg[1] ? 8'hC0 : 8'h00, dbg[0] ? 8'hC0 : 8'h00};
             else if (yy[7:5] > 3'd4 || yy[4:3] == 2'b11 || xx[3:0] > 4'd13)
