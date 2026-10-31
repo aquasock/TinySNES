@@ -563,6 +563,113 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_LINK_PROBE
+// Diagnostic build: both directions of the APU link and both CPUs' state in one
+// snapshot, because every probe before this one carried only half of it.  The
+// APU probe has CPUO and the 65816's A; the IPL probe has the SPC700's Y and the
+// CPUI banks; neither can answer whether the echo the SPC published actually
+// reached the 65816, which is the one open question left after core-log entry 11
+// established that the SPC is behaving correctly and the 65816 is stuck.
+//
+// The deadlock being measured: the IPL's block-copy loop at $FFDA waits on
+// `CMP Y,$F4`, where $F4 read from the SPC side is CPUI port 0, and publishes
+// {Y, A} into CPUO at $FFE0.  The 65816's upload loop at $88EC writes a byte to
+// $2140 and waits for the same byte to come back.  Entry 11 measured Y one
+// ahead of CPUI port 0, which is the loop's normal steady state, so the SPC is
+// waiting for an index the 65816 never sends.
+//
+// probe_bus fields, low to high:
+//   [15:0]  CPUO ports 1 and 0         what the 65816 reads at $2141/$2140
+//   [31:16] CPUI ports 1 and 0         what the SPC700 reads at $00F5/$00F4
+//   [47:32] 65816 A                    its compare operand at $88EC
+//   [63:48] SPC700 PC                  should be inside $FFC0-$FFFF
+//   [79:64] zero above SPC700 Y
+//
+// The decisive pair is CPUO port 0 against the 65816's A.  A of $44 with CPUO
+// also $44 while the CPU still sits at $88EC means the port read is not
+// returning CPUO and the fault is in the read path; a CPUO that disagrees with
+// the byte the SPC published means the `MOVW $F4,YA` write path in smp.v is
+// losing it.
+//
+// These are live reads taken one phase apart, not one instant: the SPC's PC is
+// read as three bytes because it moves, with its high byte compared on both
+// sides of the low byte, while the port banks and the 65816's A are read once
+// each and are only coherent because this machine is stalled rather than
+// running.  A running machine would need a different instrument.
+reg [3:0] link_ph = 4'd0;
+reg [7:0] o0 = 8'd0, o1 = 8'd0;                  // CPUO 0 and 1
+reg [7:0] i0 = 8'd0, i1 = 8'd0;                  // CPUI 0 and 1
+reg [7:0] a_lo = 8'd0, a_hi = 8'd0;              // 65816 A
+reg [7:0] sph1 = 8'd0, spl = 8'd0;               // SPC700 PC, high read twice
+reg [7:0] y_r = 8'd0;                            // SPC700 Y
+reg [7:0] spc_hi = 8'd0, spc_lo = 8'd0;          // last accepted SPC700 PC
+reg [18:0] link_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// Case statements rather than chained ternaries, and ipl_ph -- here link_ph --
+// on the right-hand side of both, because a constant on the right of
+// `always @(*)` never drives at all and a phase falling off the end of a shorter
+// select would silently read the wrong chip's register.
+always @(*) begin
+    case (link_ph)
+    4'd0, 4'd1, 4'd2, 4'd3: dbg_sel = 8'h10;     // the SMP wrapper's port banks
+    4'd4, 4'd5:             dbg_sel = 8'h01;     // the 65816
+    default:                dbg_sel = 8'h08;     // the SPC700 core
+    endcase
+end
+always @(*) begin
+    case (link_ph)
+    4'd0:    dbg_reg = 8'h04;                    // CPUO 0
+    4'd1:    dbg_reg = 8'h05;                    // CPUO 1
+    4'd2:    dbg_reg = 8'h00;                    // CPUI 0
+    4'd3:    dbg_reg = 8'h01;                    // CPUI 1
+    4'd4:    dbg_reg = 8'h00;                    // 65816 A low
+    4'd5:    dbg_reg = 8'h01;                    // 65816 A high
+    4'd6:    dbg_reg = 8'h04;                    // SPC700 PC high, first read
+    4'd7:    dbg_reg = 8'h03;                    // SPC700 PC low
+    4'd8:    dbg_reg = 8'h04;                    // SPC700 PC high, second read
+    default: dbg_reg = 8'h02;                    // SPC700 Y
+    endcase
+end
+
+always @(posedge mclk) begin
+    dbg_reg_wr <= 1'b0;
+    link_ph    <= (link_ph == 4'd9) ? 4'd0 : link_ph + 4'd1;
+    case (link_ph)
+    4'd0: o0   <= dbg_dat_out;
+    4'd1: o1   <= dbg_dat_out;
+    4'd2: i0   <= dbg_dat_out;
+    4'd3: i1   <= dbg_dat_out;
+    4'd4: a_lo <= dbg_dat_out;
+    4'd5: a_hi <= dbg_dat_out;
+    4'd6: sph1 <= dbg_dat_out;
+    4'd7: spl  <= dbg_dat_out;
+    4'd9: y_r  <= dbg_dat_out;
+    endcase
+
+    // The SPC's PC is accepted only when its high byte read on both sides of its
+    // low byte agreed.  The second high read is compared against dbg_dat_out --
+    // the register being read on THIS edge -- not a stored copy, because at this
+    // moment a register assigned from the same edge still holds the previous
+    // revolution's byte and the comparison would span revolutions.
+    if (link_ph == 4'd8 && sph1 == dbg_dat_out) begin
+        spc_hi <= sph1;
+        spc_lo <= spl;
+    end
+
+    // Latched display snapshot, refreshed once every 2^19 phase revolutions for
+    // the reason in core-reference TCL-011: a live bus is painted as a different
+    // value in every raster row and cannot be photographed.
+    if (link_ph == 4'd9) begin
+        link_wrap <= link_wrap + 19'd1;
+        if (link_wrap == 19'd0)
+            fp_bus <= {8'd0, y_r, spc_hi, spc_lo, a_hi, a_lo, i1, i0, o1, o0};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_IPL_PROBE
 // Diagnostic build: catch the address the IPL jumps to.  Decoded from the
 // IPLROM in smp.v, the path after the $CC handshake is
@@ -1219,7 +1326,17 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_IPL_PROBE
+`ifdef TINYSNES_LINK_PROBE
+    // Diagnostic build: R = header_finished, G = loaded, B = enable -- the three
+    // machine gates, which are declared unconditionally, so this probe does not
+    // drag in the trace probe's own signals.  Yellow means the header parsed and
+    // the core is enabled, which is the state a link measurement is taken in.
+    // probe_bus carries both directions of the APU link and both CPUs' state per
+    // the field order in the TINYSNES_LINK_PROBE block.
+    .dbg({header_finished, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_IPL_PROBE
     // Diagnostic build: R = exit_seen, G = loaded, B = enable.  A red band means
     // the SPC700 has been seen leaving its IPL ROM, which is the state this build
     // exists to measure, so the band confirms the instrument fired before the

@@ -375,3 +375,36 @@ Put CPUO port 0 and the 65816's A into the same snapshot as CPUI port 0, CPUI po
 - User Test: NOT RUN
 
 ---
+
+## 12 COMMIT Unreleased 2026-10-31T12:20:39-07:00
+
+#### Coming From:
+
+Unreleased 33dcde9
+
+#### Purpose:
+
+Put both directions of the APU link and both CPUs' state into one snapshot, because every earlier probe carried half of the pair needed to explain the deadlock.
+
+#### Outcome:
+
+`TINYSNES_LINK_PROBE` reads CPUO ports 1 and 0, CPUI ports 1 and 0, the 65816's A, the SPC700's PC and its Y across ten phases into one latched snapshot, and its bench checks the field layout, that the two port directions are independent by moving each bank's high byte and confirming the other does not follow, that a torn SPC program counter is rejected, that the display is latched rather than live, and that no phase selects an unprobed register; the bench caught a transposed byte order in the probe's own comment before hardware. Seed 6 built clean with zero hold violations, passing the timing gate at fclk 290.782 against 64.516 MHz, hclk 142.613 against 74.250 and iosys.clk 32.860 against 21.505, giving `tinysnes.fs` SHA-256 `6786e3fc005ae610dbc1a8cd4a40fadb1571f6f78e4e270dc9b5341cd7f7ea8f`; it was loaded one-wire and the bench's 1 MiB `zelda.smc` streamed at the core's UART. The readout, identical in all 177 decoded frames of 179 captured: CPUO port 0 is $19, CPUO port 1 is $BB, CPUI port 0 is $10, CPUI port 1 is $00, the 65816's A is $BB10, the SPC700's Y is $1A, and its program counter sits at $FFDC, $FFEA and $FFE9. Continuing the cycle required decoding the IPL exactly rather than approximately, and doing that exposed a defect in entry 11 worth recording plainly: the instruction listing in that entry was written from recollection, not from this repository, and two of its lines are wrong. The bytes at $FFDC are `D0 0B`, a `BNE $FFE9`, not the `BPL $FFDA` the entry shows, and $FFE0's `CB F4` is `MOV $F4,Y`, writing Y into CPUO port 0, not the `MOVW $F4,YA` the entry shows. The corrected listing was produced by extracting all 256 opcode mnemonics from `fpga/snes/src/spc700/mcode.txt` and walking the `IPLROM` array in `smp.v`, and it validates itself: the walk consumes exactly the 64 bytes and ends at $FFFE, where the reset vector `$C0FF` correctly points back to $FFC0. Entry 11's conclusion survives the correction -- the SPC700 is waiting for an index the 65816 never sends -- but its reasoning quoted an instruction that does not exist at that address, so the mistake is recorded rather than quietly repaired. With the loop decoded, the measured values become exact: CPUO port 0 holds $19, which is Y minus one, and the loop publishes Y at $FFE0 and then increments it at $FFE4, so the SPC700 completed one exchange at Y=$19 and is now waiting at Y=$1A; at $FFDA it compares $1A against CPUI port 0's $10, branches to $FFE9 on the mismatch, and the `BPL` there returns it to $FFDA, so it spins for ever. The 65816 meanwhile compares $10 against CPUO port 0's $19 and cannot leave $88EC. The two are ten indices apart, and because the SPC700 only ever advances when CPUI port 0 equals its Y, a 65816 that is behind can never catch up: the desync is permanent by construction. That the gap was one in entry 11 and is ten now is the most useful new fact -- a fixed protocol offset would be one number, and a gap that changes between boots is a race or a restart, not a wrong constant. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 11 were not rewritten, added EXT-006 and revised TCL-008, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twelve-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out whether the 65816 is still at $88EC or has restarted its upload, because that one address separates the two remaining explanations for a gap that varies between boots: replace the SPC700 program counter stripe, which has been read three times now and is always inside the IPL, with the 65816's program counter, keeping CPUO, CPUI, A and Y, and read all five in one frame. A 65816 still at $88EC means the CPU is wedged waiting for an echo it will never see and the SPC is waiting for an index the CPU will never send, and the fault is a lost first exchange rather than a restart; a 65816 anywhere else, and especially back at $8888 where the upload routine begins, means the CPU restarted the transfer while the SPC700 kept counting, which would explain a gap that changes between boots and would make the reset and `enable` path between the two processors the next thing to test. If the CPU has restarted, the instrument for that question is a latch on the SPC700's Y taken at the moment `enable` rises, because a Y that is already non-zero at that instant proves the SPC700 did not reset with the 65816. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all eleven diagnostic builds as the regression set and run `tools/tests/probe_tb.sh` -- seven benches -- after any sampler change. When a decode is needed, derive it from `mcode.txt` rather than from recollection and check that the walk lands on the reset vector, which is what caught the bad listing in entry 11.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/link_probe_tb.sv
+- tools/tests/probe_tb.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
