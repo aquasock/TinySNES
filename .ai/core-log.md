@@ -440,3 +440,35 @@ Instrument whether the SPC700 ever advanced, rather than what it is doing now, b
 - User Test: NOT RUN
 
 ---
+
+## 14 COMMIT Unreleased 2026-10-31T13:03:09-07:00
+
+#### Coming From:
+
+Unreleased 29a67e3
+
+#### Purpose:
+
+Separate a SPC700 that never advanced from one that advanced and restarted, which a snapshot cannot do, by latching three history bits that are never cleared.
+
+#### Outcome:
+
+`TINYSNES_LINK_PROBE` gained three sticky bits above the SPC700's Y: whether CPUO port 0 has changed away from $AA, whether Y has ever been non-zero, and whether the SPC700's program counter has left $FFC0-$FFFF. Sampling is sound by construction rather than by assumption -- an eleven-phase revolution samples each field every 11 mclk while one SPC700 cycle is about 21 mclk and the shortest instruction two cycles, so no stored value can appear and vanish between two samples of the same field. The bench is mutation-tested rather than merely passing: reverting any of the three bits to tracking its current value, or removing the arming from either of the two that need it, is caught by a specific check, and the exact defect found on hardware below is one of the mutations. The first hardware build exposed that defect: two of the three bits do not reset to the value their test is phrased around, because `smp.v` clears CPUO to $00 and `addrgen.v` clears the program counter to $0000, so a bit testing "CPUO is not $AA" or "the PC is not in the IPL" sets the instant reset releases and reads as a confident yes for ever. That build reported all three bits set. Both were then armed -- seen at $AA, or seen inside the IPL, before a departure can set them -- and the bench grew the tests that would have caught it, including the one that needed a reset first because arming is one-way. Seed 7 built the corrected logic with zero hold/min violations, passing the timing gate at fclk 247.770 against 64.516 MHz, hclk 139.043 against 74.250 and iosys.clk 34.279 against 21.505, giving `tinysnes.fs` SHA-256 `253c6cfd62ab2762074d3eb665bcc650b274c0507b901b29ff3a53091d38bf07`, and the deployed image is that one, so tree and bitstream agree. The corrected readout, identical in all 170 decoded frames of 172 captured: all three sticky bits are clear, the SPC700's Y is $00, CPUO reads $BBAA, CPUI port 0 reads $10, the 65816's A is $BB10 and its program counter moves through $88EC-$88F1. That resolves the ambiguity entry 13 recorded: the SPC700 has never left its IPL ROM, has never advanced Y, and CPUO has never changed from the $AA and $BB the IPL publishes at $FFC9 and $FFCC, so it is still waiting at $FFCF for a $CC it has never seen. The first reading wins and the second is refuted. It also sharpens the contradiction rather than dissolving it: the 65816 sits at $88EF in the echo-wait of its upload loop with an index of $10, having advanced through sixteen indices, while CPUO has never once changed from the IPL's initial publish. A CPU whose loop waits for an echo that has never been sent should not have advanced at all, so either its compare at $88EC is passing without a matching echo, or what it reads at $2140 is not what this probe reads from CPUO. One reporting defect is recorded because it could have misled a seed choice: the hold-violation check used the pattern "hold violation", which does not match nextpnr's "Hold/min time violation", so a rejected seed was mis-explained during this cycle. Seed acceptance was never affected, because the build script gates on nextpnr's exit status with `TINYSNES_ALLOW_HOLD` unset and not on that grep, and re-checking every seed used for a measurement this session with the correct pattern gives zero hold/min violations in all seven. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 13 were not rewritten, revised TCL-008 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fourteen-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Latch whether CPUI port 0 has ever held $CC, because the SPC700 is confirmed stuck at $FFCF waiting for that value and the question is now whether it was ever presented: add a fourth sticky bit armed like the others, taken on the CPUI port 0 phase, and read it beside the existing three. A bit that is set puts the fault in the SPC700's read of $F4 -- it was shown $CC and did not take it -- which points at the `SPC700_D_IN` path in smp.v and at the timing of that read against the 65816's write, and the follow-up instrument is a latch of CPUI port 0 taken at the SPC's own read strobe rather than at a probe phase. A bit that is clear means the 65816 never actually wrote $CC to $2140, which contradicts its program counter being past $8898 and makes the 65816's store path or its `REP #$20` width the suspect, and the follow-up is to read P and the true 16-bit A at the same moment to establish what width that store used. Either way this is now a question about a single byte crossing a single port once, not about the link in general, and it is the last link in the chain between a working port and a running machine. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all eleven diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` -- seven benches -- after any sampler change, and mutation-test a new sticky bit before trusting it: an unarmed sticky bit set at reset reads exactly like a confident finding.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/link_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

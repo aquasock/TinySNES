@@ -15,7 +15,9 @@
 //   [23:16] CPUI[0]    [31:24] CPUI[1]
 //   [39:32] 65816 A low  [47:40] 65816 A high
 //   [55:48] 65816 PC low  [63:56] 65816 PC high
-//   [71:64] SPC700 Y      [79:72] zero
+//   [71:64] SPC700 Y
+//   [72]    CPUO ever != $AA   [73] Y ever != 0   [74] SPC PC ever < $FFC0
+//   [79:75] zero
 //
 // Checked here:
 //   1. every field lands where the comment says, with values that cannot be
@@ -27,6 +29,7 @@
 //   5. no phase ever selects an unprobed register.
 module link_dut (
     input  mclk,
+    input  resetn,
     input  [7:0] dbg_dat_out,
     output [79:0] probe_bus_o,
     output [7:0]  dbg_sel_o,
@@ -43,6 +46,8 @@ endmodule
 
 module tb;
     reg mclk = 0;
+    reg resetn = 1'b1;          // a real top-level port in snestang_top, so the
+                                // extracted block refers to it for the sticky bits
     wire [79:0] probe_bus;
     wire [7:0] dbg_sel, dbg_reg;
     integer errors = 0;
@@ -54,6 +59,7 @@ module tb;
     reg [7:0] i0 = 8'h44, i1 = 8'h7A;   // CPUI: what the SPC700 reads at $00F4/$00F5
     reg [7:0] cpu_a_lo = 8'h44, cpu_a_hi = 8'h01;   // 65816 A = $0144
     reg [15:0] cpu_pc = 16'h88EC;   // the 65816's echo-wait
+    reg [15:0] spc_pc = 16'hFFDC;   // inside the IPL
     reg [7:0] spc_y = 8'h45;
 
     reg        tearing = 1'b0;
@@ -79,6 +85,7 @@ module tb;
             else if (sel == 8'h08)                  // SPC700 core
                 case (regno)
                     8'h02:   reg_data = spc_y;
+                    8'h04:   reg_data = spc_pc[15:8];
                     default: reg_data = 8'hDD;
                 endcase
             else reg_data = 8'hDD;
@@ -87,7 +94,8 @@ module tb;
 
     wire [7:0] dbg_data = reg_data(dbg_sel, dbg_reg);
 
-    link_dut dut(.mclk(mclk), .dbg_dat_out(dbg_data), .probe_bus_o(probe_bus),
+    link_dut dut(.mclk(mclk), .resetn(resetn), .dbg_dat_out(dbg_data),
+                 .probe_bus_o(probe_bus),
                  .dbg_sel_o(dbg_sel), .dbg_reg_o(dbg_reg));
 
     always #10 mclk = ~mclk;
@@ -149,7 +157,110 @@ module tb;
         check(probe_bus[31:16], 16'h7A44, "field 2: CPUI 1 above CPUI 0");
         check(probe_bus[47:32], 16'h0144, "field 3: 65816 A");
         check(probe_bus[63:48], 16'h88EC, "field 4: 65816 PC");
-        check(probe_bus[79:64], 16'h0045, "field 5: zero above SPC700 Y");
+        // [79:64] = {5'd0, st_ipl, st_y, st_cpuo, y_r}.  o0 is $44, which is not
+        // the value st_cpuo is armed on, so that bit is still clear; spc_y is $45,
+        // so st_y is set; spc_pc is $FFDC, so st_ipl is armed but clear.
+        check(probe_bus[79:64], 16'h0245, "field 5: st_y set, st_ipl armed, st_cpuo unarmed");
+
+        // ---- sticky bits: arming, then history ---------------------------
+        // The bit that tests "CPUO has changed away from $AA" must not fire
+        // merely because CPUO is not $AA.  smp.v clears CPUO to $00 at reset, so
+        // an unarmed test sets at reset and reads as a confident yes for ever --
+        // which is exactly what the first version of this build did.
+        o0 = 8'h00;                          // CPUO at its reset value
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[72] !== 1'b0) begin
+            $display("FAIL st_cpuo set at CPUO's reset value $00 -- the bit is not armed");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cpuo stays clear at CPUO's reset value");
+
+        o0 = 8'hAA;                          // the IPL's first publish arms it
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[72] !== 1'b0) begin
+            $display("FAIL st_cpuo set while CPUO has only ever been $AA");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cpuo stays clear while CPUO has only been $AA");
+
+        o0 = 8'h10;                          // a departure from $AA
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[72] !== 1'b1) begin
+            $display("FAIL st_cpuo did not set when CPUO left $AA");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cpuo sets when CPUO leaves $AA");
+
+        o0 = 8'hAA;                          // and now the property that matters
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[72] !== 1'b1) begin
+            $display("FAIL st_cpuo cleared when CPUO returned to $AA -- it is current state, not history");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cpuo survives CPUO returning to $AA");
+
+        // st_y needs no arming: its reset value is $00 and that is also the value
+        // meaning "never advanced", so non-zero is unambiguous.
+        spc_y = 8'h00;
+        repeat (40) @(posedge mclk);
+        latch_display;
+        check(probe_bus[71:64], 8'h00, "Y back to $00");
+        if (probe_bus[73] !== 1'b1) begin
+            $display("FAIL st_y cleared when Y returned to $00 -- it is current state, not history");
+            errors = errors + 1;
+        end else
+            $display("ok   st_y survives Y returning to $00");
+
+        // st_ipl is armed by seeing the PC inside the IPL, because addrgen.v
+        // clears the PC to $0000, which would otherwise set the bit at reset.
+        // Arming is one-way, so this has to start from a reset: by this point the
+        // bench has already shown the probe an IPL address, and a bit that is
+        // armed stays armed.  The first version of this test omitted the reset
+        // and therefore asserted something the design never promised.
+        @(negedge mclk);
+        resetn = 1'b0;
+        repeat (4) @(posedge mclk);
+        resetn = 1'b1;
+        spc_pc = 16'h0000;
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[74] !== 1'b0) begin
+            $display("FAIL st_ipl set at the PC's reset value $0000 -- the bit is not armed");
+            errors = errors + 1;
+        end else
+            $display("ok   st_ipl stays clear at the PC's reset value");
+        spc_pc = 16'hFFC0;
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[74] !== 1'b0) begin
+            $display("FAIL st_ipl set while the PC has only ever been inside the IPL");
+            errors = errors + 1;
+        end else
+            $display("ok   st_ipl stays clear while the PC has only been inside the IPL");
+        spc_pc = 16'h1234;
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[74] !== 1'b1) begin
+            $display("FAIL st_ipl did not set when the PC left the IPL");
+            errors = errors + 1;
+        end else
+            $display("ok   st_ipl sets when the PC leaves the IPL");
+        spc_pc = 16'hFFDC;
+        repeat (40) @(posedge mclk);
+        if (dut.st_ipl !== 1'b1) begin
+            $display("FAIL st_ipl cleared when the PC returned to the IPL");
+            errors = errors + 1;
+        end else
+            $display("ok   st_ipl survives the PC returning to the IPL");
+
+        // Restore the machine state the later checks assume, so this test does
+        // not leave the bench inspecting values it changed itself.
+        o0 = 8'h44; spc_y = 8'h45;
+        repeat (30) @(posedge mclk);
 
         // ---- 2. the two directions are independent ----------------------
         // CPUO is $BB44 and CPUI is $7A44: they differ in the high byte only, so
@@ -208,6 +319,19 @@ module tb;
             errors = errors + 1;
         end else
             $display("ok   display is latched: %0d changes in 2000 mclk", changes);
+
+        // A reset must clear all three sticky bits, or a build reused after a
+        // reload would report another machine's history.
+        @(negedge mclk);
+        resetn = 1'b0;
+        repeat (4) @(posedge mclk);
+        #1;
+        if (dut.st_cpuo !== 1'b0 || dut.st_y !== 1'b0 || dut.st_ipl !== 1'b0) begin
+            $display("FAIL sticky bits not cleared by reset: cpuo=%b y=%b ipl=%b",
+                     dut.st_cpuo, dut.st_y, dut.st_ipl);
+            errors = errors + 1;
+        end else
+            $display("ok   reset clears all three sticky bits");
 
         if (errors == 0) $display("PASS");
         else             $display("FAIL: %0d mismatches", errors);

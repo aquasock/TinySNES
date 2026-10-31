@@ -583,7 +583,38 @@ assign dbg_dat_in = 8'h00;
 //   [31:16] CPUI ports 1 and 0         what the SPC700 reads at $00F5/$00F4
 //   [47:32] 65816 A                    its compare operand at $88EC
 //   [63:48] 65816 PC                   where the CPU is, which dates the desync
-//   [79:64] zero above SPC700 Y
+//   [71:64] SPC700 Y                   its index in the block-copy loop
+//   [79:72] five zeros above three sticky history bits:
+//             [74] the SPC700's PC has been outside $FFC0-$FFFF since it was
+//                  first seen inside it
+//             [73] the SPC700's Y has ever been non-zero
+//             [72] CPUO port 0 has changed away from $AA since it was first
+//                  seen at $AA
+//
+// Two of the three bits have to be armed before they mean anything, and getting
+// that wrong is a trap worth writing down.  CPUO and the SPC's PC do not reset to
+// the values the interesting question is phrased around: smp.v clears CPUO to
+// $00 and addrgen.v clears PC to $0000, so a bit testing "CPUO != $AA" or
+// "PC is not in the IPL" sets the instant reset releases, before the IPL has run
+// at all, and reads as a confident yes for ever.  Both are therefore armed on
+// first seeing the state they depart from -- CPUO at $AA, or the PC inside the
+// IPL -- and only then set.  Y needs no arming because its reset value is $00,
+// which is also the value meaning "never advanced", so non-zero is unambiguous.
+//
+// The sticky bits exist because current state cannot answer the question.  On
+// the boot of core-log entry 13, CPUO still held the $AA and $BB the IPL
+// publishes at $FFC9 and $FFCC and Y was still $00 -- the values a SPC700 that
+// has never executed past its first publish would show -- while the 65816 was
+// deep in its upload loop and had clearly advanced past the point where it first
+// offers $CC.  Two readings fit: the SPC never consumed the handshake, or it
+// consumed it, published its own value, and then restarted at $FFC0 and
+// republished $AA and $BB.  A snapshot cannot separate 'never moved' from 'moved
+// and came back'.  A bit latched from reset and never cleared can.
+//
+// Sampling is sound by construction: an eleven-phase revolution samples each
+// field every 11 mclk, while one SPC700 cycle is about 21 mclk and the shortest
+// instruction is two cycles, so no stored value can appear and vanish between
+// two samples of the same field.
 //
 // The 65816's program counter replaces the SPC700's here because the SPC has
 // been read three times and is always inside its IPL, while the gap between Y
@@ -605,9 +636,17 @@ reg [7:0] i0 = 8'd0, i1 = 8'd0;                  // CPUI 0 and 1
 reg [7:0] a_lo = 8'd0, a_hi = 8'd0;              // 65816 A
 reg [7:0] pch1 = 8'd0, pcl = 8'd0;               // 65816 PC, high read twice
 reg [7:0] y_r = 8'd0;                            // SPC700 Y
+reg [7:0] sph = 8'd0;                            // SPC700 PC high byte
 reg [7:0] cpu_hi = 8'd0, cpu_lo = 8'd0;          // last accepted 65816 PC
 reg [18:0] link_wrap = 19'd0;
 reg [79:0] fp_bus = 80'd0;
+// Sticky history, latched from reset and never cleared.  A $00 in all three is
+// the signature of a SPC700 that has never left its first publish.
+reg       st_cpuo = 1'b0;    // CPUO port 0 has changed away from $AA
+reg       st_y    = 1'b0;    // SPC700 Y has ever been non-zero
+reg       st_ipl  = 1'b0;    // SPC700 PC has left the IPL since entering it
+reg       arm_cpuo = 1'b0;   // CPUO has been seen at $AA
+reg       arm_ipl  = 1'b0;   // the SPC's PC has been seen inside the IPL
 
 // Case statements rather than chained ternaries, and ipl_ph -- here link_ph --
 // on the right-hand side of both, because a constant on the right of
@@ -616,7 +655,7 @@ reg [79:0] fp_bus = 80'd0;
 always @(*) begin
     case (link_ph)
     4'd0, 4'd1, 4'd2, 4'd3: dbg_sel = 8'h10;     // the SMP wrapper's port banks
-    4'd9:                   dbg_sel = 8'h08;     // the SPC700 core
+    4'd9, 4'd10:            dbg_sel = 8'h08;     // the SPC700 core
     default:                dbg_sel = 8'h01;     // the 65816
     endcase
 end
@@ -631,13 +670,14 @@ always @(*) begin
     4'd6:    dbg_reg = 8'h07;                    // 65816 PC high, first read
     4'd7:    dbg_reg = 8'h06;                    // 65816 PC low
     4'd8:    dbg_reg = 8'h07;                    // 65816 PC high, second read
-    default: dbg_reg = 8'h02;                    // SPC700 Y
+    4'd9:    dbg_reg = 8'h02;                    // SPC700 Y
+    default: dbg_reg = 8'h04;                    // SPC700 PC high byte
     endcase
 end
 
 always @(posedge mclk) begin
     dbg_reg_wr <= 1'b0;
-    link_ph    <= (link_ph == 4'd9) ? 4'd0 : link_ph + 4'd1;
+    link_ph    <= (link_ph == 4'd10) ? 4'd0 : link_ph + 4'd1;
     case (link_ph)
     4'd0: o0   <= dbg_dat_out;
     4'd1: o1   <= dbg_dat_out;
@@ -648,7 +688,35 @@ always @(posedge mclk) begin
     4'd6: pch1 <= dbg_dat_out;
     4'd7: pcl  <= dbg_dat_out;
     4'd9: y_r  <= dbg_dat_out;
+    4'd10: sph <= dbg_dat_out;
     endcase
+
+    // Sticky history.  Each bit is tested against the register being read on
+    // THIS edge, which is the same value the capture above stores, so the bit and
+    // the current-state field never disagree.  Cleared only by reset: a processor
+    // that ran and then restarted still sets its bits, which is the whole point.
+    if (~resetn) begin
+        st_cpuo  <= 1'b0;
+        st_y     <= 1'b0;
+        st_ipl   <= 1'b0;
+        arm_cpuo <= 1'b0;
+        arm_ipl  <= 1'b0;
+    end else begin
+        // Arm, then observe: see the state the bit departs from once, and only
+        // then let a departure set it.  Without the arming both bits would set at
+        // reset, since CPUO clears to $00 and the PC to $0000.
+        if (link_ph == 4'd0) begin
+            if (dbg_dat_out == 8'hAA) arm_cpuo <= 1'b1;
+            else if (arm_cpuo)        st_cpuo  <= 1'b1;
+        end
+        if (link_ph == 4'd9 && dbg_dat_out != 8'h00) st_y <= 1'b1;
+        // PC < $FFC0 is the same test as "its high byte is not $FF", so one byte
+        // is enough and the low byte is not needed for this bit.
+        if (link_ph == 4'd10) begin
+            if (dbg_dat_out == 8'hFF) arm_ipl <= 1'b1;
+            else if (arm_ipl)         st_ipl  <= 1'b1;
+        end
+    end
 
     // The 65816's PC is accepted only when its high byte read on both sides of
     // its low byte agreed.  The second high read is compared against
@@ -663,10 +731,11 @@ always @(posedge mclk) begin
     // Latched display snapshot, refreshed once every 2^19 phase revolutions for
     // the reason in core-reference TCL-011: a live bus is painted as a different
     // value in every raster row and cannot be photographed.
-    if (link_ph == 4'd9) begin
+    if (link_ph == 4'd10) begin
         link_wrap <= link_wrap + 19'd1;
         if (link_wrap == 19'd0)
-            fp_bus <= {8'd0, y_r, cpu_hi, cpu_lo, a_hi, a_lo, i1, i0, o1, o0};
+            fp_bus <= {5'd0, st_ipl, st_y, st_cpuo,
+                       y_r, cpu_hi, cpu_lo, a_hi, a_lo, i1, i0, o1, o0};
     end
 end
 
