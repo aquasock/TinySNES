@@ -274,6 +274,10 @@ always @(posedge mclk) begin        // wait until memory initialize to start SNE
     // Diagnostic build: the probe owns the CPU port until it has read the ROM
     // words back, so the machine must not start before then.
     if (~sdram_busy && ~pause_snes_for_frame_sync && loaded && rom_probe_done)
+`elsif TINYSNES_READ_STABILITY
+    // Diagnostic build: the read-stability test owns the CPU port until it has
+    // finished its double-reads, so the machine must not start before then.
+    if (~sdram_busy && ~pause_snes_for_frame_sync && loaded && stability_done)
 `else
     if (~sdram_busy && ~pause_snes_for_frame_sync && loaded)
 `endif
@@ -1178,6 +1182,19 @@ always @(posedge mclk) begin
     end
 end
 
+`ifdef TINYSNES_READ_STABILITY
+// Diagnostic build: ROM read-stability test.  Declared before the controller
+// instance that connects them so the widths are stated rather than inferred.
+wire [21:0] stability_addr;
+wire        stability_req, stability_ack, stability_done;
+wire [15:0] stability_mism;
+wire  [1:0] stability_status;
+wire  [2:0] stability_dbg = stability_status == 2'd1 ? 3'b010 :   // done, no mismatch
+                            stability_status == 2'd2 ? 3'b100 :   // done, mismatches
+                            stability_status == 2'd3 ? 3'b110 :   // no acknowledge
+                                                      3'b001;   // running
+`endif
+
 `ifdef TINYSNES_ARAM_TEST
 // Diagnostic build: ARAM self-test through the port the SPC700 loads through.
 // Same 16-bar display and status band as TINYSNES_SDRAM_TEST, so one decoder
@@ -1223,6 +1240,23 @@ sdram_snes sdram(
     .cpu_req_ack(rom_probe_ack),
     .cpu_we  ((loaded && ~rom_probe_done) ? 1'b0 : cpu_we),
     .cpu_ds  ((loaded && ~rom_probe_done) ? 2'b11 : cpu_ds),
+`elsif TINYSNES_READ_STABILITY
+    // Diagnostic build: the stability test owns the CPU port from `loaded` until
+    // it is done, then hands it back to the machine.  The mux is on the same
+    // `loaded && ~done` shape as the ROM check, because handing the port to a
+    // probe from reset disconnects the loader's writes -- a defect this project
+    // has already shipped once.
+    .cpu_addr((loaded && ~stability_done) ? stability_addr : cpu_addr[22:1]),
+    .cpu_din ((loaded && ~stability_done) ? 16'd0 : cpu_din),
+    // cpu_port selects which read-data register the controller writes: port 0
+    // for the test, the machine's own choice once it has the port back.  Tying
+    // it high would send every test read into cpu_port1, which nothing reads.
+    .cpu_port((loaded && ~stability_done) ? 1'b0 : cpu_port),
+    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1),
+    .cpu_req ((loaded && ~stability_done) ? stability_req : cpu_req),
+    .cpu_req_ack(stability_ack),
+    .cpu_we  ((loaded && ~stability_done) ? 1'b0 : cpu_we),
+    .cpu_ds  ((loaded && ~stability_done) ? 2'b11 : cpu_ds),
 `elsif TINYSNES_SDRAM_TEST
     // Diagnostic build: sdram_bist owns the CPU port; the machine's requests are
     // left unconnected because no ROM is loaded and the SNES is never enabled.
@@ -1287,6 +1321,16 @@ sdram_bist bist (
     .clk(fclk), .resetn(resetn), .ready(~sdram_busy),
     .addr(bist_addr), .din(bist_din), .we(bist_we), .req(bist_req), .ack(bist_ack),
     .dout(cpu_port0), .mask(bist_mask), .status(bist_status)
+);
+`endif
+
+`ifdef TINYSNES_READ_STABILITY
+// Diagnostic build: read the same address twice over thousands of refresh
+// periods and count disagreements.  See fpga/snes/src/rom_stability.v.
+rom_stability rom_stability (
+    .clk(mclk), .resetn(resetn), .loaded(loaded),
+    .dout(cpu_port0), .addr(stability_addr), .req(stability_req), .ack(stability_ack),
+    .mism(stability_mism), .status(stability_status), .done(stability_done)
 );
 `endif
 
@@ -1533,6 +1577,9 @@ snes2hdmi s2h(
 `elsif TINYSNES_ARAM_TEST
     .dbg(aram_bist_dbg),
     .bist_mask(aram_bist_mask),
+`elsif TINYSNES_READ_STABILITY
+    .dbg(stability_dbg),
+    .bist_mask(stability_mism),
 `else
   `ifdef TINYSNES_DBG_MACHINE
     // Diagnostic build: why the machine is or is not running.  R = enable,

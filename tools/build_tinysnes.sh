@@ -91,6 +91,7 @@ sources=(
     "$src/src/sdram_cl2_2ch.v"
     "$src/src/sdram_bist.v"
     "$src/src/aram_bist.v"
+    "$src/src/rom_stability.v"
     "$src/src/rom_probe.v"
     "$src/src/vram.v"
     "$src/src/vram_spb.v"

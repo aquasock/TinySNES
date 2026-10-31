@@ -536,3 +536,38 @@ Stop adding state fields and test whether the machine reads the same data twice,
 - User Test: NOT RUN
 
 ---
+
+## 17 COMMIT Unreleased 2026-10-31T14:26:46-07:00
+
+#### Coming From:
+
+Unreleased 8672af1
+
+#### Purpose:
+
+Test whether the machine reads the same data twice, because four boots producing four different failure shapes point at wrong data rather than at either program.
+
+#### Outcome:
+
+The RTL check promised by entry 16 cleared first: the refresh at `cycle[2]` is gated on `!we_latch[0] && !oe_latch[0]`, and a CPU request accepted in the same slot has already latched `oe_latch[0]` at `cycle[0]`, so a refresh cannot overwrite the CAS issued at `cycle[1]` in that slot. Nothing in the state machine allows a refresh to steal a slot already carrying a request. `fpga/snes/src/rom_stability.v` is a new self-test in the shape of `rom_probe.v`: after `loaded` it owns the CPU port until `done`, reads each of eight word addresses spread across a 1 MiB image twice back to back, compares the two, and saturates a 16-bit mismatch count, over 4096 iterations -- 65,536 reads, about 1.5M master clocks or 70 ms, which spans roughly 3000 refresh periods at the controller's 501-cycle cadence. It is drawn by the shared 16-bar display with the count's bits red where set, and its status band is green for a completed run with no mismatch, red for a non-zero count, blue while running and yellow for an unacknowledged request. `enable` is gated on `stability_done` so the image is never disturbed while the port is under test, and the port mux uses the same `loaded && ~done` shape as the ROM landing probe, because handing the port to a probe from reset disconnects the loader's writes. The bench compiles the shipping module against a port model and proves itself non-vacuous three ways: a correct model reports pass with a zero count, a model corrupting every seventeenth read is caught with exactly the three predicted mismatching pairs, and a model that never acknowledges reports status 3. Seed 7 built clean with zero hold/min violations, passing the timing gate at fclk 210.926 against 64.516 MHz, hclk 161.186 against 74.250 and iosys.clk 30.934 against 21.505, giving `tinysnes.fs` SHA-256 `74f8f8a6f1f16a90459ee10cf915e0e7813236c5261645ac4cb47ebf1b2d99be`. The first load of that image produced no video at all and the capture card reported no signal, while the placement of `div5`, the three PLLs and the three OSER10s matched the known-good sites recorded in TCL-009 exactly; reloading the same file produced a picture immediately, so that was a failed SRAM load rather than a design fault, and it is worth knowing that a silent no-video result can mean the load did not take. Reloading also clears `loaded`, so the ROM must be streamed again afterwards -- the first capture after the reload showed the test in its running state for that reason, not because the test was slow. The measured result is a clean negative: all sixteen bars clear and the status band green in all 180 captured frames, so 65,536 double-reads across 4096 iterations produced no disagreement. The SDRAM read path is stable, and core-log entry 5's hypothesis that a refresh stealing the CPU port's slot returns stale data and corrupts an instruction is refuted. That is the most useful thing this cycle produced, because it removes the explanation the project has been carrying since entry 5 and narrows the four-boot variation to the write side or to sequencing rather than to the read path. The bound on the conclusion is stated rather than glossed: `enable` is held low for the duration of the test, so these reads are taken at rest, with the controller's refreshes running throughout but without the machine's own WRAM, DMA and PPU traffic competing for the port. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 16 were not rewritten, revised TCL-007, TCL-008 and BRD-003 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventeen-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Attack the write side while the machine is live, because reads are now proven stable and the four-boot variation has to come from what is stored rather than from what is retrieved: the loader writes through the same CPU port with `cpu_we` high and `cpu_ds` selecting a byte lane, and a corrupted write would leave the image subtly wrong at a varying place, which is exactly the shape the failures show -- a routine entered four times and then a jump to $7C7C, an index that advanced while its partner did not, a SPC that never started. The instrument is a compare-back written into the loader's own path rather than run after it: extend the `TINYSNES_ROM_CHECK` probe to run a second pass after the machine has been enabled for a while, reading the image back out through the CPU port and comparing against the words the loader wrote, and count differences. Since reads are stable, any difference is a write that landed wrong or a location that was overwritten afterwards, and the address of the first difference names the culprit directly. If the image is intact after the machine has run, the corruption is not in SDRAM at all and the next candidates are WRAM, which the 65816 uses for its stack and its variables and whose own port shares the same controller, and the reset and enable sequencing between the two processors, which is the only thing that has varied across the boots measured so far. Also worth one cheap hardware cycle now that reads are exonerated: boot the same build several times without touching the ROM and record which of the four known states appears, since a distribution over states would separate a marginal timing path, which drifts with temperature and placement, from a deterministic startup race, which would always land the same way. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all twelve diagnostic builds as the regression set and run `tools/tests/probe_tb.sh` -- eight benches -- after any sampler change. When a build produces no video, reload before investigating placement: the placement comparison is cheap and a failed SRAM load looks exactly like a dead design.
+
+#### Files Modified:
+
+- fpga/snes/src/rom_stability.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/build_tinysnes.sh
+- tools/tests/probe_tb.sh
+- tools/tests/rom_stability_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

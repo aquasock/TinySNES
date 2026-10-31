@@ -43,6 +43,9 @@
 `ifdef TINYSNES_ARAM_TEST
   `define TINYSNES_BIST_BARS 1
 `endif
+`ifdef TINYSNES_READ_STABILITY
+  `define TINYSNES_BIST_BARS 1
+`endif
 
 module snes2hdmi (
 	input clk,      // snes clock
