@@ -14,8 +14,8 @@
 //   [7:0]   CPUO[0]    [15:8]  CPUO[1]
 //   [23:16] CPUI[0]    [31:24] CPUI[1]
 //   [39:32] 65816 A low  [47:40] 65816 A high
-//   [55:48] SPC PC low   [63:56] SPC PC high
-//   [71:64] SPC700 Y     [79:72] zero
+//   [55:48] 65816 PC low  [63:56] 65816 PC high
+//   [71:64] SPC700 Y      [79:72] zero
 //
 // Checked here:
 //   1. every field lands where the comment says, with values that cannot be
@@ -53,7 +53,7 @@ module tb;
     reg [7:0] o0 = 8'h44, o1 = 8'hBB;   // CPUO: what the 65816 reads at $2140/$2141
     reg [7:0] i0 = 8'h44, i1 = 8'h7A;   // CPUI: what the SPC700 reads at $00F4/$00F5
     reg [7:0] cpu_a_lo = 8'h44, cpu_a_hi = 8'h01;   // 65816 A = $0144
-    reg [15:0] spc_pc = 16'hFFDC;
+    reg [15:0] cpu_pc = 16'h88EC;   // the 65816's echo-wait
     reg [7:0] spc_y = 8'h45;
 
     reg        tearing = 1'b0;
@@ -72,13 +72,13 @@ module tb;
                 case (regno)
                     8'h00:   reg_data = cpu_a_lo;
                     8'h01:   reg_data = cpu_a_hi;
+                    8'h06:   reg_data = cpu_pc[7:0];
+                    8'h07:   reg_data = cpu_pc[15:8];
                     default: reg_data = 8'hDD;
                 endcase
             else if (sel == 8'h08)                  // SPC700 core
                 case (regno)
                     8'h02:   reg_data = spc_y;
-                    8'h03:   reg_data = spc_pc[7:0];
-                    8'h04:   reg_data = spc_pc[15:8];
                     default: reg_data = 8'hDD;
                 endcase
             else reg_data = 8'hDD;
@@ -95,8 +95,8 @@ module tb;
     // The tear moves the PC's high byte the instant the low byte is read, so no
     // high-low-high set is ever whole.
     always @(negedge mclk)
-        if (tearing && dbg_sel == 8'h08 && dbg_reg == 8'h03)
-            spc_pc[15:8] <= spc_pc[15:8] + 8'd1;
+        if (tearing && dbg_sel == 8'h01 && dbg_reg == 8'h06)
+            cpu_pc[15:8] <= cpu_pc[15:8] + 8'd1;
 
     task check(input [79:0] got, input [79:0] want, input [511:0] what);
         begin
@@ -132,12 +132,12 @@ module tb;
     reg [15:0] pc_last;
     always @(posedge mclk) begin
         if (watch_pc) begin
-            if (dut.spc_hi !== pc_last[15:8] || dut.spc_lo !== pc_last[7:0]) begin
+            if (dut.cpu_hi !== pc_last[15:8] || dut.cpu_lo !== pc_last[7:0]) begin
                 pc_changes = pc_changes + 1;
-                pc_last = {dut.spc_hi, dut.spc_lo};
+                pc_last = {dut.cpu_hi, dut.cpu_lo};
             end
         end else
-            pc_last = {dut.spc_hi, dut.spc_lo};
+            pc_last = {dut.cpu_hi, dut.cpu_lo};
     end
 
     initial begin
@@ -148,7 +148,7 @@ module tb;
         check(probe_bus[15:0],  16'hBB44, "field 1: CPUO 1 above CPUO 0");
         check(probe_bus[31:16], 16'h7A44, "field 2: CPUI 1 above CPUI 0");
         check(probe_bus[47:32], 16'h0144, "field 3: 65816 A");
-        check(probe_bus[63:48], 16'hFFDC, "field 4: SPC700 PC");
+        check(probe_bus[63:48], 16'h88EC, "field 4: 65816 PC");
         check(probe_bus[79:64], 16'h0045, "field 5: zero above SPC700 Y");
 
         // ---- 2. the two directions are independent ----------------------
@@ -167,7 +167,7 @@ module tb;
         check(probe_bus[15:0],  16'hBB44, "CPUO restored");
         check(probe_bus[31:16], 16'h2244, "CPUI high byte follows CPUI, not CPUO");
 
-        // ---- 3. a torn SPC PC is rejected -------------------------------
+        // ---- 3. a torn 65816 PC is rejected -----------------------------
         // The invariant is that the accepted PC does not move while its high byte
         // is changing; asserting a particular value would not test the guard,
         // because the value after the tear stops is legitimate either way.
@@ -178,15 +178,15 @@ module tb;
         tearing = 1'b0;
         watch_pc = 1'b0;
         if (pc_changes == 0)
-            $display("ok   torn SPC PC rejected: accepted PC never moved across 300 mclk");
+            $display("ok   torn 65816 PC rejected: accepted PC never moved across 300 mclk");
         else begin
-            $display("FAIL torn SPC PC accepted: moved %0d times while tearing", pc_changes);
+            $display("FAIL torn 65816 PC accepted: moved %0d times while tearing", pc_changes);
             errors = errors + 1;
         end
-        spc_pc = 16'hFFDA;
+        cpu_pc = 16'h8888;
         repeat (40) @(posedge mclk);
         latch_display;
-        check(probe_bus[63:48], 16'hFFDA, "clean SPC PC accepted after the tear");
+        check(probe_bus[63:48], 16'h8888, "clean 65816 PC accepted after the tear");
 
         // ---- 4. the display is latched ----------------------------------
         changes = 0;

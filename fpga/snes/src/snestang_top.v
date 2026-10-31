@@ -582,27 +582,30 @@ assign dbg_dat_in = 8'h00;
 //   [15:0]  CPUO ports 1 and 0         what the 65816 reads at $2141/$2140
 //   [31:16] CPUI ports 1 and 0         what the SPC700 reads at $00F5/$00F4
 //   [47:32] 65816 A                    its compare operand at $88EC
-//   [63:48] SPC700 PC                  should be inside $FFC0-$FFFF
+//   [63:48] 65816 PC                   where the CPU is, which dates the desync
 //   [79:64] zero above SPC700 Y
 //
-// The decisive pair is CPUO port 0 against the 65816's A.  A of $44 with CPUO
-// also $44 while the CPU still sits at $88EC means the port read is not
-// returning CPUO and the fault is in the read path; a CPUO that disagrees with
-// the byte the SPC published means the `MOVW $F4,YA` write path in smp.v is
-// losing it.
+// The 65816's program counter replaces the SPC700's here because the SPC has
+// been read three times and is always inside its IPL, while the gap between Y
+// and CPUI port 0 was one index on the boot of core-log entry 11 and ten on the
+// boot of entry 12.  A fixed protocol defect would give one number; a gap that
+// moves between boots is a race or a restart, and the 65816's PC is what dates
+// it.  $88EC is the CPU's echo-wait in its upload loop and $8888 is the entry to
+// the routine that starts that upload, so a CPU still at $88EC has never
+// restarted while a CPU back at $8888 restarted the transfer.
 //
-// These are live reads taken one phase apart, not one instant: the SPC's PC is
+// These are live reads taken one phase apart, not one instant: the 65816's PC is
 // read as three bytes because it moves, with its high byte compared on both
-// sides of the low byte, while the port banks and the 65816's A are read once
-// each and are only coherent because this machine is stalled rather than
-// running.  A running machine would need a different instrument.
+// sides of the low byte, while the port banks, the 65816's A and the SPC's Y are
+// read once each and are only coherent because this machine is stalled rather
+// than running.  A running machine would need a different instrument.
 reg [3:0] link_ph = 4'd0;
 reg [7:0] o0 = 8'd0, o1 = 8'd0;                  // CPUO 0 and 1
 reg [7:0] i0 = 8'd0, i1 = 8'd0;                  // CPUI 0 and 1
 reg [7:0] a_lo = 8'd0, a_hi = 8'd0;              // 65816 A
-reg [7:0] sph1 = 8'd0, spl = 8'd0;               // SPC700 PC, high read twice
+reg [7:0] pch1 = 8'd0, pcl = 8'd0;               // 65816 PC, high read twice
 reg [7:0] y_r = 8'd0;                            // SPC700 Y
-reg [7:0] spc_hi = 8'd0, spc_lo = 8'd0;          // last accepted SPC700 PC
+reg [7:0] cpu_hi = 8'd0, cpu_lo = 8'd0;          // last accepted 65816 PC
 reg [18:0] link_wrap = 19'd0;
 reg [79:0] fp_bus = 80'd0;
 
@@ -613,8 +616,8 @@ reg [79:0] fp_bus = 80'd0;
 always @(*) begin
     case (link_ph)
     4'd0, 4'd1, 4'd2, 4'd3: dbg_sel = 8'h10;     // the SMP wrapper's port banks
-    4'd4, 4'd5:             dbg_sel = 8'h01;     // the 65816
-    default:                dbg_sel = 8'h08;     // the SPC700 core
+    4'd9:                   dbg_sel = 8'h08;     // the SPC700 core
+    default:                dbg_sel = 8'h01;     // the 65816
     endcase
 end
 always @(*) begin
@@ -625,9 +628,9 @@ always @(*) begin
     4'd3:    dbg_reg = 8'h01;                    // CPUI 1
     4'd4:    dbg_reg = 8'h00;                    // 65816 A low
     4'd5:    dbg_reg = 8'h01;                    // 65816 A high
-    4'd6:    dbg_reg = 8'h04;                    // SPC700 PC high, first read
-    4'd7:    dbg_reg = 8'h03;                    // SPC700 PC low
-    4'd8:    dbg_reg = 8'h04;                    // SPC700 PC high, second read
+    4'd6:    dbg_reg = 8'h07;                    // 65816 PC high, first read
+    4'd7:    dbg_reg = 8'h06;                    // 65816 PC low
+    4'd8:    dbg_reg = 8'h07;                    // 65816 PC high, second read
     default: dbg_reg = 8'h02;                    // SPC700 Y
     endcase
 end
@@ -642,19 +645,19 @@ always @(posedge mclk) begin
     4'd3: i1   <= dbg_dat_out;
     4'd4: a_lo <= dbg_dat_out;
     4'd5: a_hi <= dbg_dat_out;
-    4'd6: sph1 <= dbg_dat_out;
-    4'd7: spl  <= dbg_dat_out;
+    4'd6: pch1 <= dbg_dat_out;
+    4'd7: pcl  <= dbg_dat_out;
     4'd9: y_r  <= dbg_dat_out;
     endcase
 
-    // The SPC's PC is accepted only when its high byte read on both sides of its
-    // low byte agreed.  The second high read is compared against dbg_dat_out --
-    // the register being read on THIS edge -- not a stored copy, because at this
-    // moment a register assigned from the same edge still holds the previous
-    // revolution's byte and the comparison would span revolutions.
-    if (link_ph == 4'd8 && sph1 == dbg_dat_out) begin
-        spc_hi <= sph1;
-        spc_lo <= spl;
+    // The 65816's PC is accepted only when its high byte read on both sides of
+    // its low byte agreed.  The second high read is compared against
+    // dbg_dat_out -- the register being read on THIS edge -- not a stored copy,
+    // because at this moment a register assigned from the same edge still holds
+    // the previous revolution's byte and the comparison would span revolutions.
+    if (link_ph == 4'd8 && pch1 == dbg_dat_out) begin
+        cpu_hi <= pch1;
+        cpu_lo <= pcl;
     end
 
     // Latched display snapshot, refreshed once every 2^19 phase revolutions for
@@ -663,7 +666,7 @@ always @(posedge mclk) begin
     if (link_ph == 4'd9) begin
         link_wrap <= link_wrap + 19'd1;
         if (link_wrap == 19'd0)
-            fp_bus <= {8'd0, y_r, spc_hi, spc_lo, a_hi, a_lo, i1, i0, o1, o0};
+            fp_bus <= {8'd0, y_r, cpu_hi, cpu_lo, a_hi, a_lo, i1, i0, o1, o0};
     end
 end
 

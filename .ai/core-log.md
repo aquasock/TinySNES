@@ -408,3 +408,35 @@ Find out whether the 65816 is still at $88EC or has restarted its upload, becaus
 - User Test: NOT RUN
 
 ---
+
+## 13 COMMIT Unreleased 2026-10-31T12:41:08-07:00
+
+#### Coming From:
+
+Unreleased 2eb37ea
+
+#### Purpose:
+
+Date the desync by reading the 65816's program counter in the same frame as both link directions, because the gap between the two processors was one index on one boot and ten on another.
+
+#### Outcome:
+
+`TINYSNES_LINK_PROBE` swapped its SPC700 program-counter stripe for the 65816's, so the five fields are now CPUO ports 1 and 0, CPUI ports 1 and 0, the 65816's A and program counter, and the SPC700's Y; the tear guard moved with it, reading the 65816's high byte on both sides of its low byte and rejecting a pair whose high byte moved between the reads. The bench checks the new field, that the tear guard rejects a moving 65816 counter, and that a clean one is accepted afterwards; all seven benches pass. Seed 6 built clean with zero hold violations, passing the timing gate at fclk 189.538 against 64.516 MHz, hclk 201.939 against 74.250 and iosys.clk 33.121 against 21.505, giving `tinysnes.fs` SHA-256 `192da7770012a2d26e5e12dbee455596766bb82de8ab9f383c6376e2733ed9bd`; it was loaded one-wire and the bench's 1 MiB `zelda.smc` streamed at the core's UART. The readout, identical in all 171 decoded frames of 173 captured: CPUO port 0 is $AA and port 1 is $BB, CPUI port 0 is $10 and port 1 is $00, the 65816's A is $BB10, its program counter moves through $88EC, $88ED, $88EF and $88F0, and the SPC700's Y is $00. The question this cycle asked is answered: the 65816 has not restarted, because $88EC is the echo-wait inside its upload loop and the routine entry at $8888 would be the signature of a restart. What the same frame also shows is a contradiction the cycle did not set out to find. CPUO still holds $AA and $BB, which is exactly what the IPL publishes at $FFC9 and $FFCC, and Y is still $00, which is where Y stands before the block-copy loop has run at all. Both values say the SPC700 has never executed past its first publish -- never taken the $CC the 65816 sends, never written CPUO again, never entered the loop that would leave Y non-zero. Yet the 65816 is at $88EC with a byte in hand and has clearly advanced well past the point where it first offers $CC. Two readings fit those facts and this instrument cannot separate them: either the SPC700 is still sitting at $FFCF having never seen $CC, in which case the 65816 advanced on a port read it should not have passed; or the SPC700 did take $CC and publish its own value, then went back to $FFC0 and republished $AA and $BB, which would be a restart of the SPC after the 65816 was already committed. The second reading would also explain why the gap between Y and CPUI port 0 was one index on entry 11's boot and ten on entry 12's, since a restart at an arbitrary moment leaves an arbitrary gap. Recording the ambiguity is the point: the previous cycle's Next Steps treated the 65816's program counter as sufficient to decide between a lost exchange and a restart, and this measurement shows it is not, because it establishes that the 65816 did not restart without establishing what the SPC700 did. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 12 were not rewritten, revised TCL-008 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirteen-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Instrument whether the SPC700 ever advanced, rather than what it is doing now, because a single snapshot cannot distinguish a processor that never moved from one that moved and came back: the next build should keep CPUO port 0, CPUI port 0, both program counters and Y, and add three sticky history bits latched from reset and never cleared -- whether CPUO port 0 has ever differed from $AA, whether Y has ever been non-zero, and whether the SPC700's program counter has ever been below $FFC0. Those three bits answer the question directly and do not depend on timing: a CPUO that has never left $AA with a Y that has never left $00 means the SPC700 never consumed the handshake and the fault is in what the 65816's first $CC reaches, while a CPUO that has changed and a Y that has been non-zero beside a Y of $00 now means the SPC700 ran and then restarted, and the next instrument is a counter of SPC700 restarts and the moment `enable` or the SMP's reset input moves relative to them. Do not spend another cycle on the 65816's program counter alone. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all eleven diagnostic builds as the regression set and run `tools/tests/probe_tb.sh` -- seven benches -- after any sampler change.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/link_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

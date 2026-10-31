@@ -106,8 +106,8 @@ module snes2hdmi (
     //     ROM, then its live Y and A, the current SPC700 PC, CPUI ports 3 and 2,
     //     and CPUI ports 1 and 0
     //   TINYSNES_LINK_PROBE:  both directions of the APU link and both CPUs --
-    //     CPUO ports 1 and 0, CPUI ports 1 and 0, the 65816's A, the SPC700's
-    //     PC, then the SPC700's Y
+    //     CPUO ports 1 and 0, CPUI ports 1 and 0, the 65816's A and its PC, then
+    //     the SPC700's Y
     input [79:0] probe_bus,
 `endif
 
