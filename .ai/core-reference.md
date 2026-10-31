@@ -12,7 +12,7 @@ fact forces them.
 
 Some records are negative results — facts about what this toolchain *cannot*
 express, or ruled-out causes of a fault. They are recorded because each cost a
-session to establish: see TCL-002, TCL-004, TCL-005 and BRD-002.
+session to establish: see TCL-002, TCL-004, TCL-005, TCL-009 and BRD-002.
 
 ---
 
@@ -79,7 +79,9 @@ rules:
 | Why do `$fdisplay` and the vendor `` `error `` directive fail synthesis? | TCL | TCL-005 |
 | How must the HDMI clocks be generated and placed? | TCL | TCL-006 |
 | How does TangCore load a SNES ROM? | EXT | EXT-003 |
-| Why does the machine show a static tile grid after a ROM loads? | TCL | TCL-007 |
+| Why does the machine show a static tile grid after a ROM loads? | TCL | TCL-007, TCL-008 |
+| Which diagnostic build shows what, and what should it read? | TCL | TCL-008 |
+| Why did an ODDR SDRAM clock kill the picture? | TCL | TCL-009 |
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
 
 ---
@@ -92,7 +94,8 @@ PRO-001 core ID 2 versus TinyTang's table
 EXT-001 SNESTang console138k file list and clocks · EXT-002 hdl-util HDMI
 TCL-001 slang front end and cell-library shim · TCL-002 SDC subset ·
 TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported constructs ·
-TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture
+TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch-path fault
+TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
 
 ---
@@ -278,20 +281,47 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
   sources:
     - "firmware-bl616 (github.com/nand2mario/firmware-bl616), core/snes.cpp: the load sequence, and utils/utils.cpp: send_fbuf_data() and set_loading_state()"
     - "SNESTang commit 5f0ef19, src/iosys/iosys_bl616.v: the command list and the 0xAA frame format"
-  verification: "Read from the upstream firmware and cross-checked against the core's own RTL this session; the header-parse and release half was then confirmed on hardware by the debug border."
+  verification: "Read from the upstream firmware and cross-checked against the core's own RTL this session; the header-parse and release half was then confirmed on hardware by the debug border. Revised 2026-10-30 (core-log entry 3): the image half is confirmed too -- the loader's write count reaches 524288 words for a 1 MiB image, and the image's first word is found at SDRAM word 0 with no displacement at 16, 32, 64, 128, 256, 512 or 1024 bytes."
 
 - record_id: TCL-007
   kind: TOOLCHAIN
   topic_id: TCL
-  title: "SNESTang's SDRAM capture is hand-tuned for Gowin's fitter and does not carry over: the SNES machine does not execute"
-  status: SOURCED
+  title: "The SDRAM read path works on this board from a falling-edge capture; the machine fault is not memory"
+  status: VERIFIED
   verified_date: 2026-10-30
-  statement: "In SNESTang, ROM, WRAM and ARAM all live in the external SDRAM, and sdram_cl2_2ch.v drives O_sdram_clk from the PLL's 225-degree output (fclk_p) while sampling SDRAM_DQ directly on posedge fclk. TinyNES's ahb_sdram.sv, which works on this board in the same open flow, instead clocks the part from an ODDR on clk and captures dq on negedge followed by posedge before use. With the header parse and the loading release confirmed, this project's SNES machine still displays a static 8x7 grid of black tiles with a grey top edge after loading either a commercial cart or a 32 KiB hand-built ROM that only writes CGRAM colour 0."
-  consequence: "The working theory is that the posedge capture window is wrong under nextpnr, so every SDRAM read - ROM fetch, WRAM, ARAM - returns garbage while writes may still land. The fix is to adopt TinyNES's capture and move the controller's fixed sampling points to match; the gate is the 32 KiB test ROM turning the active area blue. This record is SOURCED rather than VERIFIED because the mechanism is inferred from the code difference and the symptom, not yet proven by a working build."
+  statement: "SNESTang captured SDRAM_DQ combinationally on posedge fclk while driving O_sdram_clk from the PLL's 225-degree output (fclk_p), which put the sample at 3T, about 0.4 ns after the part could be driving against datasheet worst-case tAC.  Replacing that with TinyNES's shape -- dq_fall on the falling edge, dq_rise on the rising edge, data consumed one fclk later, port-0 sample moved from cycle[4] to cycle[5] and ARAM from cycle[1] to cycle[2] -- gives about 8 ns of setup and 4.4 ns of hold at 3.5T.  On hardware the changed build keeps the letterbox and the same static grid, and a self-test that writes and reads back walking-one and walking-zero patterns plus four high addresses through the controller's CPU port comes back with all 16 data bits correct across 36 write/read pairs."
+  consequence: "ROM, WRAM and ARAM reads are not the fault and the capture change stays.  The machine's start-up gates are also clear: header_finished, loaded and enable all assert and ROM_CE_N toggles.  What remains is the fetch path between the mapper's ROM_ADDR and ROM_Q: the CPU's first fetch, which should be the reset vector 0x8000 from ROM offset 0x7FFC, comes back as zero even though the loader has written that word to SDRAM word 0."
   sources:
-    - "SNESTang commit 5f0ef19, src/sdram_cl2_2ch.v (dq_in assignment, O_sdram_clk = fclk_p) and src/snestang_top.v"
+    - "SNESTang commit 5f0ef19, src/sdram_cl2_2ch.v (dq_in, O_sdram_clk = fclk_p)"
     - "TinyNES, fpga/ae350_soc/ahb_sdram.sv: ODDR sdram_clk_oddr, dq_fall on negedge, dq_rise on posedge"
-  verification: "Code comparison read this session; the symptom was observed on hardware on 2026-10-30 with the debug border showing header_finished and loaded set while the picture stayed static. No build has yet demonstrated the corrected capture."
+    - "This repository, fpga/snes/src/sdram_bist.v and fpga/snes/src/rom_probe.v, with the defines listed in TCL-008"
+  verification: "Code comparison read 2026-10-30; the hardware result was then measured on the board that day with the self-test build (core-log entry 3). Revised 2026-10-30 (core-log entry 3): the record was SOURCED and asserted that the capture was the fault behind the dead machine; the self-test refutes that, and the fault is now located in the fetch path."
+
+- record_id: TCL-008
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "Four diagnostic builds behind TINYSNES_* defines, each with a known-good readout"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "Each diagnostic is selected with TINYSNES_DEFINES and drawn by snes2hdmi, so the result is read off the screen with no logic analyser and no loader changes.  TINYSNES_SDRAM_TEST runs sdram_bist.v before the machine starts: 16 gapped bars, one per DQ bit, red where a bit mismatched, plus a status band (green pass, red mismatch, blue running, yellow no acknowledge).  TINYSNES_LOAD_COUNT shows eight gated thresholds on the count of the loader's own SDRAM write issues, >=1 up to >=500000 words, and all eight green means a full 1 MiB image was issued.  TINYSNES_ROM_CHECK runs rom_probe.v after loaded and searches eight candidate word addresses for a named image word, green where found in either byte order.  TINYSNES_FETCH_PROBE latches the CPU's first ROM fetch and draws its 16 bits, left to right bit 0 to bit 15, green for 1."
+  consequence: "Use these to bisect the machine rather than adding new probes: memory, loader and fetch each have an instrument with a recorded expected readout.  The letterbox border doubles as a three-bit state display under TINYSNES_DBG_BORDER, and its bit assignment changes between builds, so always read the comment at the snes2hdmi instantiation before decoding a colour."
+  sources:
+    - "This repository, fpga/snes/src/sdram_bist.v, fpga/snes/src/rom_probe.v, fpga/snes/src/snes2hdmi.v (the ifdef'd rgb branches), fpga/snes/src/snestang_top.v (the ifdef'd CPU-port mux, write counter and fetch latch)"
+    - "tools/build_tinysnes.sh: TINYSNES_DEFINES, and tools/rom_probe_expect.py for the expectations"
+  verification: "Each build was run on the board on 2026-10-30 and its readout recorded in core-log entry 3.  Two instrument defects were found and fixed during that work and are worth remembering: a probe that owned the CPU port from reset disconnected the loader's writes, and expectations passed as -DTINYSNES_EXP* never reached the module's EXP parameters, so every comparison ran against zero."
+
+- record_id: TCL-009
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "An ODDR on fclk for the SDRAM clock costs the HDMI pixel clock its route"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "Replacing O_sdram_clk = fclk_p with an ODDR clocked by fclk, to make the SDRAM clock's relationship to the capture flops deterministic, produced a bitstream with no video at all: the board displayed nothing and never synced.  The ODDR packs into the right-edge IOLOGIC at X181Y23, the same column that carries hclk5 from the HDMI PLL at X177Y81 up to div5 at X181Y81 and the three OSER10s at X181Y57, X181Y100 and X181Y102.  Reverting the ODDR and restoring fclk_p brought the picture back with the same source, the same seed and the same capture change."
+  consequence: "The SDRAM clock must stay on the PLL's phase output.  The four 'Failed to route net hclk5 ... using dedicated routing' warnings are not a usable signal on their own -- the build that produced a synced picture has the same four, same sites -- so a change that adds a clock sink on the right edge can break video while the log looks unchanged.  Diagnose it by whether the picture syncs, not by the warning count."
+  sources:
+    - "This repository, fpga/snes/src/snestang_top.v: the ODDR variant that was reverted, and fpga/snes/pll/gowin_pll_snes.v for the 225-degree output"
+    - "nextpnr-himbaechel placement of sdram_clk_oddr at X181Y23/IOLOGICAO in build/tinysnes/nextpnr.log (bench only, not committed)"
+  verification: "Observed on the board on 2026-10-30: the ODDR image gave no sync, and the reverted image gave the letterbox and the static grid back (core-log entry 3)."
 
 - record_id: BRD-003
   kind: BOARD

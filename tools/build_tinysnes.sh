@@ -31,6 +31,11 @@ pydeps="${PYDEPS:-$HOME/tools/pydeps}"
 device=GW5AST-LV138PG484AC1/I0
 family=GW5AST-138C
 seed="${TINYSNES_SEED:-1}"
+# Hold violations do not block a build (user decision, 2026-10-30): the placer
+# reports them as fatal errors, so TINYSNES_ALLOW_HOLD=1 passes --timing-allow-fail
+# and the Fmax gate below still enforces the clock periods afterwards.
+timing_fail=""
+[[ "${TINYSNES_ALLOW_HOLD:-0}" == 1 ]] && timing_fail="--timing-allow-fail"
 # Extra preprocessor defines for a diagnostic build, e.g. TINYSNES_DEFINES=-DTINYSNES_TEST_PATTERN
 defines="${TINYSNES_DEFINES:-}"
 
@@ -84,6 +89,8 @@ sources=(
     "$src"/src/snes2hdmi.v
     "$src/src/smc_parser.v"
     "$src/src/sdram_cl2_2ch.v"
+    "$src/src/sdram_bist.v"
+    "$src/src/rom_probe.v"
     "$src/src/vram.v"
     "$src/src/vram_spb.v"
     "$src/src/SNES.v"
@@ -158,6 +165,7 @@ echo "=== 2. placement and routing ==="
     --sdc "$src/tinysnes.sdc" \
     --report "$out/timing.json" \
     --seed "$seed" \
+    ${timing_fail} \
     >"$out/nextpnr.log" 2>&1 || {
         tail -60 "$out/nextpnr.log" >&2
         echo "place and route failed; see $out/nextpnr.log" >&2
@@ -168,6 +176,10 @@ echo "routed: $out/tinysnes-routed.json"
 [[ "$stage" == pnr ]] && { echo "stopping after place and route"; exit 0; }
 
 # --------------------------------------------------------------- 3. timing gate and pack
+# The gate is Fmax only.  Hold violations reported by nextpnr do not block a
+# build or a pack: the user accepted them on 2026-10-30 as the placement cost of
+# this design on this device, and seed 9 was the one clean placement out of the
+# sweep in core-log entry 1.  Do not add a hold gate without asking.
 echo "=== 3. timing gate ==="
 "$suite/py3bin/python3" - "$out" <<'PY'
 import json, pathlib, sys

@@ -41,6 +41,11 @@ module snes2hdmi (
     // G = loaded, B = loading.
     input [2:0] dbg,
 
+    // TinySNES diagnostic: per-DQ-bit result of sdram_bist, drawn as 16 bars
+    // across the active area in the TINYSNES_SDRAM_TEST build.  Unused (and
+    // tied off) in every other build.
+    input [15:0] bist_mask,
+
     // output [7:0] led,
 
 	// output signals
@@ -290,6 +295,36 @@ module snes2hdmi (
             rgb <= {xx[7:5]==3'd0 ? 8'hFF : 8'h00,
                     xx[7:5]==3'd1 ? 8'hFF : (xx[7:5]==3'd3 ? 8'hC0 : 8'h00),
                     xx[7:5]==3'd2 ? 8'hFF : 8'h00};
+`elsif TINYSNES_SDRAM_TEST
+            // Diagnostic build: one bar per SDRAM data bit, 16 pixels apart with a
+            // 2-pixel black gap between bars so a run of same-coloured bars can
+            // never read as one block.  bist_mask is a MISMATCH mask, so a set bit
+            // is drawn red (that bit was wrong at least once) and a clear bit
+            // green (it read back correctly at every test address).  The bottom
+            // 32 rows are a solid status band in the dbg colour.
+            if (yy[7:5] == 3'd6)
+                rgb <= {dbg[2] ? 8'hC0 : 8'h00, dbg[1] ? 8'hC0 : 8'h00, dbg[0] ? 8'hC0 : 8'h00};
+            else if (xx[3:0] > 4'd13)
+                rgb <= 24'h000000;
+            else
+                rgb <= bist_mask[xx[7:4]] ? 24'hC00000 : 24'h00C000;
+`elsif TINYSNES_FETCH_PROBE
+            // Diagnostic build: one bar per bit of the CPU's first ROM fetch,
+            // 16 pixels each, left to right = bit 0..15.  Green = 1, red = 0.
+            rgb <= (xx[3:0] > 4'd13) ? 24'h000000
+                                     : (bist_mask[xx[7:4]] ? 24'h00C000 : 24'hC00000);
+`elsif TINYSNES_LOAD_COUNT
+            // Diagnostic build: eight thresholds on the loader's SDRAM write
+            // count, left to right >=1, >=16, >=256, >=4096, >=32768, >=131072,
+            // >=262144, >=500000.  Green = that threshold was reached.
+            rgb <= (xx[4:0] > 5'd29) ? 24'h000000
+                                     : (bist_mask[xx[7:5]] ? 24'h00C000 : 24'hC00000);
+`elsif TINYSNES_ROM_CHECK
+            // Diagnostic build: eight fat bars, one per ROM word the probe read
+            // back from SDRAM.  Green = that word matched the loaded image,
+            // red = it did not.
+            rgb <= (xx[4:0] > 5'd29) ? 24'h000000
+                                     : (bist_mask[xx[7:5]] ? 24'hC00000 : 24'h00C000);
 `else
             if (overlay)
                 rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8

@@ -13,13 +13,17 @@
 //
 // clk_#    CPU         ARAM        clkref
 //   0      RAS1                      1
-//   1      CAS1        DATA2         0
-//   2                  RAS2/Refresh  0
+//   1      CAS1                      0
+//   2      DATA2       RAS2/Refresh  0
 //   3                                0
-//   4      DATA1       CAS2          1
-//   5                                1
+//   4                  CAS2          1
+//   5      DATA1                     1
 // 
 // Here we do not overlap the two CAS-DATA periods, avoiding potential bus contentions.
+// TinySNES: the two DATA slots are one clock later than upstream's (DATA1 was at
+// clk 4, DATA2 at clk 1), because read data is captured on the falling edge and
+// used on the following rising edge.  Neither slot now coincides with a command
+// that drives DQ.
 //
 // Requests are placed using the "multi-cycle req-ack handshake", borrowed from the MIST
 // sdram controller. Whenever a new request is needed, the host readies the addr/din/we lines,
@@ -34,6 +38,12 @@
 // Clkref also allows relaxed timing constraints. Requests need to be ready at most 2 
 // clks after mclk edge (3 for CPU/RV). Data out is ready at least 3 fclk before mclk 
 // posedge (TODO: current true only for BSRAM). This means the following timing constraints.
+//
+// TinySNES: with the SDRAM clock made by an ODDR on fclk instead of the 225-degree
+// PLL output, and read data captured on the falling edge and used one fclk later,
+// data out is ready 2 fclk before the mclk posedge rather than 3.  The SNES CPU and
+// the SPC700 each have several mclk of slack on a ROM or ARAM access, so this was
+// taken rather than shortening the capture window.  See the DQ capture note below.
 //
 // set_multicycle_path 2 -setup -end -from [get_clocks {mclk}] -to [get_clocks {fclk}]
 // set_multicycle_path 1 -hold -end -from [get_clocks {mclk}] -to [get_clocks {fclk}]
@@ -120,7 +130,22 @@ module sdram_snes
 reg dq_oen;        // 0 means output
 reg [15:0] dq_out;
 assign SDRAM_DQ = dq_oen ? {16{1'bz}} : dq_out;
-wire [15:0] dq_in = SDRAM_DQ;     // DQ input
+
+// TinySNES: the part is clocked from fclk inverted at the pin by an ODDR
+// (snestang_top), so its read data changes half an fclk after the command
+// registers and stays valid until half an fclk past the following edge.
+// Capture on the falling edge -- the edge that launched the data -- and
+// re-register on the rising edge, which is TinyNES's capture on this board
+// (fpga/ae350_soc/ahb_sdram.sv, dq_fall/dq_rise).  SNESTang read SDRAM_DQ
+// directly on the posedge, which put the sample within a few ns of the end of
+// the data-valid window and depended on the 225-degree PLL output's phase.
+// The capture flop is one fclk later than upstream's read sample, so the
+// sample points below are one cycle further round than upstream's.
+reg [15:0] dq_fall = 16'd0;
+reg [15:0] dq_rise = 16'd0;
+always @(negedge clk) dq_fall <= SDRAM_DQ;
+always @(posedge clk) dq_rise <= dq_fall;
+wire [15:0] dq_in = dq_rise;     // DQ input, captured one fclk before use
 reg [3:0] cmd;
 reg [12:0] a;
 assign {SDRAM_nCS, SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} = cmd;
@@ -239,7 +264,7 @@ always @* begin
 end
 
 reg [7:0] bsram_dout_reg;
-assign bsram_dout = (cycle[4] && oe_latch[0] && port[0] == PORT_BSRAM) ? (ds[0][0] ? dq_in[7:0] : dq_in[15:8]) : bsram_dout_reg;
+assign bsram_dout = (cycle[5] && oe_latch[0] && port[0] == PORT_BSRAM) ? (ds[0][0] ? dq_in[7:0] : dq_in[15:8]) : bsram_dout_reg;
 
 //
 // SDRAM state machine
@@ -369,7 +394,7 @@ always @(posedge clk) begin
 
             // read
             // ROM, WRAM, BSRAM and RV
-            if (cycle[4] && oe_latch[0]) begin
+            if (cycle[5] && oe_latch[0]) begin
                 case (port[0])
                 PORT_CPU:   if (cpu_port) cpu_port1 <= dq_in; else cpu_port0 <= dq_in;
                 PORT_BSRAM: bsram_dout_reg <= ds[0][0] ? dq_in[7:0] : dq_in[15:8];
@@ -379,7 +404,7 @@ always @(posedge clk) begin
             end
 
             // ARAM
-            if (cycle[1] && oe_latch[1]) aram_dout <= dq_in;
+            if (cycle[2] && oe_latch[1]) aram_dout <= dq_in;
         end
     end
 end

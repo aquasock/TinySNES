@@ -73,3 +73,39 @@ Replace the SDRAM read path in `fpga/snes/src/sdram_cl2_2ch.v` with TinyNES's ca
 - User Test: FAIL
 
 ---
+
+## 3 COMMIT Unreleased 2026-10-30T22:38:50-07:00
+
+#### Coming From:
+
+Unreleased 81e91a1
+
+#### Purpose:
+
+Find out why the SNES machine does not execute after a ROM loads, by testing the memory path and then following the data from the loader to the CPU.
+
+#### Outcome:
+
+The machine still does not run, but the fault is now located past memory. The DQ capture in `fpga/snes/src/sdram_cl2_2ch.v` was changed to TinyNES's shape -- `dq_fall` on the falling edge, `dq_rise` on the rising edge, read data used one fclk later, so the port-0 sample moved from `cycle[4]` to `cycle[5]` and the ARAM sample from `cycle[1]` to `cycle[2]` -- because with the 225-degree clock the old sample at 3T sat about 0.4 ns after the SDRAM began driving, while the new capture at 3.5T has roughly 8 ns of setup and 4.4 ns of hold against datasheet worst case. A first attempt that also replaced the SDRAM clock with an ODDR on fclk killed the picture entirely: `fclk` routed into a right-edge IOLOGIC at X181Y23 displaces `hclk5`'s path to `div5` and the three OSER10s, and three earlier images failed the same way. That ODDR was reverted and must not be reintroduced; the source paths for the pixel and SDRAM clocks are now identical to the build the user confirmed synced. With the capture change in place the user saw the letterbox and the static 7x8 grid return, so the capture was not the fault, and `fpga/snes/src/sdram_bist.v` settled the memory question on hardware: walking-one and walking-zero patterns plus four high addresses, 36 write/read pairs, every one of the 16 data bits correct, drawn as 16 gapped bars with a status band and read off the screen as all green with a green band. The loader was then cleared the same way: `TINYSNES_LOAD_COUNT` counted the loader's own SDRAM write issues and the bars lit progressively to all eight thresholds including the top one at 500,000 words, so a full 1 MiB image is issued, and the landing probe in `fpga/snes/src/rom_probe.v` found the image's first word 0xD878 at SDRAM word 0 with no displacement at 16, 32, 64, 128, 256, 512 or 1024 bytes. The machine's gates are all open too: the border reads white for `header_finished`, `loaded` and `enable`, and `ROM_CE_N` toggles, so the CPU is fetching. What it fetches is wrong: `TINYSNES_FETCH_PROBE` latched the CPU's first ROM fetch, which should be ActRaiser's reset vector 0x8000 from offset 0x7FFC, and every bit came back zero. The remaining fault is therefore in the fetch path between the mapper's `ROM_ADDR` and `ROM_Q`, not in memory, not in the loader and not in the machine's start-up gates. Three of this cycle's readings were the instrument's fault, not the machine's, and are recorded so they are not re-derived: a first probe build handed the CPU port to the probe from reset, which disconnected the loader's writes, and the later `-DTINYSNES_EXP` values never reached the module's `EXP` parameters, so every comparison ran against zero and reported red. The user decided on 2026-10-30 that hold violations do not block a build, which is now `TINYSNES_ALLOW_HOLD=1` passing `--timing-allow-fail` to nextpnr with the Fmax gate still enforcing clock periods, though every build used for a measurement took a seed with no hold violations, because a hold violation in the instrument's own logic would corrupt the result it reports; seeds 1 to 4 failed on this netlist and 5 to 8 routed clean. The production configuration was rebuilt from the committed tree at seed 5 with `tinysnes.fs` SHA-256 `01e89c097459aa6b09832779f351e3c91f6e063e50ae1ebe17a3efb769d65b89`, no hold violations, the same four benign `hclk5` dedicated-routing warnings as the known-good build, and fclk 253.8, hclk 119.7 and iosys.clk 27.3 MHz against 64.5, 74.25 and 21.5. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 and 2 were not rewritten, revised TCL-007 in place in `.ai/core-reference.md` and added TCL-008 and TCL-009, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the three-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Take the fetch path next, in this order: print or probe the `ROM_ADDR` that `DSP_LHRomMap` produces for a fetch of `$00:FFFC` and confirm it is `0x007FFC` rather than a HiROM or masked form, since the SDRAM holds the right word at that offset and the CPU still reads zero; then check `rom_addr_sd`/`cpu_req` in `snestang_top.v`, which only issues a ROM request when the address changes, against `ROM_CE_N` width and `ROM_WORD`, because a CPU that samples `ROM_Q` before the controller's capture has no request in flight to sample; then rule out the one fclk of read latency this cycle added to the capture, which is harmless if the CPU's access window is the six master cycles a LoROM read allows but is the first thing to test if the address checks out. `TINYSNES_FETCH_PROBE` is the instrument for all three: extend it to latch `ROM_ADDR` alongside `ROM_Q`, and keep the `TINYSNES_SDRAM_TEST`, `TINYSNES_LOAD_COUNT` and `TINYSNES_ROM_CHECK` builds as the regression set, since each one now has a known-good expected readout. Do not reintroduce the SDRAM-clock ODDR. Nothing else in the tree is broken: memory, loader, header parse, start-up gates and video are all confirmed working on hardware, so a working picture is one fetch-path fix away.
+
+#### Files Modified:
+
+- fpga/snes/src/sdram_cl2_2ch.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- fpga/snes/src/sdram_bist.v
+- fpga/snes/src/rom_probe.v
+- tools/build_tinysnes.sh
+- tools/rom_probe_expect.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---

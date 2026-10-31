@@ -270,11 +270,32 @@ reg enable; // && ~dbg_break && ~pause;
 reg loaded;
 
 always @(posedge mclk) begin        // wait until memory initialize to start SNES
+`ifdef TINYSNES_ROM_CHECK
+    // Diagnostic build: the probe owns the CPU port until it has read the ROM
+    // words back, so the machine must not start before then.
+    if (~sdram_busy && ~pause_snes_for_frame_sync && loaded && rom_probe_done)
+`else
     if (~sdram_busy && ~pause_snes_for_frame_sync && loaded)
+`endif
         enable <= 1;
     else 
         enable <= 0;
 end
+
+`ifdef TINYSNES_FETCH_PROBE
+// Diagnostic build: latch the data the CPU actually receives on its first ROM
+// fetch after enable.  ActRaiser's reset vector lives at ROM offset 0x7FFC and
+// is 0x8000, so the first fetch should latch 0x8000: only bit 15 set.  Anything
+// else means the fetch path returns data other than what the loader wrote, which
+// points at the mapper or the ROM_Q handshake rather than at memory.
+reg [15:0] fetch_q = 16'd0;
+reg        fetch_seen = 1'b0;
+always @(posedge mclk)
+    if (enable && ~ROM_CE_N && ~ROM_OE_N && ~fetch_seen) begin
+        fetch_q    <= ROM_Q;
+        fetch_seen <= 1'b1;
+    end
+`endif
 
 wire sysclkf_ce, sysclkr_ce;
 wire overlay;
@@ -471,9 +492,33 @@ sdram_snes sdram(
     .SDRAM_nCAS(O_sdram_cas_n), .SDRAM_CKE(O_sdram_cke), .SDRAM_DQM(O_sdram_dqm), 
 
     // CPU accesses
+`ifdef TINYSNES_ROM_CHECK
+    // Diagnostic build: the probe reads the ROM words back before the machine
+    // starts; after `rom_probe_done` it stops driving and the machine takes over.
+    // The machine owns the port until the loader releases `loaded`, the probe
+    // owns it from then until it finishes, then the machine gets it back.  The
+    // first version of this mux handed the port to the probe from reset, which
+    // disconnected the loader's writes: the probe then read an SDRAM that had
+    // never been written and every word mismatched.
+    .cpu_addr((loaded && ~rom_probe_done) ? rom_probe_addr : cpu_addr[22:1]),
+    .cpu_din ((loaded && ~rom_probe_done) ? 16'd0 : cpu_din),
+    .cpu_port((loaded && ~rom_probe_done) ? 1'b0 : cpu_port),
+    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1),
+    .cpu_req ((loaded && ~rom_probe_done) ? rom_probe_req : cpu_req),
+    .cpu_req_ack(rom_probe_ack),
+    .cpu_we  ((loaded && ~rom_probe_done) ? 1'b0 : cpu_we),
+    .cpu_ds  ((loaded && ~rom_probe_done) ? 2'b11 : cpu_ds),
+`elsif TINYSNES_SDRAM_TEST
+    // Diagnostic build: sdram_bist owns the CPU port; the machine's requests are
+    // left unconnected because no ROM is loaded and the SNES is never enabled.
+    .cpu_addr(bist_addr), .cpu_din(bist_din), .cpu_port(1'b0),
+    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(bist_req), .cpu_req_ack(bist_ack),
+    .cpu_we(bist_we), .cpu_ds(2'b11),
+`else
     .cpu_addr(cpu_addr[22:1]), .cpu_din(cpu_din), .cpu_port(cpu_port), 
     .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(cpu_req), .cpu_req_ack(),
     .cpu_we(cpu_we), .cpu_ds(cpu_ds),
+`endif
 
     // BSRAM accesses
     .bsram_addr(bsram_addr), .bsram_dout(bsram_dout), .bsram_din(bsram_din),
@@ -501,6 +546,40 @@ sdram_snes sdram(
 `endif
 );
 
+`ifdef TINYSNES_SDRAM_TEST
+// Diagnostic build: memory self-test, result drawn by snes2hdmi (green/red bars
+// per DQ bit, letterbox = status).  Runs once after the controller's init and
+// holds its result.  See fpga/snes/src/sdram_bist.v.
+wire [21:0] bist_addr;
+wire [15:0] bist_din;
+wire        bist_we, bist_req, bist_ack;
+wire [15:0] bist_mask;
+wire  [1:0] bist_status;
+wire  [2:0] bist_dbg = bist_status == 2'd1 ? 3'b010 :   // done, all bits correct
+                       bist_status == 2'd2 ? 3'b100 :   // done, mismatch
+                       bist_status == 2'd3 ? 3'b110 :   // no acknowledge
+                                             3'b001;   // running
+sdram_bist bist (
+    .clk(fclk), .resetn(resetn), .ready(~sdram_busy),
+    .addr(bist_addr), .din(bist_din), .we(bist_we), .req(bist_req), .ack(bist_ack),
+    .dout(cpu_port0), .mask(bist_mask), .status(bist_status)
+);
+`endif
+
+`ifdef TINYSNES_ROM_CHECK
+// Diagnostic build: read the loaded ROM back out of SDRAM through the CPU's own
+// port and compare it with the image, before the machine is allowed to start.
+wire [21:0] rom_probe_addr;
+wire        rom_probe_req, rom_probe_ack, rom_probe_done, rom_probe_timeout;
+wire  [7:0] rom_probe_fail;
+rom_probe rom_probe (
+    .clk(mclk), .resetn(resetn), .loaded(loaded),
+    .dout(cpu_port0), .addr(rom_probe_addr), .req(rom_probe_req),
+    .ack(rom_probe_ack), .fail(rom_probe_fail), .done(rom_probe_done),
+    .timed_out(rom_probe_timeout)
+);
+`endif
+
 `ifndef SDRAM_3CH
 // FPGA block RAM for SNES VRAM 
 vram vram(
@@ -510,6 +589,26 @@ vram vram(
     .vram2_addr(vram2_addr_sd), .vram2_req(vram2_req), .vram2_ack(),
     .vram2_we(~vram2_we_n_old),  .vram2_din(vram2_din), .vram2_dout(VRAM2_Q)
 );
+`endif
+
+`ifdef TINYSNES_LOAD_COUNT
+// Diagnostic build: count the loader's own SDRAM write issues, using the exact
+// condition that issues them, and show the count as gated thresholds.  Nothing
+// touches the CPU port or the data path, so the loader runs unmodified and the
+// count is of real writes rather than of a simulation of them.
+reg [19:0] wr_count = 20'd0;
+always @(posedge mclk)
+    if (loading && loader_do_valid && header_finished && loader_addr[0])
+        wr_count <= wr_count + 20'd1;
+// A 1 MiB image is 524288 words, so the top threshold is just below that.
+wire [7:0] load_flags = { wr_count >= 20'd500000,
+                          wr_count >= 20'd262144,
+                          wr_count >= 20'd131072,
+                          wr_count >= 20'd32768,
+                          wr_count >= 20'd4096,
+                          wr_count >= 20'd256,
+                          wr_count >= 20'd16,
+                          wr_count >= 20'd1 };
 `endif
 
 // Parse 64-byte rom header into rom_type and etc
@@ -624,7 +723,37 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
+`ifdef TINYSNES_FETCH_PROBE
+    // Diagnostic build: R = fetch_seen, G = loaded, B = enable; the mask port
+    // carries the latched first ROM fetch.
+    .dbg({fetch_seen, loaded, enable}),
+    .bist_mask(fetch_q),
+`elsif TINYSNES_LOAD_COUNT
+    // Diagnostic build: R = header_finished, G = loaded, B = enable, and the
+    // mask port carries the loader write-count thresholds.
+    .dbg({header_finished, loaded, enable}),
+    .bist_mask({8'd0, load_flags}),
+`elsif TINYSNES_ROM_CHECK
+    // Diagnostic build: R = header_finished, G = loaded, B = enable.  Yellow
+    // means the 64-byte header parsed, so the write gate opened and any missing
+    // image data is downstream of it; cyan means the header never completed and
+    // no image byte could ever have been written.
+    .dbg({header_finished, loaded, enable}),
+    .bist_mask({8'd0, rom_probe_fail}),
+`elsif TINYSNES_SDRAM_TEST
+    .dbg(bist_dbg),
+    .bist_mask(bist_mask),
+`else
+  `ifdef TINYSNES_DBG_MACHINE
+    // Diagnostic build: why the machine is or is not running.  R = enable,
+    // G = loaded, B = pause_snes_for_frame_sync.  enable is the gate into main,
+    // and it needs ~pause, so green alone means the SNES is held off.
+    .dbg({enable, loaded, pause_snes_for_frame_sync}),
+  `else
     .dbg({header_finished, loaded, loading}),
+  `endif
+    .bist_mask(16'hFFFF),
+`endif
     .pause_snes_for_frame_sync(pause_snes_for_frame_sync),
     .dotclk(dotclk), .hblank(~hblankn),.vblank(~vblankn),.rgb5(rgb_out),
     .xs(x_out), .ys(y_out), 
