@@ -1182,6 +1182,22 @@ always @(posedge mclk) begin
     end
 end
 
+`ifdef TINYSNES_WRAM_TEST
+// Diagnostic build: WRAM self-test.  Declared before the controller instance so
+// the widths are stated rather than inferred from the port.
+wire [16:0] wram_bist_addr;
+wire  [7:0] wram_bist_din;
+wire [23:0] wram_bist_cpu_addr;
+wire  [1:0] wram_bist_ds;
+wire        wram_bist_we, wram_bist_req, wram_bist_ack;
+wire [15:0] wram_bist_mask;
+wire  [1:0] wram_bist_status;
+wire  [2:0] wram_bist_dbg = wram_bist_status == 2'd1 ? 3'b010 :   // done, all bits correct
+                            wram_bist_status == 2'd2 ? 3'b100 :   // done, mismatch
+                            wram_bist_status == 2'd3 ? 3'b110 :   // no acknowledge
+                                                      3'b001;   // running
+`endif
+
 `ifdef TINYSNES_READ_STABILITY
 // Diagnostic build: ROM read-stability test.  Declared before the controller
 // instance that connects them so the widths are stated rather than inferred.
@@ -1240,6 +1256,17 @@ sdram_snes sdram(
     .cpu_req_ack(rom_probe_ack),
     .cpu_we  ((loaded && ~rom_probe_done) ? 1'b0 : cpu_we),
     .cpu_ds  ((loaded && ~rom_probe_done) ? 2'b11 : cpu_ds),
+`elsif TINYSNES_WRAM_TEST
+    // Diagnostic build: wram_bist owns the CPU port; the machine's requests are
+    // left unconnected because no ROM is loaded and the SNES is never enabled.
+    // WRAM is addressed at {6'b111_111, WRAM_ADDR[16:0]} in SDRAM, which is the
+    // same mapping snestang_top uses for the machine's own WRAM accesses, so the
+    // test exercises the real path rather than a private one.
+    .cpu_addr(wram_bist_cpu_addr[22:1]), .cpu_din({wram_bist_din, wram_bist_din}),
+    .cpu_port(1'b1),
+    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1),
+    .cpu_req(wram_bist_req), .cpu_req_ack(wram_bist_ack),
+    .cpu_we(wram_bist_we), .cpu_ds(wram_bist_ds),
 `elsif TINYSNES_READ_STABILITY
     // Diagnostic build: the stability test owns the CPU port from `loaded` until
     // it is done, then hands it back to the machine.  The mux is on the same
@@ -1322,6 +1349,23 @@ sdram_bist bist (
     .addr(bist_addr), .din(bist_din), .we(bist_we), .req(bist_req), .ack(bist_ack),
     .dout(cpu_port0), .mask(bist_mask), .status(bist_status)
 );
+`endif
+
+`ifdef TINYSNES_WRAM_TEST
+// Diagnostic build: WRAM self-test through the controller's CPU port.
+// See fpga/snes/src/wram_bist.v.  The address and data wires are declared above
+// the controller instance, with the rest of this build's nets.
+wram_bist wram_bist (
+    .clk(mclk), .resetn(resetn), .ready(~sdram_busy),
+    .addr(wram_bist_addr), .din(wram_bist_din), .we(wram_bist_we),
+    .req(wram_bist_req), .ack(wram_bist_ack),
+    .dout(cpu_port1), .mask(wram_bist_mask), .status(wram_bist_status)
+);
+// The controller takes a 23-bit byte address; WRAM sits at {6'b111_111, addr}
+// in SDRAM and the lane select is {addr[0], ~addr[0]}, exactly as the machine's
+// own WRAM path does it.
+assign wram_bist_cpu_addr = {6'b111_111, wram_bist_addr};
+assign wram_bist_ds       = {wram_bist_addr[0], ~wram_bist_addr[0]};
 `endif
 
 `ifdef TINYSNES_READ_STABILITY
@@ -1580,6 +1624,9 @@ snes2hdmi s2h(
 `elsif TINYSNES_READ_STABILITY
     .dbg(stability_dbg),
     .bist_mask(stability_mism),
+`elsif TINYSNES_WRAM_TEST
+    .dbg(wram_bist_dbg),
+    .bist_mask(wram_bist_mask),
 `else
   `ifdef TINYSNES_DBG_MACHINE
     // Diagnostic build: why the machine is or is not running.  R = enable,

@@ -12,6 +12,7 @@
 #   tools/tests/probe_tb.sh link       # TINYSNES_LINK_PROBE only
 #   tools/tests/probe_tb.sh aram       # the ARAM self-test controller only
 #   tools/tests/probe_tb.sh stability  # the ROM read-stability test only
+#   tools/tests/probe_tb.sh wram       # the WRAM self-test controller only
 #   tools/tests/probe_tb.sh sram       # the SDRAM self-test controller only
 #
 # The benches need the sampler text itself, so each block is extracted from the
@@ -69,7 +70,8 @@ case "$which" in
            run_one TINYSNES_IPL_PROBE    ipl_probe_tb.sv   ipl_sampler
            run_one TINYSNES_LINK_PROBE   link_probe_tb.sv  link_sampler
            run_module aram_bist.v aram_bist_tb.sv aram_tb
-           run_module rom_stability.v rom_stability_tb.sv stability_tb ;;
+           run_module rom_stability.v rom_stability_tb.sv stability_tb
+           run_module wram_bist.v wram_bist_tb.sv wram_tb ;;
     fetch) run_one TINYSNES_FETCH_PROBE  fetch_probe_tb.sv fetch_sampler ;;
     cpu)   run_one TINYSNES_CPU_SAMPLER  cpu_probe_tb.sv   cpu_sampler ;;
     trace) run_one TINYSNES_TRACE_PROBE  trace_probe_tb.sv trace_sampler ;;
@@ -78,5 +80,6 @@ case "$which" in
     link)  run_one TINYSNES_LINK_PROBE   link_probe_tb.sv  link_sampler ;;
     aram)  run_module aram_bist.v aram_bist_tb.sv aram_tb ;;
     stability) run_module rom_stability.v rom_stability_tb.sv stability_tb ;;
-    *)     echo "usage: $0 [all|fetch|cpu|trace|apu|ipl|link|aram|stability]" >&2; exit 2 ;;
+    wram)  run_module wram_bist.v wram_bist_tb.sv wram_tb ;;
+    *)     echo "usage: $0 [all|fetch|cpu|trace|apu|ipl|link|aram|stability|wram]" >&2; exit 2 ;;
 esac

@@ -631,3 +631,38 @@ Decide whether the CPU is taking a BRK, an interrupt or neither, because the thr
 - User Test: NOT RUN
 
 ---
+
+## 20 COMMIT Unreleased 2026-10-31T16:14:55-07:00
+
+#### Coming From:
+
+Unreleased 42812b0
+
+#### Purpose:
+
+Test WRAM's byte lanes, because the upload routine depends on WRAM in three ways and every measured failure has the shape of one of them.
+
+#### Outcome:
+
+The instrument was changed from the vector latch that entry 19 proposed, and the reason is worth recording: reading the loaded image's own code at the upload call site showed that the 65816 writes a 24-bit data pointer to direct page $00-$02 at $8901-$890B, reads source data through it with `LDA [$00],Y` at $88CF, and pushes a return address with `JSR $8888` at $890E whose `RTS` is at $8900 -- and direct page and the stack both live in WRAM. A corrupted pointer copies wrong bytes into the SPC, which is the SPC-executing-garbage behaviour every boot shows; a corrupted return address makes `RTS` jump to garbage, which is the open-bus execution at $7C7F that three of five boots reached. That made WRAM a better instrument than the vector latch, and since a BRK reading $FFE6 is most likely a consequence of executing data rather than its cause, the substitution was put to the user and approved before any code was written. `fpga/snes/src/wram_bist.v` is a byte-lane-aware self-test in `aram_bist.v`'s shape, with a different byte in each lane of every word so a swapped pair fails on all 16 bits, four sets including one confined to $0000-$01FF where the direct page and stack actually live, and the mask drawn as 16 bars over a status band. It drives the controller's CPU port through the same `{6'b111_111, addr}` mapping and `{addr[0], ~addr[0]}` lane select that the machine's own WRAM path uses, so it exercises the real path rather than a private one. The bench is non-vacuous in the same way as the ARAM one: a correct model must pass with mask zero, a swapped-lane model must be caught on all 16 bits, a stuck-low bit must appear in both lanes as $0808, and a silent port must report no-acknowledge; all four behave as required and all nine benches pass. Seed 7 built clean with zero hold/min violations, passing the timing gate at fclk 164.258 against 64.516 MHz, hclk 146.671 against 74.250 and iosys.clk 32.604 against 21.505, giving `tinysnes.fs` SHA-256 `2c2d7017fd112144683e432fad01ff1b23d2290b48c5c17fd348e4b101882133`. Deployment was held on request until the user released it, and no core-log entry was written in the interim because `core-syntax.md` prohibits a work-in-progress entry. The readout is a clean negative: mask $0000 and a green status band in all 174 captured frames -- 172 with the band green and 2 transitional -- so every bit of both byte lanes read back what was written, at every test address including the direct-page and stack region. WRAM is therefore correct, and with it the last memory hypothesis dies. ROM was verified by the SDRAM self-test in entry 3, ARAM port 1 by entry 9, read stability by entry 17, and WRAM by this entry, so the memory the machine executes out of, the memory the 65816 keeps its pointer and stack in, and the memory the SPC loads its driver into have all now passed a byte-lane-aware write and read-back on hardware. That leaves exactly one class of explanation standing for four boots producing four different failure shapes: the sequencing between the two processors, and specifically the reset and enable path, which is the only thing that has differed across every boot measured in this session. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 19 were not rewritten, revised TCL-007 and TCL-008 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Measure the reset and enable sequencing directly, because every memory is now verified and the only thing left that varies between boots is when the two processors come out of reset relative to each other: latch, on one instrument, the moment `enable` rises relative to the SPC700 and note what the SPC700's program counter and Y are at that instant, since a Y that is already non-zero when the 65816 is first allowed to run proves the SPC was executing before the CPU started and that the two never begin together. The specific path to read first is not the probe but the RTL: `smp.v` takes `RST_N` and `ENABLE` separately, `SNES.v` derives `SMP_CE` and `SMP_EN` with the latter coming from `dsp.v` as `SUBSTEP == 3 ? ENABLE : 1'b0`, and `stability` aside, nothing this session has checked whether the SPC's reset is released on the same clock as the CPU's and whether the DSP's substep arbitration can hold the SPC off while the CPU is already running -- a two-file examination that costs no hardware cycle and should be done before another build. If the sequencing looks correct in the RTL, the next instrument is a sticky record of the first `enable` rising edge together with the SPC's PC and Y sampled at that exact moment, which distinguishes a SPC that started early from one that started late. Do not build another memory test: ROM, ARAM, read stability and WRAM have each now passed on hardware, and a fifth would add no information. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all thirteen diagnostic builds as the regression set and run `tools/tests/probe_tb.sh` -- nine benches -- after any sampler change, use `tools/sample_boot_states.py` for any comparison across boots, and hold a build for as long as the user asks rather than deploying on a previous approval.
+
+#### Files Modified:
+
+- fpga/snes/src/wram_bist.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/build_tinysnes.sh
+- tools/tests/probe_tb.sh
+- tools/tests/wram_bist_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
