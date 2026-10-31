@@ -472,3 +472,35 @@ Latch whether CPUI port 0 has ever held $CC, because the SPC700 is confirmed stu
 - User Test: NOT RUN
 
 ---
+
+## 15 COMMIT Unreleased 2026-10-31T13:12:36-07:00
+
+#### Coming From:
+
+Unreleased ea9432b
+
+#### Purpose:
+
+Learn whether the 65816 ever wrote the $CC the IPL waits for, which separates a SPC700 that refused the handshake from a CPU that never sent it.
+
+#### Outcome:
+
+`TINYSNES_LINK_PROBE` gained a fourth sticky bit, set when CPUI port 0 has ever held $CC, and it is the one bit of the four that needs no arming: `smp.v` clears CPUI to $00 and the test is for $CC, so the bit is clear at reset by construction and sets only on the real event. That justification is written into the probe beside the arming rationale for the other two, because the previous cycle's defect was an unexamined reset value. The bit is mutation-tested three ways before hardware -- reverting it to track its current value, making it set for any value, and removing its reset clear are each caught by a specific check, and the bench also proves it ignores the neighbouring value $CD and survives the SPC clearing CPUI port 0, which that processor can do by writing $F1. Seed 7 built clean with zero hold/min violations, passing the timing gate at fclk 261.438 against 64.516 MHz, hclk 149.477 against 74.250 and iosys.clk 33.536 against 21.505, giving `tinysnes.fs` SHA-256 `b2a34945162d7d79656a1fc1af850c7dfa7ba5be3e972da004c1c61ff319c150`; it was loaded one-wire and the bench's 1 MiB `zelda.smc` streamed at the core's UART. The readout, identical in all 170 decoded frames of 173 captured, sets every one of the four sticky bits and reads CPUO $00BB, CPUI $0000, the 65816's A $BBAA and its program counter at $8891 and $8894. So on this boot the 65816 did write $CC, the SPC700 did leave its IPL ROM, its Y did advance to $FF, and CPUO did change away from $AA -- and the CPU is now sitting in the first handshake of its upload routine at $8891, comparing $BBAA against a CPUO of $00BB and looping for ever. The SPC700 is meanwhile mid-copy: with Y at $FF and CPUI port 0 at $00 it fails the compare at $FFDA and spins through $FFE9, which is a running copy rather than a restart, since a restart would leave Y at $00. This boot is therefore materially deeper than the two before it, and that is the most important result of the cycle. It also corrects entry 14, which recorded that the ambiguity of entry 13 was resolved and that the SPC700 had never advanced: that statement was true of the single boot it was measured on and is false as a general one, and the correction belongs in the record rather than in a footnote. The machine's failure point varies between boots -- it is recorded as varying as far back as entry 2 -- and a sticky readout measures one boot, so a diagnosis built on one frame is a diagnosis of that boot. What survives across all three boots of entries 13 to 15 is narrower and more useful: whenever the CPU is at $8891 it is waiting for $BBAA in CPUO, and whenever the SPC is waiting it is waiting for CPUI port 0 to equal its Y, and the two only ever match if both machines are at the same stage. The deadlock on this boot is the first handshake rather than the transfer: the CPU wants CPUO to return to $AA, which only the IPL's own first publish at $FFC9 produces, while the SPC has long since moved past that line and is publishing Y values instead. Nothing in the IPL republishes $AA except a restart of that processor. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 14 were not rewritten, revised TCL-008 and TCL-013 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fifteen-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Measure whether the 65816 ever got past the first handshake and how many times it entered the routine, because the two boots now on record differ in exactly that and no current field distinguishes them: add a sticky bit for whether the 65816's program counter has ever been past $8894 -- set when the PC is seen in the range $8896 up to the routine's exit -- and a small counter of times the PC has been seen at $8888, the routine's entry. A CPU that has never been past $8894 with a SPC700 that has run a full copy means the transfer was driven by something other than this call and the argument passing at $88CC onwards is the suspect; a CPU that has been past $8894 and has entered the routine more than once means the routine completed and was re-entered, and the second entry's wait for a $BBAA that only an IPL restart can produce is the fault, which points at whatever calls $8888 a second time -- the code at $8905 is a `JSR $8888` followed by `CLI / RTS`, so the caller at $88CA and above is where to look. Take each readout with the boot it came from attached and do not carry a conclusion from one boot to the next without re-measuring it, since this cycle's result is the direct inverse of the previous cycle's on the same bitstream family. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all eleven diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` -- seven benches -- after any sampler change, and mutation-test each new sticky bit against its register's reset value and against tracking its current value.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/link_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

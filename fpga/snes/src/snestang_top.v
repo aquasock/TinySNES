@@ -584,14 +584,25 @@ assign dbg_dat_in = 8'h00;
 //   [47:32] 65816 A                    its compare operand at $88EC
 //   [63:48] 65816 PC                   where the CPU is, which dates the desync
 //   [71:64] SPC700 Y                   its index in the block-copy loop
-//   [79:72] five zeros above three sticky history bits:
+//   [79:72] four zeros above four sticky history bits:
+//             [75] CPUI port 0 has ever held $CC, the byte the IPL waits for
 //             [74] the SPC700's PC has been outside $FFC0-$FFFF since it was
 //                  first seen inside it
 //             [73] the SPC700's Y has ever been non-zero
 //             [72] CPUO port 0 has changed away from $AA since it was first
 //                  seen at $AA
 //
-// Two of the three bits have to be armed before they mean anything, and getting
+// The $CC bit answers the question this build exists for: the previous build
+// established that the SPC700 has never advanced, so either it was shown $CC and
+// did not take it, or the 65816 never sent it.  This bit distinguishes those two
+// and nothing else.
+//
+// Each bit is justified against its register's reset value, which is the check
+// that caught two broken bits in the previous build.  smp.v clears CPUI to $00
+// and this bit tests for $CC, so it cannot self-set at reset and needs no arming;
+// it sets only when the byte the IPL waits for actually appears.  Y likewise
+// needs none, its reset value $00 being the value that means "never advanced".
+// Two of the others do have to be armed before they mean anything, and getting
 // that wrong is a trap worth writing down.  CPUO and the SPC's PC do not reset to
 // the values the interesting question is phrased around: smp.v clears CPUO to
 // $00 and addrgen.v clears PC to $0000, so a bit testing "CPUO != $AA" or
@@ -645,6 +656,7 @@ reg [79:0] fp_bus = 80'd0;
 reg       st_cpuo = 1'b0;    // CPUO port 0 has changed away from $AA
 reg       st_y    = 1'b0;    // SPC700 Y has ever been non-zero
 reg       st_ipl  = 1'b0;    // SPC700 PC has left the IPL since entering it
+reg       st_cc   = 1'b0;    // CPUI port 0 has ever held $CC
 reg       arm_cpuo = 1'b0;   // CPUO has been seen at $AA
 reg       arm_ipl  = 1'b0;   // the SPC's PC has been seen inside the IPL
 
@@ -699,6 +711,7 @@ always @(posedge mclk) begin
         st_cpuo  <= 1'b0;
         st_y     <= 1'b0;
         st_ipl   <= 1'b0;
+        st_cc    <= 1'b0;
         arm_cpuo <= 1'b0;
         arm_ipl  <= 1'b0;
     end else begin
@@ -710,6 +723,9 @@ always @(posedge mclk) begin
             else if (arm_cpuo)        st_cpuo  <= 1'b1;
         end
         if (link_ph == 4'd9 && dbg_dat_out != 8'h00) st_y <= 1'b1;
+        // No arming: CPUI clears to $00 and this tests for $CC, so the bit is
+        // clear at reset by construction and sets only on the real event.
+        if (link_ph == 4'd2 && dbg_dat_out == 8'hCC) st_cc <= 1'b1;
         // PC < $FFC0 is the same test as "its high byte is not $FF", so one byte
         // is enough and the low byte is not needed for this bit.
         if (link_ph == 4'd10) begin
@@ -734,7 +750,7 @@ always @(posedge mclk) begin
     if (link_ph == 4'd10) begin
         link_wrap <= link_wrap + 19'd1;
         if (link_wrap == 19'd0)
-            fp_bus <= {5'd0, st_ipl, st_y, st_cpuo,
+            fp_bus <= {4'd0, st_cc, st_ipl, st_y, st_cpuo,
                        y_r, cpu_hi, cpu_lo, a_hi, a_lo, i1, i0, o1, o0};
     end
 end

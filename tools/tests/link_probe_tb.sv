@@ -16,8 +16,8 @@
 //   [39:32] 65816 A low  [47:40] 65816 A high
 //   [55:48] 65816 PC low  [63:56] 65816 PC high
 //   [71:64] SPC700 Y
-//   [72]    CPUO ever != $AA   [73] Y ever != 0   [74] SPC PC ever < $FFC0
-//   [79:75] zero
+//   [72] CPUO ever != $AA   [73] Y ever != 0   [74] SPC PC ever < $FFC0
+//   [75] CPUI ever == $CC   [79:76] zero
 //
 // Checked here:
 //   1. every field lands where the comment says, with values that cannot be
@@ -157,10 +157,11 @@ module tb;
         check(probe_bus[31:16], 16'h7A44, "field 2: CPUI 1 above CPUI 0");
         check(probe_bus[47:32], 16'h0144, "field 3: 65816 A");
         check(probe_bus[63:48], 16'h88EC, "field 4: 65816 PC");
-        // [79:64] = {5'd0, st_ipl, st_y, st_cpuo, y_r}.  o0 is $44, which is not
-        // the value st_cpuo is armed on, so that bit is still clear; spc_y is $45,
-        // so st_y is set; spc_pc is $FFDC, so st_ipl is armed but clear.
-        check(probe_bus[79:64], 16'h0245, "field 5: st_y set, st_ipl armed, st_cpuo unarmed");
+        // [79:64] = {4'd0, st_cc, st_ipl, st_y, st_cpuo, y_r}.  o0 is $44, which
+        // is not the value st_cpuo is armed on, so that bit is clear; spc_y is
+        // $45, so st_y is set; spc_pc is $FFDC, so st_ipl is armed but clear;
+        // i0 is $44, so st_cc is clear.
+        check(probe_bus[79:64], 16'h0245, "field 5: st_y set, st_ipl armed, others clear");
 
         // ---- sticky bits: arming, then history ---------------------------
         // The bit that tests "CPUO has changed away from $AA" must not fire
@@ -257,9 +258,53 @@ module tb;
         end else
             $display("ok   st_ipl survives the PC returning to the IPL");
 
-        // Restore the machine state the later checks assume, so this test does
-        // not leave the bench inspecting values it changed itself.
-        o0 = 8'h44; spc_y = 8'h45;
+        // ---- st_cc: the byte the IPL waits for ---------------------------
+        // No arming is needed because CPUI clears to $00 and this tests for $CC,
+        // so the property to prove is the simple one: it stays clear until $CC
+        // actually appears, sets on that single event, and survives the byte
+        // being cleared again -- which matters because the SPC can clear CPUI
+        // port 0 by writing $F1, and the answer must not be lost when it does.
+        i0 = 8'h00;
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[75] !== 1'b0) begin
+            $display("FAIL st_cc set at CPUI's reset value $00");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cc clear at CPUI's reset value");
+
+        i0 = 8'hCC;                          // the event this bit exists to catch
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[75] !== 1'b1) begin
+            $display("FAIL st_cc did not set when CPUI port 0 held $CC");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cc sets when CPUI port 0 holds $CC");
+
+        i0 = 8'h00;                          // the SPC may clear it again
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[75] !== 1'b1) begin
+            $display("FAIL st_cc cleared when CPUI port 0 was cleared -- it is history, not state");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cc survives CPUI port 0 being cleared");
+
+        // A value that merely looks close must not set it.
+        @(negedge mclk); resetn = 1'b0; repeat (4) @(posedge mclk); resetn = 1'b1;
+        i0 = 8'hCD;
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[75] !== 1'b0) begin
+            $display("FAIL st_cc set for CPUI port 0 of $CD, not $CC");
+            errors = errors + 1;
+        end else
+            $display("ok   st_cc ignores $CD");
+
+        // Restore the machine state the later checks assume, so these tests do
+        // not leave the bench inspecting values they changed themselves.
+        o0 = 8'h44; spc_y = 8'h45; i0 = 8'h44;
         repeat (30) @(posedge mclk);
 
         // ---- 2. the two directions are independent ----------------------
@@ -326,12 +371,13 @@ module tb;
         resetn = 1'b0;
         repeat (4) @(posedge mclk);
         #1;
-        if (dut.st_cpuo !== 1'b0 || dut.st_y !== 1'b0 || dut.st_ipl !== 1'b0) begin
-            $display("FAIL sticky bits not cleared by reset: cpuo=%b y=%b ipl=%b",
-                     dut.st_cpuo, dut.st_y, dut.st_ipl);
+        if (dut.st_cpuo !== 1'b0 || dut.st_y !== 1'b0 || dut.st_ipl !== 1'b0
+            || dut.st_cc !== 1'b0) begin
+            $display("FAIL sticky bits not cleared by reset: cpuo=%b y=%b ipl=%b cc=%b",
+                     dut.st_cpuo, dut.st_y, dut.st_ipl, dut.st_cc);
             errors = errors + 1;
         end else
-            $display("ok   reset clears all three sticky bits");
+            $display("ok   reset clears all four sticky bits");
 
         if (errors == 0) $display("PASS");
         else             $display("FAIL: %0d mismatches", errors);
