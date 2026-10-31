@@ -142,3 +142,37 @@ Find out whether the CPU executes at all, because the fetch path is now exonerat
 - User Test: PASS
 
 ---
+
+## 5 COMMIT Unreleased 2026-10-31T08:30:04-07:00
+
+#### Coming From:
+
+Unreleased 359aac1
+
+#### Purpose:
+
+Find out whether the CPU executes at all, since the fetch path was exonerated and the machine still does not run.
+
+#### Outcome:
+
+A second probe, `TINYSNES_CPU_PROBE`, drives the debug port the core already carries but nothing used: `DBG_SEL[0]` selects the CPU, `DBG_REG` 0x06 and 0x07 return `PC[7:0]` and `PC[15:8]` and 0x09 and 0x0A return SP, with `DBG_DAT_OUT` combinational in `DBG_REG` and `DBG_REG_WR` held low so nothing is written; no upstream file changed. It counts assertions of `ROMSEL` and samples PC every 2^22 mclk, and draws the counter's two halves, the last two PC samples and SP as the same five stripes the fetch probe uses, so both probes now share one display behind `TINYSNES_PROBE_BARS` in `snes2hdmi.v`. Simulation came first and earned it: `tools/tests/probe_tb.sh` extracts each sampler verbatim and runs both benches, and it caught two defects that would each have wasted a hardware cycle -- `always @(*)` driving a constant has no sensitivity, so `dbg_sel` and `dbg_reg_wr` never drove, and the PC byte registers were declared 16 bits wide, so `{pc_hi_r, pc_lo_r}` truncated and the PC would have read as its high byte alone. Seed 5 built with `TINYSNES_CPU_PROBE` in `build/cpu`, passing the timing gate at fclk 177.399 against 64.516 MHz, hclk 178.317 against 74.250 and iosys.clk 31.997 against 21.505, with no hold violations, giving `tinysnes.fs` SHA-256 `b4622093be35e46080877944da9e17442c0b79090bd85ac5a27e0cebbbc6c32c` and `tinysnes.bin` SHA-256 `6d5b5979aeb5ac924eae6917c0e9705aac37219214b7989bd900168a60700075`; the other four diagnostic builds were re-elaborated against the restructured display and all still build. Deployment was one-wire this cycle: `openFPGALoader -b tangconsole` from the oss-cad-suite copy, because the system copy at v0.13.1 has no such board, then the card's `zelda.smc` streamed at the core's UART on `/dev/ttyUSB1` by `tools/load_snes_rom.py --uart`. One black screen was investigated and dismissed as the bench's capture card, not the design: the routed netlist places `div5` at X181Y81, the three PLLs at X177Y27, X177Y81, X178Y45 and the three OSER10s at X181Y57, X181Y100 and X181Y102 in both the working build and this one. The user's video readout, decoded from five frames spanning its 12.9 s, is a frozen ROM access count of 42628 on both halves of the counter, a PC moving only through 0x7C7C, 0x7C7D, 0x7C7E and 0x7C7F, SP at 0x0101, and a white status band. The CPU therefore executes -- about 12 ms of ROM fetches -- and then stops touching the ROM entirely while cycling through four consecutive addresses, which is the footprint of a jump to itself executing where no ROM is mapped, `$00:7C7C` being outside the LoROM window; SP 254 bytes below its reset value agrees that the stack ran away before that point. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 4 were not rewritten, revised TCL-008 and BRD-003 in place and added EXT-004, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the five-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find the address where execution left the ROM, because the CPU runs and then jumps into unmapped space and the last fetched address names the instruction that did it: shift the last four `ROM_ADDR` values into a ring on each `ROMSEL` assertion and draw them as three 16-bit stripes plus `ROM_ADDR[23:8]` for the newest and the access counter, then disassemble `zelda.smc` at that offset, which is already on the bench at `/tmp/zelda.smc`. A last address inside valid boot code whose following jump target looks sane points at a corrupted read, and the SDRAM refresh racing the CPU port is the first explanation to test, since the port answers four master clocks into a six-clock window and a refresh that steals it would return stale data; a last address that is already wrong, or an opcode that no compiler would emit, points at the fetch path or the mapper instead. Keep all five diagnostic builds as the regression set with their recorded readouts and re-run `tools/tests/probe_tb.sh` after any change to a sampler.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/probe_tb.sh
+- tools/tests/cpu_probe_tb.sv
+- tools/tests/fetch_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

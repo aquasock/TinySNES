@@ -81,6 +81,7 @@ rules:
 | How does TangCore load a SNES ROM? | EXT | EXT-003 |
 | Why does the machine show a static tile grid after a ROM loads? | TCL | TCL-007, TCL-008 |
 | Which diagnostic build shows what, and what should it read? | TCL | TCL-008 |
+| How do I read a CPU register from the bench without changing upstream? | EXT | EXT-004 |
 | Why did an ODDR SDRAM clock kill the picture? | TCL | TCL-009 |
 | How long does a CPU-port ROM read take, and when does the CPU latch it? | TCL | TCL-010 |
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
@@ -99,6 +100,7 @@ TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported cons
 TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch path
 TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route · TCL-010 read latency and the CPU's latch
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
+EXT-004 the SCPU debug port as a bench instrument
 
 ---
 
@@ -285,6 +287,20 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 
     - "SNESTang commit 5f0ef19, src/iosys/iosys_bl616.v: the command list and the 0xAA frame format"
   verification: "Read from the upstream firmware and cross-checked against the core's own RTL this session; the header-parse and release half was then confirmed on hardware by the debug border. Revised 2026-10-30 (core-log entry 3): the image half is confirmed too -- the loader's write count reaches 524288 words for a 1 MiB image, and the image's first word is found at SDRAM word 0 with no displacement at 16, 32, 64, 128, 256, 512 or 1024 bytes."
 
+- record_id: EXT-004
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "SNESTang's SCPU carries a debug port that reads CPU registers, and this tree leaves it undriven"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "SNES.v muxes DBG_DAT_OUT on DBG_SEL: bit 0 selects the SCPU's debug data, bits 1 to 6 select the SMP, WRAM, SPC700, PPU and DSP debug paths, and each chip's write strobe is its DBG_SEL bit ANDed with DBG_REG_WR.  Inside P65C816.v an `always @*` case on DBG_REG publishes A, X, Y, PC, P, SP, D, PBR, DBR and more: 0x06 is PC[7:0], 0x07 is PC[15:8], 0x09 is SP[7:0] and 0x0A is SP[15:8], so the value is combinational in DBG_REG and needs no clock to read.  In this tree main.v exposes DBG_SEL, DBG_REG, DBG_REG_WR, DBG_DAT_IN and DBG_DAT_OUT all the way to snestang_top, where nothing drove them until the CPU probe did."
+  consequence: "The CPU can be observed from the top level with no change to any upstream file: hold DBG_REG_WR low, drive DBG_SEL to 8'h01, and DBG_DAT_OUT answers the selected register.  Because DBG_DAT_OUT is combinational, PC is read as two separate bytes and a sample can tear if the CPU crosses a byte boundary between the two reads, so a probe must not treat one sample as an exact instantaneous PC.  Reading through this port has no side effect: every write path through it is gated by DBG_REG_WR."
+  sources:
+    - "SNESTang commit 5f0ef19, src/SNES.v (DBG_SEL decode, CPU_DBG_WR and the DBG_DAT_OUT mux)"
+    - "SNESTang commit 5f0ef19, src/65C816/P65C816.v: the debug case at DBG_REG 0x00-0x15"
+    - "This repository, fpga/snes/src/main.v and fpga/snes/src/snestang_top.v: the pass-through ports and the TINYSNES_CPU_PROBE block"
+  verification: "Read from the upstream RTL and confirmed on the board on 2026-10-31 (core-log entry 5): SP read 0x0101 on a crashed machine, which is a plausible heavily-pushed stack rather than a dead bus, and PC moved only through the four addresses of a jump-to-self loop."
+
 - record_id: TCL-007
   kind: TOOLCHAIN
   topic_id: TCL
@@ -303,15 +319,16 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 
 - record_id: TCL-008
   kind: TOOLCHAIN
   topic_id: TCL
-  title: "Four diagnostic builds behind TINYSNES_* defines, each with a known-good readout"
+  title: "Five diagnostic builds behind TINYSNES_* defines, each with a known-good readout"
   status: VERIFIED
-  verified_date: 2026-10-30
-  statement: "Each diagnostic is selected with TINYSNES_DEFINES and drawn by snes2hdmi, so the result is read off the screen with no logic analyser and no loader changes.  TINYSNES_SDRAM_TEST runs sdram_bist.v before the machine starts: 16 gapped bars, one per DQ bit, red where a bit mismatched, plus a status band (green pass, red mismatch, blue running, yellow no acknowledge).  TINYSNES_LOAD_COUNT shows eight gated thresholds on the count of the loader's own SDRAM write issues, >=1 up to >=500000 words, and all eight green means a full 1 MiB image was issued.  TINYSNES_ROM_CHECK runs rom_probe.v after loaded and searches eight candidate word addresses for a named image word, green where found in either byte order.  TINYSNES_FETCH_PROBE samples the CPU's first ROM access three times and draws five stripes: ROM_Q at the first assertion of ROMSEL, then two and four mclk later, then ROM_ADDR[15:0] and ROM_ADDR[23:8] for that access, 16 bars per stripe with bit 0 on the left and green for 1, plus a status band in rows 192-223 carrying fetch_seen, loaded and enable."
-  consequence: "Use these to bisect the machine rather than adding new probes: memory, loader and fetch each have an instrument with a recorded expected readout.  The letterbox border doubles as a three-bit state display under TINYSNES_DBG_BORDER, and its bit assignment changes between builds, so always read the comment at the snes2hdmi instantiation before decoding a colour."
+  verified_date: 2026-10-31
+  statement: "Each diagnostic is selected with TINYSNES_DEFINES and drawn by snes2hdmi, so the result is read off the screen with no logic analyser and no loader changes.  TINYSNES_SDRAM_TEST runs sdram_bist.v before the machine starts: 16 gapped bars, one per DQ bit, red where a bit mismatched, plus a status band (green pass, red mismatch, blue running, yellow no acknowledge).  TINYSNES_LOAD_COUNT shows eight gated thresholds on the count of the loader's own SDRAM write issues, >=1 up to >=500000 words, and all eight green means a full 1 MiB image was issued.  TINYSNES_ROM_CHECK runs rom_probe.v after loaded and searches eight candidate word addresses for a named image word, green where found in either byte order.  TINYSNES_FETCH_PROBE and TINYSNES_CPU_PROBE share one display behind TINYSNES_PROBE_BARS: five stripes of 16 bars, bit 0 on the left and green for 1, 24 rows tall with an 8-row gap, plus a status band in rows 192-223.  The fetch probe's stripes are ROM_Q at the first assertion of ROMSEL and two and four mclk later plus ROM_ADDR[15:0] and ROM_ADDR[23:8] for that access; the CPU probe's are the ROM access counter's two halves, then PC at the most recent sample, PC one sample earlier and SP."
+  consequence: "Use these to bisect the machine rather than adding new probes: memory, loader, fetch and CPU state each have an instrument with a recorded expected readout.  The letterbox border doubles as a three-bit state display under TINYSNES_DBG_BORDER, and its bit assignment changes between builds, so always read the comment at the snes2hdmi instantiation before decoding a colour.  A probe's own correctness is not self-evident and has been wrong more often than the machine: simulate the sampler with tools/tests/probe_tb.sh, which extracts the block verbatim from snestang_top.v, before reading anything into a readout."
   sources:
-    - "This repository, fpga/snes/src/sdram_bist.v, fpga/snes/src/rom_probe.v, fpga/snes/src/snes2hdmi.v (the ifdef'd rgb branches), fpga/snes/src/snestang_top.v (the ifdef'd CPU-port mux, write counter and fetch latch)"
+    - "This repository, fpga/snes/src/sdram_bist.v, fpga/snes/src/rom_probe.v, fpga/snes/src/snes2hdmi.v (the ifdef'd rgb branches), fpga/snes/src/snestang_top.v (the ifdef'd CPU-port mux, write counter, fetch sampler and CPU sampler)"
     - "tools/build_tinysnes.sh: TINYSNES_DEFINES, and tools/rom_probe_expect.py for the expectations"
-  verification: "Each build was run on the board on 2026-10-30 and its readout recorded in core-log entry 3.  Two instrument defects were found and fixed during that work and are worth remembering: a probe that owned the CPU port from reset disconnected the loader's writes, and expectations passed as -DTINYSNES_EXP* never reached the module's EXP parameters, so every comparison ran against zero.  Revised 2026-10-31 (core-log entry 4): TINYSNES_FETCH_PROBE now samples the access three times instead of once and also carries the mapper's address, because the single sample at the first ROMSEL assertion could never see data and its all-zero readout was read as a machine fault for a cycle; tools/tests/fetch_probe_tb.sh simulates the sampler by extracting it verbatim from snestang_top.v."
+    - "tools/tests/probe_tb.sh, tools/tests/fetch_probe_tb.sv, tools/tests/cpu_probe_tb.sv"
+  verification: "Each build was run on the board on 2026-10-30 and its readout recorded in core-log entry 3.  Two instrument defects were found and fixed during that work and are worth remembering: a probe that owned the CPU port from reset disconnected the loader's writes, and expectations passed as -DTINYSNES_EXP* never reached the module's EXP parameters, so every comparison ran against zero.  Revised 2026-10-31 (core-log entry 4): TINYSNES_FETCH_PROBE now samples the access three times instead of once and also carries the mapper's address, because the single sample at the first ROMSEL assertion could never see data and its all-zero readout was read as a machine fault for a cycle.  Revised 2026-10-31 (core-log entry 5): TINYSNES_CPU_PROBE was added and both probes were put behind one display, and its bench caught two defects of its own before hardware -- a constant on the right of always @(*) never drives, and 16-bit registers holding one byte truncated the assembled PC to its high byte."
 
 - record_id: TCL-009
   kind: TOOLCHAIN
@@ -346,12 +363,13 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 
   title: "Core bring-up: one-wire loads over the FT2232 with openFPGALoader, two-wire over tangload, and the console may drop after a load"
   status: VERIFIED
   verified_date: 2026-10-30
-  statement: "With the board cold-started on the OTG cable alone, the host enumerates the SIPEED FT2232 (0403:6010) with /dev/ttyUSB0 and /dev/ttyUSB1, and openFPGALoader -b tangconsole writes a .fs into SRAM, reporting 'Load SRAM ... Done'. With the board on its power input it enumerates the TinyTang CDC (ffff:5454) as /dev/ttyACM0, tangload loads a .bin from the card, and the core answers 'fpga: core N answering on UART1 at 2000000 baud'. After a tangload the console was seen several times to report readiness but return no data until the port was reopened or the board power-cycled."
-  consequence: "One-wire is the faster loop for video work (no card copy, no firmware in the way) and it also lets the host drive the core's UART directly at /dev/ttyUSB1, 2000000 baud 8N1, which is how the ROM and OSD frames were sent without the firmware. Two-wire is needed only for the card and the shell. Treat a dead console after tangload as expected noise and reopen the port before concluding anything."
+  statement: "With the board cold-started on the OTG cable alone, the host enumerates the SIPEED FT2232 (0403:6010) with /dev/ttyUSB0 and /dev/ttyUSB1, and openFPGALoader -b tangconsole writes a .fs into SRAM, reporting 'Load SRAM ... Done'.  The bitstream can then be loaded with tools/load_snes_rom.py --uart /dev/ttyUSB1, which talks the frame protocol straight at the core.  With the board on its power input it enumerates the TinyTang CDC (ffff:5454) as /dev/ttyACM0, tangload loads a .bin from the card, and the core answers 'fpga: core N answering on UART1 at 2000000 baud'.  After a tangload the console was seen several times to report readiness but return no data until the port was reopened or the board power-cycled.  The tangconsole board definition exists in openFPGALoader v1.1.1, which is the copy shipped in oss-cad-suite, and not in the version packaged as /usr/bin/openFPGALoader v0.13.1, which answers 'cannot find board tangconsole'."
+  consequence: "One-wire is the faster loop for video work (no card copy, no firmware in the way) and it also lets the host drive the core's UART directly at /dev/ttyUSB1, 2000000 baud 8N1, which is how the ROM and OSD frames were sent without the firmware.  Two-wire is needed only for the card and the shell.  Use the oss-cad-suite copy of openFPGALoader for one-wire, and treat a dead console after tangload as expected noise: reopen the port before concluding anything."
   sources:
-    - "Observed on this bench on 2026-10-30: lsusb, /dev/serial/by-id, openFPGALoader -b tangconsole, tangload output, fpga output"
+    - "Observed on this bench on 2026-10-30 and again on 2026-10-31: lsusb, /dev/serial/by-id, openFPGALoader -b tangconsole, tangload output, fpga output"
+    - "openFPGALoader --Version and --list-boards for both installed copies"
     - "TinyTang .ai/core-reference.md BRD-006 and USB-009 for the mode selection, and this project's core-log entry 2 for the observed drops"
-  verification: "Both paths exercised repeatedly this session; the FT2232 enumeration, the openFPGALoader load and the tangload load each reported success, and the console drops were seen three times after tangload and cleared by a power cycle."
+  verification: "Both paths exercised repeatedly; the FT2232 enumeration, the openFPGALoader load and the tangload load each reported success, and the console drops were seen three times after tangload and cleared by a power cycle.  Revised 2026-10-31 (core-log entry 5): one-wire was used for a whole cycle for the first time, the oss-cad-suite copy of openFPGALoader was required because the system copy has no tangconsole board, and the ROM was streamed at the core's own UART rather than through the console."
 
 - record_id: BRD-004
   kind: BOARD

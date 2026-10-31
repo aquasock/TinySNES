@@ -14,7 +14,7 @@ module fp_dut (
     output [79:0] fp_bus_o,
     output        fetch_seen_o
 );
-`include "sampler.v"
+`include "fetch_sampler.v"
     assign fp_bus_o     = fp_bus;
     assign fetch_seen_o = fetch_seen;
 endmodule

@@ -3,6 +3,18 @@
 
 `timescale 1ns / 1ps
 
+// The probe builds share one display: five stripes of 16 bars plus a status
+// band.  Which fields the stripes carry belongs to snestang_top, which is where
+// the two probes differ, so this file only needs to know that a probe is
+// selected.  Defined here rather than with the other diagnostics because the
+// port list above depends on it.
+`ifdef TINYSNES_FETCH_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
+`ifdef TINYSNES_CPU_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
+
 module snes2hdmi (
 	input clk,      // snes clock
 	input resetn,
@@ -46,17 +58,16 @@ module snes2hdmi (
     // tied off) in every other build.
     input [15:0] bist_mask,
 
-`ifdef TINYSNES_FETCH_PROBE
-    // TinySNES diagnostic: five time-ordered 16-bit fields from the CPU's first
-    // ROM access after enable, drawn as one stripe each in the
-    // TINYSNES_FETCH_PROBE build.  Present only under that define so the shipped
-    // core carries no extra port.  Field order matches snestang_top's comment:
-    //   [15:0]  ROM_Q on the first assertion of ROMSEL
-    //   [31:16] ROM_Q two mclk later
-    //   [47:32] ROM_Q four mclk later
-    //   [63:48] ROM_ADDR[15:0] for that access
-    //   [79:64] ROM_ADDR[23:8] for that access
-    input [79:0] fp_bus,
+`ifdef TINYSNES_PROBE_BARS
+    // TinySNES diagnostic: five 16-bit fields of machine state, drawn as one
+    // stripe each.  Present only under a probe define so the shipped core
+    // carries no extra port.  The field order is set by the probe in
+    // snestang_top.v and repeated in its comment:
+    //   TINYSNES_FETCH_PROBE: ROM_Q at the first ROMSEL assertion, at +2 mclk,
+    //     at +4 mclk, then ROM_ADDR[15:0] and ROM_ADDR[23:8] for that access
+    //   TINYSNES_CPU_PROBE:   ROM access counter low and high halves, then PC at
+    //     the most recent sample, PC one sample earlier, and SP
+    input [79:0] probe_bus,
 `endif
 
     // output [7:0] led,
@@ -291,7 +302,7 @@ module snes2hdmi (
 
     end
 
-`ifdef TINYSNES_FETCH_PROBE
+`ifdef TINYSNES_PROBE_BARS
     // Pick the stripe this row belongs to.  yy[7:5] selects a 32-row block and
     // the bottom 8 rows of each block are the gap, so every stripe is 24 rows
     // of bars.  Five blocks are used; block 5 is left black and block 6 is the
@@ -299,11 +310,11 @@ module snes2hdmi (
     reg [15:0] fp_stripe;
     always @(*) begin
         case (yy[7:5])
-            3'd0: fp_stripe = fp_bus[15:0];
-            3'd1: fp_stripe = fp_bus[31:16];
-            3'd2: fp_stripe = fp_bus[47:32];
-            3'd3: fp_stripe = fp_bus[63:48];
-            3'd4: fp_stripe = fp_bus[79:64];
+            3'd0: fp_stripe = probe_bus[15:0];
+            3'd1: fp_stripe = probe_bus[31:16];
+            3'd2: fp_stripe = probe_bus[47:32];
+            3'd3: fp_stripe = probe_bus[63:48];
+            3'd4: fp_stripe = probe_bus[79:64];
             default: fp_stripe = 16'd0;
         endcase
     end
@@ -339,16 +350,19 @@ module snes2hdmi (
                 rgb <= 24'h000000;
             else
                 rgb <= bist_mask[xx[7:4]] ? 24'hC00000 : 24'h00C000;
-`elsif TINYSNES_FETCH_PROBE
+`elsif TINYSNES_PROBE_BARS
             // Diagnostic build: five stripes of 16 bars, left to right = bit
             // 0..15, green = 1 and red = 0, 16 pixels per bar with a 2-pixel
-            // gap.  The stripe's height identifies the field: the top three are
-            // ROM_Q at the first ROMSEL assertion and two and four mclk later,
-            // so three identical red stripes mean the sample is stale at every
-            // point, while red, red, correct means the data simply arrives late
-            // relative to the old sample point; the last two stripes are the
-            // mapper's ROM_ADDR halves for the same access.  The band in rows
-            // 192-223 is R = fetch_seen, G = loaded, B = enable.
+            // gap.  What each stripe is belongs to the probe build: under
+            // TINYSNES_FETCH_PROBE the top three are ROM_Q at the first ROMSEL
+            // assertion and two and four mclk later, so three identical red
+            // stripes mean the sample is stale at every point while red, red,
+            // correct means the data only arrives late; the last two are the
+            // mapper's ROM_ADDR halves.  Under TINYSNES_CPU_PROBE they are the
+            // ROM access counter and the CPU's program counter, so a counter
+            // that stands still and a PC that does not move mean the CPU is not
+            // executing.  The band in rows 192-223 is R = fetch_seen (fetch
+            // probe) or pc_changed (CPU probe), G = loaded, B = enable.
             if (yy[7:5] == 3'd6)                        // status band
                 rgb <= {dbg[2] ? 8'hC0 : 8'h00, dbg[1] ? 8'hC0 : 8'h00, dbg[0] ? 8'hC0 : 8'h00};
             else if (yy[7:5] > 3'd4 || yy[4:3] == 2'b11 || xx[3:0] > 4'd13)

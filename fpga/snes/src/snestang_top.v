@@ -343,6 +343,76 @@ always @(posedge mclk) begin
 end
 `endif
 
+`ifdef TINYSNES_CPU_PROBE
+// Diagnostic build: ask the CPU where it is.  The core already carries a debug
+// port that nothing drives: DBG_SEL[0] selects the CPU, DBG_REG picks a
+// register and 0x06/0x07 return PC[7:0] and PC[15:8], 0x09/0x0A return SP, and
+// DBG_DAT_OUT is combinational from DBG_REG.  Driving it from here needs no
+// change to any upstream file, and DBG_REG_WR stays low so nothing is written.
+//
+// probe_bus fields, low to high:
+//   [15:0]  ROM accesses since reset, low half of the count
+//   [31:16] the same counter's high half, so the count reads unambiguously
+//   [47:32] PC at the most recent sample
+//   [63:48] PC one sample earlier
+//   [79:64] SP, which is 0x01FF out of reset, so a plausible value proves the
+//           debug port is answering and an all-zero PC means zero PC
+// A counter that stands still with a PC that does not move means the CPU is not
+// executing; a counter that races puts the fault past the CPU.
+//
+// PC is read as two bytes one mclk apart, so a sample can tear across a byte
+// boundary if the CPU crosses one between the two reads.  Tearing only ever
+// makes a sample wrong, never makes a stuck CPU look alive: the counter and the
+// disagreement between the two samples are what the reading rests on.
+reg  [1:0]  dbg_ph = 2'd0;              // 0 = PC low, 1 = PC high, 2/3 = SP
+reg  [7:0]  pc_lo_r = 8'd0, pc_hi_r = 8'd0;   // bytes, as DBG_REG returns them
+reg [15:0]  sp_r = 16'd0;
+reg [15:0]  pc_s0 = 16'd0, pc_s1 = 16'd0;
+reg [31:0]  rom_acc = 32'd0;
+reg         rom_ce_d = 1'b1;
+reg [21:0]  pc_tick = 22'd0;
+reg [79:0]  fp_bus = 80'd0;
+wire [15:0] pc_now = {pc_hi_r, pc_lo_r};
+wire        pc_changed = (pc_s0 != pc_s1);
+
+always @(*) dbg_reg = (dbg_ph == 2'd0) ? 8'h06 : // PC[7:0]
+                      (dbg_ph == 2'd1) ? 8'h07 : // PC[15:8]
+                      (dbg_ph == 2'd2) ? 8'h09 : // SP[7:0]
+                                         8'h0A;   // SP[15:8]
+
+always @(posedge mclk) begin
+    // Driven from a clocked block, not from always @(*): a constant on the right
+    // of a combinational always has no sensitivity and never drives, so the
+    // port would read as undriven in simulation and depend on constant folding
+    // in synthesis.
+    dbg_sel    <= 8'b0000_0001;
+    dbg_reg_wr <= 1'b0;
+    dbg_ph     <= dbg_ph + 2'd1;
+    case (dbg_ph)
+    2'd0: pc_lo_r      <= dbg_dat_out;
+    2'd1: pc_hi_r      <= dbg_dat_out;
+    2'd2: sp_r[7:0]    <= dbg_dat_out;
+    2'd3: sp_r[15:8]   <= dbg_dat_out;
+    endcase
+
+    // One count per assertion of ROMSEL, which is one CPU access to the ROM.
+    rom_ce_d <= ~ROM_CE_N;
+    if (~ROM_CE_N && rom_ce_d)
+        rom_acc <= rom_acc + 32'd1;
+
+    // Two PC samples 2^22 mclk apart, about 0.2 s at 21.5 MHz.
+    pc_tick <= pc_tick + 22'd1;
+    if (pc_tick == 22'h3F_FFFF) begin
+        pc_s1 <= pc_s0;
+        pc_s0 <= pc_now;
+    end
+
+    fp_bus <= {sp_r, pc_s1, pc_s0, rom_acc[31:16], rom_acc[15:0]};
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 wire sysclkf_ce, sysclkr_ce;
 wire overlay;
 
@@ -769,13 +839,18 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_FETCH_PROBE
-    // Diagnostic build: R = fetch_seen, G = loaded, B = enable; fp_bus carries
-    // the five time-ordered fields of the first ROM access and the mask port
-    // keeps the old meaning of its own name.
+`ifdef TINYSNES_CPU_PROBE
+    // Diagnostic build: R = pc_changed, G = loaded, B = enable; probe_bus
+    // carries the ROM access count, two PC samples and SP.
+    .dbg({pc_changed, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_FETCH_PROBE
+    // Diagnostic build: R = fetch_seen, G = loaded, B = enable; probe_bus
+    // carries the five time-ordered fields of the first ROM access.
     .dbg({fetch_seen, loaded, enable}),
     .bist_mask(fp_bus[15:0]),
-    .fp_bus(fp_bus),
+    .probe_bus(fp_bus),
 `elsif TINYSNES_LOAD_COUNT
     // Diagnostic build: R = header_finished, G = loaded, B = enable, and the
     // mask port carries the loader write-count thresholds.
