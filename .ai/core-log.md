@@ -211,3 +211,33 @@ Prove whether the SPC700 can see the port at all, because the two banks now say 
 - User Test: PASS
 
 ---
+
+## 7 COMMIT Unreleased 2026-10-31T10:11:11-07:00
+
+#### Coming From:
+
+Unreleased f8e70a8
+
+#### Purpose:
+
+Record the project state in a form the next agent can take over from without rebuilding this session's context.
+
+#### Outcome:
+
+The project stands with a working machine that runs to the APU boot handshake and deadlocks there, and with the fault narrowed to one link between two processors rather than to the CPU, the ROM path or the video path. What is proven on hardware: the ROM loads and its header parses; the SDRAM CPU port passes a 36-pair write/read self-test; the mapper produces the LoROM address 0x7FFC for the reset vector; the ROM returns 0x8000 at the CPU's port four master clocks into a slow access the CPU latches at seven; the 65816 executes, with PC moving and its status byte showing RDY_IN high; the SPC700 executes, with its PC moving inside its IPL ROM at 0xFFCD-0xFFDD; the APU port echo $AA/$BB was published once, CPUO still reading 0xBBAA; and the 65816 then writes 0x80 into CPUI[0] and waits for an echo that never arrives, sitting in CMP $2140 / BNE at $8891. What is not proven, and is the live suspect: ARAM, which is the CPU port's second bank, a write/read on which has never been tested since its sample moved from cycle[1] to cycle[2]. Bench practice that this session established and that the next agent should keep: every sampler is extracted verbatim from the shipping source by tools/tests/probe_tb.sh and simulated before hardware, because this session found six instrument defects and each one had already produced a confident and wrong reading -- a probe owning the CPU port from reset, expectations that never reached their parameters, a constant on the right of always @(*) that therefore never drove, 16-bit registers holding one byte that truncated the PC to its high byte, an edge detector that stored the inverted level and so counted every clock rather than every access, and a probe reading CPUI while claiming to read the SPC700's answer, which lives in CPUO. Operational facts worth not rediscovering: the build is tools/build_tinysnes.sh with TINYSNES_SEED, TINYSNES_DEFINES and TINYSNES_BUILD_DIR, hold violations are fatal unless TINYSNES_ALLOW_HOLD=1 and any build used for a measurement must use a seed that routes clean, and which seeds are clean changes with the netlist, so a seed that worked for one probe can fail for the next and a sweep is normal; one-wire deployment is openFPGALoader -b tangconsole from the oss-cad-suite copy, because the system copy at v0.13.1 has no such board, followed by tools/load_snes_rom.py --uart /dev/ttyUSB1, with the ROM at /tmp/zelda.smc (1 MiB LoROM, SHA-256 75267ac610cba5ab0b4a4516a669fa43879552c15677dc6c6ca9e9c35b9dd1ac) or on the card at /root/media/snes/zelda.smc; the picture can be read directly from the bench's capture card at /dev/video0 with ffmpeg, and the first grab after a load is often black because the card has not locked yet, so capture a couple of seconds and decode frames rather than trusting one image. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 6 were not rewritten, made no change to core-reference.md this cycle, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seven-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Resume with the SPC700's view of the port, because everything else is downstream of it: extend TINYSNES_APU_PROBE to read the SPC700's A and Y through DBG_SEL[3] in the same frame as CPUI[0] and CPUO[0], and a Y of 0x00 beside a CPUI[0] of 0x80 means the SPC's read of $00F4 is not returning the byte, which puts the fault in the SPC700_D_IN path in smp.v and means neither processor is at fault. If the SPC does see the byte, the fault is ARAM: write the port-1 self-test in the shape of sdram_bist.v, driving the aram port with walking-one and walking-zero patterns and comparing reads, and gate it on the IPL completing its upload rather than on the bar readout alone. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock while that question is open; the ODDR on fclk must not come back, because it costs the HDMI pixel clock its route. Keep all eight diagnostic builds as the regression set, re-run tools/tests/probe_tb.sh after any sampler change, and remember that the machine's failure point varies between boots, so a boot that reaches the sound upload and a boot that halts with PC 0 are the same fault seen at different depths rather than two faults.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
