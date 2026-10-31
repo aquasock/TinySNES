@@ -46,6 +46,19 @@ module snes2hdmi (
     // tied off) in every other build.
     input [15:0] bist_mask,
 
+`ifdef TINYSNES_FETCH_PROBE
+    // TinySNES diagnostic: five time-ordered 16-bit fields from the CPU's first
+    // ROM access after enable, drawn as one stripe each in the
+    // TINYSNES_FETCH_PROBE build.  Present only under that define so the shipped
+    // core carries no extra port.  Field order matches snestang_top's comment:
+    //   [15:0]  ROM_Q on the first assertion of ROMSEL
+    //   [31:16] ROM_Q two mclk later
+    //   [47:32] ROM_Q four mclk later
+    //   [63:48] ROM_ADDR[15:0] for that access
+    //   [79:64] ROM_ADDR[23:8] for that access
+    input [79:0] fp_bus,
+`endif
+
     // output [7:0] led,
 
 	// output signals
@@ -278,6 +291,24 @@ module snes2hdmi (
 
     end
 
+`ifdef TINYSNES_FETCH_PROBE
+    // Pick the stripe this row belongs to.  yy[7:5] selects a 32-row block and
+    // the bottom 8 rows of each block are the gap, so every stripe is 24 rows
+    // of bars.  Five blocks are used; block 5 is left black and block 6 is the
+    // status band.
+    reg [15:0] fp_stripe;
+    always @(*) begin
+        case (yy[7:5])
+            3'd0: fp_stripe = fp_bus[15:0];
+            3'd1: fp_stripe = fp_bus[31:16];
+            3'd2: fp_stripe = fp_bus[47:32];
+            3'd3: fp_stripe = fp_bus[63:48];
+            3'd4: fp_stripe = fp_bus[79:64];
+            default: fp_stripe = 16'd0;
+        endcase
+    end
+`endif
+
     // calc rgb value to hdmi
     always @(posedge clk_pixel) begin
         if (active) begin
@@ -309,10 +340,21 @@ module snes2hdmi (
             else
                 rgb <= bist_mask[xx[7:4]] ? 24'hC00000 : 24'h00C000;
 `elsif TINYSNES_FETCH_PROBE
-            // Diagnostic build: one bar per bit of the CPU's first ROM fetch,
-            // 16 pixels each, left to right = bit 0..15.  Green = 1, red = 0.
-            rgb <= (xx[3:0] > 4'd13) ? 24'h000000
-                                     : (bist_mask[xx[7:4]] ? 24'h00C000 : 24'hC00000);
+            // Diagnostic build: five stripes of 16 bars, left to right = bit
+            // 0..15, green = 1 and red = 0, 16 pixels per bar with a 2-pixel
+            // gap.  The stripe's height identifies the field: the top three are
+            // ROM_Q at the first ROMSEL assertion and two and four mclk later,
+            // so three identical red stripes mean the sample is stale at every
+            // point, while red, red, correct means the data simply arrives late
+            // relative to the old sample point; the last two stripes are the
+            // mapper's ROM_ADDR halves for the same access.  The band in rows
+            // 192-223 is R = fetch_seen, G = loaded, B = enable.
+            if (yy[7:5] == 3'd6)                        // status band
+                rgb <= {dbg[2] ? 8'hC0 : 8'h00, dbg[1] ? 8'hC0 : 8'h00, dbg[0] ? 8'hC0 : 8'h00};
+            else if (yy[7:5] > 3'd4 || yy[4:3] == 2'b11 || xx[3:0] > 4'd13)
+                rgb <= 24'h000000;                      // unused rows, stripe gaps, bar gaps
+            else
+                rgb <= fp_stripe[xx[7:4]] ? 24'h00C000 : 24'hC00000;
 `elsif TINYSNES_LOAD_COUNT
             // Diagnostic build: eight thresholds on the loader's SDRAM write
             // count, left to right >=1, >=16, >=256, >=4096, >=32768, >=131072,

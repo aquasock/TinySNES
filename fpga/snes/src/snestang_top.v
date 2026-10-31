@@ -283,18 +283,64 @@ always @(posedge mclk) begin        // wait until memory initialize to start SNE
 end
 
 `ifdef TINYSNES_FETCH_PROBE
-// Diagnostic build: latch the data the CPU actually receives on its first ROM
-// fetch after enable.  ActRaiser's reset vector lives at ROM offset 0x7FFC and
-// is 0x8000, so the first fetch should latch 0x8000: only bit 15 set.  Anything
-// else means the fetch path returns data other than what the loader wrote, which
-// points at the mapper or the ROM_Q handshake rather than at memory.
-reg [15:0] fetch_q = 16'd0;
+// Diagnostic build: capture the CPU's first ROM access after enable at three
+// points in time plus the mapper's address for that access, so a wrong address
+// and a sample taken before the data exists are told apart in one load.
+//
+// The previous version of this probe latched ROM_Q once, on the first mclk where
+// ROMSEL and ROM_OE were both asserted.  Two independent reasons make that
+// reading uninformative: ROM_OE_N is derived from the master-cycle clock
+// enables and is low for most of an access rather than as a read marker, and
+// the SDRAM controller cannot have returned the word that early anyway -- the
+// request crosses from mclk into the arbiter's fclk domain and port 0 registers
+// dq_in at cycle[5], roughly two to three mclk after the address appears.  A
+// zero from that probe could therefore be the instrument, not the machine.
+//
+// Fields, low to high in fp_bus:
+//   [15:0]  ROM_Q on the first assertion of ROMSEL      (the old sample point)
+//   [31:16] ROM_Q two mclk later
+//   [47:32] ROM_Q four mclk later
+//   [63:48] ROM_ADDR[15:0] for that access, expect 0x7FFC
+//   [79:64] ROM_ADDR[23:8] for that access, expect 0x007F
+// ActRaiser's reset vector at ROM offset 0x7FFC is 0x8000, so a healthy first
+// fetch reads as 0x8000 with only bit 15 set on whichever sample point is taken
+// after the controller answers.
+reg [79:0] fp_bus = 80'd0;
+reg  [2:0] fp_cnt = 3'd0;
 reg        fetch_seen = 1'b0;
-always @(posedge mclk)
-    if (enable && ~ROM_CE_N && ~ROM_OE_N && ~fetch_seen) begin
-        fetch_q    <= ROM_Q;
-        fetch_seen <= 1'b1;
+wire       fp_sel = enable && ~ROM_CE_N;
+
+// fp_cnt walks the sample window and parks at 7 when it is over.  If ROMSEL is
+// released before the window closes the remaining samples are dropped rather
+// than taken from a later access, because an offset measured from the wrong
+// access is worse than a missing stripe.
+always @(posedge mclk) begin
+    if (~fp_sel) begin
+        if (fp_cnt != 3'd0 && fp_cnt != 3'd7)
+            fp_cnt <= 3'd7;
+    end else begin
+        case (fp_cnt)
+        3'd0: begin
+            fp_bus[15:0] <= ROM_Q;
+            fetch_seen   <= 1'b1;
+            fp_cnt       <= 3'd1;
+        end
+        3'd1: fp_cnt <= 3'd2;
+        3'd2: begin
+            fp_bus[31:16] <= ROM_Q;
+            fp_cnt        <= 3'd3;
+        end
+        3'd3: fp_cnt <= 3'd4;
+        3'd4: begin
+            fp_bus[47:32] <= ROM_Q;
+            fp_bus[63:48] <= ROM_ADDR[15:0];
+            fp_bus[79:64] <= ROM_ADDR[23:8];
+            fp_cnt        <= 3'd7;
+        end
+        default: fp_cnt <= 3'd7;
+        endcase
     end
+end
 `endif
 
 wire sysclkf_ce, sysclkr_ce;
@@ -724,10 +770,12 @@ wire [7:0] dbg_dat_out_loader;
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
 `ifdef TINYSNES_FETCH_PROBE
-    // Diagnostic build: R = fetch_seen, G = loaded, B = enable; the mask port
-    // carries the latched first ROM fetch.
+    // Diagnostic build: R = fetch_seen, G = loaded, B = enable; fp_bus carries
+    // the five time-ordered fields of the first ROM access and the mask port
+    // keeps the old meaning of its own name.
     .dbg({fetch_seen, loaded, enable}),
-    .bist_mask(fetch_q),
+    .bist_mask(fp_bus[15:0]),
+    .fp_bus(fp_bus),
 `elsif TINYSNES_LOAD_COUNT
     // Diagnostic build: R = header_finished, G = loaded, B = enable, and the
     // mask port carries the loader write-count thresholds.

@@ -109,3 +109,36 @@ Take the fetch path next, in this order: print or probe the `ROM_ADDR` that `DSP
 - User Test: FAIL
 
 ---
+
+## 4 COMMIT Unreleased 2026-10-31T08:06:17-07:00
+
+#### Coming From:
+
+Unreleased c8f8b31
+
+#### Purpose:
+
+Replace the fetch probe with a time-resolved instrument that separates a wrong address from a sample taken before the data exists, and read it on hardware.
+
+#### Outcome:
+
+The single-shot fetch probe became an instrument that samples the first ROM access three times: `fp_bus` now carries `ROM_Q` at the first assertion of `ROMSEL` and two and four mclk later plus `ROM_ADDR[15:0]` and `ROM_ADDR[23:8]` for that access, drawn by `snes2hdmi` as five 16-bar stripes, and detection no longer depends on `ROM_OE_N`, which derives from the master-cycle enables and is low for most of an access rather than marking a read. The sampler was simulated before it was trusted: `tools/tests/fetch_probe_tb.sh` extracts the block verbatim from `snestang_top.v` and drives a value that changes every master clock, and it reports PASS with the fields landing on offsets 0, 2 and 4, a second access unable to rewrite the window, and an assertion made before `enable` ignored. Seed 5 built with `TINYSNES_FETCH_PROBE` in `build/fetch2`, passed the timing gate at fclk 264.760 against 64.516 MHz, hclk 187.829 against 74.250 and iosys.clk 32.044 against 21.505, and routed with no hold violations, giving `tinysnes.fs` SHA-256 `c6c8b55187c698ae026b69cd8ec2ed03ed24461eb49f7ba464c71a3f0fe135de` and `tinysnes.bin` SHA-256 `0538612fbd1d1be241b8985ed8abff83e9135d712d6cdaac6792ce22a93ec6b3`. The image was staged on the card with `tangput` as `/root/cores/console138k/tinysnes-fetch.bin`, verified against the local file at head, middle and tail after a first upload proved corrupt, loaded with `tangload`, and the core answered as ID 2; the card's `zelda.smc`, 1 MiB and LoROM with no copier header, was pulled to the host with `tangget` and loaded through `tools/load_snes_rom.py`. The user's readout of the five stripes was 0x0000, 0x0000, 0x8000, 0x7FFC and 0x007F with a white status band, which refutes the premise of entry 3: the mapper produces 0x7FFC for the reset vector, the ROM returns 0x8000, and the word reaches the CPU's port four master clocks, about 186 ns, into an access whose slow-memory latch falls at `CPU_LAST_CLOCK` 7 of eight, so the fetch path was never returning zero -- the old probe was sampling two clocks before the controller could answer. The machine still does not run, so the fault is past the fetch path. One tooling defect is recorded because it cost a corrupt upload: `tangput` terminated with CRLF leaves the LF in the console's input queue as the file's first byte and drops the image's last byte while the size still matches, and a bare CR is correct. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 3 were not rewritten, revised TCL-007 and TCL-008 in place and added TCL-010 and BRD-004, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the four-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out whether the CPU executes at all, because the fetch path is now exonerated and the machine's failure has to be past it: add a diagnostic that counts `ROMSEL` bursts since `enable` and snapshots the CPU's own program counter through the core's unused debug port, where `DBG_SEL[0]` selects the CPU and `DBG_REG` 0x06 and 0x07 return `PC[7:0]` and `PC[15:8]`, so no upstream file needs to change; draw the counter and two PC samples as stripes and read whether the counter races, which puts the fault in the PPU, the SPC700 or the ARAM port rather than the CPU, or stands still, which leaves the PC naming the address where execution stopped and the ROM image naming the instruction. Keep `TINYSNES_SDRAM_TEST`, `TINYSNES_LOAD_COUNT`, `TINYSNES_ROM_CHECK` and `TINYSNES_FETCH_PROBE` as the regression set, each with a recorded expected readout, re-run `tools/tests/fetch_probe_tb.sh` after any change to the sampler, and do not reintroduce the SDRAM-clock ODDR. A new finding that moves the fault again is a revised plan for the user, not a continuation of this one.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/fetch_probe_tb.sh
+- tools/tests/fetch_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

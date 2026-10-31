@@ -82,7 +82,9 @@ rules:
 | Why does the machine show a static tile grid after a ROM loads? | TCL | TCL-007, TCL-008 |
 | Which diagnostic build shows what, and what should it read? | TCL | TCL-008 |
 | Why did an ODDR SDRAM clock kill the picture? | TCL | TCL-009 |
+| How long does a CPU-port ROM read take, and when does the CPU latch it? | TCL | TCL-010 |
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
+| How does a core image or ROM get onto the card? | BRD | BRD-004 |
 
 ---
 
@@ -94,9 +96,9 @@ PRO-001 core ID 2 versus TinyTang's table
 EXT-001 SNESTang console138k file list and clocks · EXT-002 hdl-util HDMI
 TCL-001 slang front end and cell-library shim · TCL-002 SDC subset ·
 TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported constructs ·
-TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch-path fault
-TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route
-EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
+TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch path
+TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route · TCL-010 read latency and the CPU's latch
+EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 
 ---
 
@@ -286,16 +288,17 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
 - record_id: TCL-007
   kind: TOOLCHAIN
   topic_id: TCL
-  title: "The SDRAM read path works on this board from a falling-edge capture; the machine fault is not memory"
+  title: "The SDRAM read path works on this board and the fetch path delivers the right word; the machine fault is past the fetch"
   status: VERIFIED
-  verified_date: 2026-10-30
-  statement: "SNESTang captured SDRAM_DQ combinationally on posedge fclk while driving O_sdram_clk from the PLL's 225-degree output (fclk_p), which put the sample at 3T, about 0.4 ns after the part could be driving against datasheet worst-case tAC.  Replacing that with TinyNES's shape -- dq_fall on the falling edge, dq_rise on the rising edge, data consumed one fclk later, port-0 sample moved from cycle[4] to cycle[5] and ARAM from cycle[1] to cycle[2] -- gives about 8 ns of setup and 4.4 ns of hold at 3.5T.  On hardware the changed build keeps the letterbox and the same static grid, and a self-test that writes and reads back walking-one and walking-zero patterns plus four high addresses through the controller's CPU port comes back with all 16 data bits correct across 36 write/read pairs."
-  consequence: "ROM, WRAM and ARAM reads are not the fault and the capture change stays.  The machine's start-up gates are also clear: header_finished, loaded and enable all assert and ROM_CE_N toggles.  What remains is the fetch path between the mapper's ROM_ADDR and ROM_Q: the CPU's first fetch, which should be the reset vector 0x8000 from ROM offset 0x7FFC, comes back as zero even though the loader has written that word to SDRAM word 0."
+  verified_date: 2026-10-31
+  statement: "SNESTang captured SDRAM_DQ combinationally on posedge fclk while driving O_sdram_clk from the PLL's 225-degree output (fclk_p), which put the sample at 3T, about 0.4 ns after the part could be driving against datasheet worst-case tAC.  Replacing that with TinyNES's shape -- dq_fall on the falling edge, dq_rise on the rising edge, data consumed one fclk later, port-0 sample moved from cycle[4] to cycle[5] and ARAM from cycle[1] to cycle[2] -- gives about 8 ns of setup and 4.4 ns of hold at 3.5T.  A self-test that writes and reads back walking-one and walking-zero patterns plus four high addresses through the controller's CPU port returns all 16 data bits correct across 36 write/read pairs, and a time-resolved probe of the CPU's first ROM access now shows what that port returns: ROM_Q is zero at the first assertion of ROMSEL and two mclk later, and by four mclk it carries the ROM's own reset vector word 0x8000 while ROM_ADDR reads 0x7FFC and 0x007F for the same access."
+  consequence: "ROM, WRAM and ARAM reads are not the fault, the capture change stays, and the fetch path is exonerated: the mapper produces the LoROM address the image expects, the SDRAM returns the word the loader wrote, and it is on the CPU's port inside the access window (see TCL-010).  The all-zero fetch reading in core-log entry 3 was the old probe sampling two mclk before the controller could answer, not the machine.  The machine still does not run, so the fault is past the fetch path and the next instruments have to answer whether the CPU executes at all -- its program counter is readable through DBG_SEL[0] -- before the PPU, the SPC700 and the ARAM port are considered."
   sources:
     - "SNESTang commit 5f0ef19, src/sdram_cl2_2ch.v (dq_in, O_sdram_clk = fclk_p)"
     - "TinyNES, fpga/ae350_soc/ahb_sdram.sv: ODDR sdram_clk_oddr, dq_fall on negedge, dq_rise on posedge"
-    - "This repository, fpga/snes/src/sdram_bist.v and fpga/snes/src/rom_probe.v, with the defines listed in TCL-008"
-  verification: "Code comparison read 2026-10-30; the hardware result was then measured on the board that day with the self-test build (core-log entry 3). Revised 2026-10-30 (core-log entry 3): the record was SOURCED and asserted that the capture was the fault behind the dead machine; the self-test refutes that, and the fault is now located in the fetch path."
+    - "This repository, fpga/snes/src/sdram_bist.v, fpga/snes/src/rom_probe.v and the TINYSNES_FETCH_PROBE sampler in fpga/snes/src/snestang_top.v"
+    - "This repository, fpga/snes/src/chip/DSP/DSP_LHRomMap.v: ROM_ADDR = CART_ADDR & ROM_MASK, ROM_WORD = 1'b0"
+  verification: "Code comparison read 2026-10-30; the self-test result was then measured on the board that day (core-log entry 3).  Revised 2026-10-30 (core-log entry 3): the record was SOURCED and asserted that the capture was the fault behind the dead machine; the self-test refuted that.  Revised 2026-10-31 (core-log entry 4): the record asserted that the fetch path returned zero and that the fault lay between ROM_ADDR and ROM_Q; the five-stripe probe build read 0x0000, 0x0000, 0x8000, 0x7FFC, 0x007F on the board, which refutes that and moves the fault past the fetch path."
 
 - record_id: TCL-008
   kind: TOOLCHAIN
@@ -303,12 +306,12 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
   title: "Four diagnostic builds behind TINYSNES_* defines, each with a known-good readout"
   status: VERIFIED
   verified_date: 2026-10-30
-  statement: "Each diagnostic is selected with TINYSNES_DEFINES and drawn by snes2hdmi, so the result is read off the screen with no logic analyser and no loader changes.  TINYSNES_SDRAM_TEST runs sdram_bist.v before the machine starts: 16 gapped bars, one per DQ bit, red where a bit mismatched, plus a status band (green pass, red mismatch, blue running, yellow no acknowledge).  TINYSNES_LOAD_COUNT shows eight gated thresholds on the count of the loader's own SDRAM write issues, >=1 up to >=500000 words, and all eight green means a full 1 MiB image was issued.  TINYSNES_ROM_CHECK runs rom_probe.v after loaded and searches eight candidate word addresses for a named image word, green where found in either byte order.  TINYSNES_FETCH_PROBE latches the CPU's first ROM fetch and draws its 16 bits, left to right bit 0 to bit 15, green for 1."
+  statement: "Each diagnostic is selected with TINYSNES_DEFINES and drawn by snes2hdmi, so the result is read off the screen with no logic analyser and no loader changes.  TINYSNES_SDRAM_TEST runs sdram_bist.v before the machine starts: 16 gapped bars, one per DQ bit, red where a bit mismatched, plus a status band (green pass, red mismatch, blue running, yellow no acknowledge).  TINYSNES_LOAD_COUNT shows eight gated thresholds on the count of the loader's own SDRAM write issues, >=1 up to >=500000 words, and all eight green means a full 1 MiB image was issued.  TINYSNES_ROM_CHECK runs rom_probe.v after loaded and searches eight candidate word addresses for a named image word, green where found in either byte order.  TINYSNES_FETCH_PROBE samples the CPU's first ROM access three times and draws five stripes: ROM_Q at the first assertion of ROMSEL, then two and four mclk later, then ROM_ADDR[15:0] and ROM_ADDR[23:8] for that access, 16 bars per stripe with bit 0 on the left and green for 1, plus a status band in rows 192-223 carrying fetch_seen, loaded and enable."
   consequence: "Use these to bisect the machine rather than adding new probes: memory, loader and fetch each have an instrument with a recorded expected readout.  The letterbox border doubles as a three-bit state display under TINYSNES_DBG_BORDER, and its bit assignment changes between builds, so always read the comment at the snes2hdmi instantiation before decoding a colour."
   sources:
     - "This repository, fpga/snes/src/sdram_bist.v, fpga/snes/src/rom_probe.v, fpga/snes/src/snes2hdmi.v (the ifdef'd rgb branches), fpga/snes/src/snestang_top.v (the ifdef'd CPU-port mux, write counter and fetch latch)"
     - "tools/build_tinysnes.sh: TINYSNES_DEFINES, and tools/rom_probe_expect.py for the expectations"
-  verification: "Each build was run on the board on 2026-10-30 and its readout recorded in core-log entry 3.  Two instrument defects were found and fixed during that work and are worth remembering: a probe that owned the CPU port from reset disconnected the loader's writes, and expectations passed as -DTINYSNES_EXP* never reached the module's EXP parameters, so every comparison ran against zero."
+  verification: "Each build was run on the board on 2026-10-30 and its readout recorded in core-log entry 3.  Two instrument defects were found and fixed during that work and are worth remembering: a probe that owned the CPU port from reset disconnected the loader's writes, and expectations passed as -DTINYSNES_EXP* never reached the module's EXP parameters, so every comparison ran against zero.  Revised 2026-10-31 (core-log entry 4): TINYSNES_FETCH_PROBE now samples the access three times instead of once and also carries the mapper's address, because the single sample at the first ROMSEL assertion could never see data and its all-zero readout was read as a machine fault for a cycle; tools/tests/fetch_probe_tb.sh simulates the sampler by extracting it verbatim from snestang_top.v."
 
 - record_id: TCL-009
   kind: TOOLCHAIN
@@ -323,6 +326,20 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
     - "nextpnr-himbaechel placement of sdram_clk_oddr at X181Y23/IOLOGICAO in build/tinysnes/nextpnr.log (bench only, not committed)"
   verification: "Observed on the board on 2026-10-30: the ODDR image gave no sync, and the reverted image gave the letterbox and the static grid back (core-log entry 3)."
 
+- record_id: TCL-010
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "A CPU-port SDRAM read answers in four master clocks; the CPU latches read data at the end of an eight-master-cycle slow access"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "With the falling-edge capture of TCL-007, the word a CPU read asks for reaches cpu_port0 four mclk after ROMSEL asserts, about 186 ns later, as measured on the board by the TINYSNES_FETCH_PROBE build: ROM_Q reads 0x0000 both at the assertion and two mclk after it, and holds the image's reset vector 0x8000 by four mclk, with ROM_ADDR reading 0x7FFC for the same access.  On the CPU side the SNES module registers read data into MDR on INT_CLKF_CE, which cpu.v raises when P65_CLK_CNT reaches CPU_LAST_CLOCK, 7 for a slow access, and one SNES master clock is about 46.5 ns."
+  consequence: "A slow-memory ROM access leaves the controller about 371 ns and the port answers in about 186 ns, so the fetch path keeps roughly half an access of margin and the capture change cannot have pushed a fetch past the CPU's latch.  This is the arithmetic behind TCL-007 and it is the budget to re-check before adding latency to the ROM path: a change costing four more master clocks would consume the remaining margin."
+  sources:
+    - "This repository, fpga/snes/src/cpu.v: CPU_LAST_CLOCK, the INT_CLKF_CE/INT_CLKR_CE generation, and MDR <= P65_DI on INT_CLKF_CE"
+    - "This repository, fpga/snes/src/sdram_cl2_2ch.v: the port-0 read registration at cycle[5]"
+    - "This repository, fpga/snes/src/snestang_top.v: the TINYSNES_FETCH_PROBE sampler and fp_bus field order"
+  verification: "Read from the RTL and measured on the board on 2026-10-31 with the five-stripe probe build (core-log entry 4).  The sampler works in mclk, so the four-mclk figure has one mclk of resolution; nothing here resolves it finer than that."
+
 - record_id: BRD-003
   kind: BOARD
   topic_id: BRD
@@ -335,6 +352,19 @@ EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
     - "Observed on this bench on 2026-10-30: lsusb, /dev/serial/by-id, openFPGALoader -b tangconsole, tangload output, fpga output"
     - "TinyTang .ai/core-reference.md BRD-006 and USB-009 for the mode selection, and this project's core-log entry 2 for the observed drops"
   verification: "Both paths exercised repeatedly this session; the FT2232 enumeration, the openFPGALoader load and the tangload load each reported success, and the console drops were seen three times after tangload and cleared by a power cycle."
+
+- record_id: BRD-004
+  kind: BOARD
+  topic_id: BRD
+  title: "The console's tangput and tangget move raw files over USB, and a CRLF-terminated tangput shifts the file by one byte"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "TinyTang's shell has `tangput <size> <path>` to receive exactly <size> raw bytes from the USB console into a file on the card and `tangget <path> [offset [length]]` to send them back, which is how a core image reaches the card with no card reader.  The shell consumes the CR that ends a command, so a CRLF terminator leaves the LF in the console's input queue: tangput writes it as the file's first byte and drops the image's last byte, and the file's size still matches what was sent.  tangget answers with 'tangget: <n> bytes at <offset> of <total>' before the raw bytes begin."
+  consequence: "Terminate tangput's command line with a bare CR, and verify an upload by pulling bytes back with tangget instead of trusting the size, because the corrupt upload in core-log entry 4 matched on size and differed only by that shift.  Transfer is otherwise quick and does not disturb the loaded core: about 1.2 MB/s, so a 4.7 MB core image takes seconds and a 1 MiB ROM about eleven seconds to pull back."
+  sources:
+    - "TinyTang ports/bl616/tdsh_tang_flash.c: cmd_tangput and cmd_tangget"
+    - "Observed on this bench on 2026-10-31 over /dev/ttyACM0 against a TinyTang running in two-wire mode"
+  verification: "Used on the board this session: the first upload, terminated with CRLF, came back from tangget shifted by one byte with a leading 0x0A; the second, with a bare CR, matched the local image at head, middle and tail."
 
 ```
 
