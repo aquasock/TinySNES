@@ -36,8 +36,10 @@ from decode_probe_frame import classify, sample_stripe  # noqa: E402
 GREEN = np.array([0x00, 0xC0, 0x00])
 RED = np.array([0xC0, 0x00, 0x00])
 
-# The five stripes of the TINYSNES_LINK_PROBE display, low to high.
+# The five stripes of each diagnostic display, low to high.  The sampler only
+# needs to know how to describe a decoded snapshot, so a layout is a formatter.
 LINK_FIELDS = ["CPUO[1:0]", "CPUI[1:0]", "65816 A", "65816 PC", "hist/Y"]
+TRACE_FIELDS = ["newest ROM addr", "previous", "two back", "three back", "ROM_ADDR[23:8]"]
 
 
 def decode_stripes(path, x0=160, x1=1119, pitch=103.0 / 32.0):
@@ -66,8 +68,21 @@ def band_colour(path):
     return tuple(int(v) for v in cols[int(np.argmax(cnts))])
 
 
-def summary(words):
-    """Describe one decoded snapshot in the terms the log uses."""
+def summary_trace(words):
+    """Describe a TINYSNES_TRACE_PROBE snapshot: the last four ROM fetches.
+
+    The ring advances only on a ROM access, so on a machine that has left the ROM
+    it is frozen on exactly the fetches before the jump, and the newest entry
+    names the instruction that diverted it.
+    """
+    a0, a1, a2, a3, hi = words
+    full = (hi << 8) | (a0 >> 8)          # ROM_ADDR[23:8] over ROM_ADDR[15:8]
+    return (f"newest={a0:04X} prev={a1:04X} {a2:04X} {a3:04X} "
+            f"addr[23:8]={hi:04X} full={full:06X}")
+
+
+def summary_link(words):
+    """Describe a TINYSNES_LINK_PROBE snapshot in the terms the log uses."""
     cpuo, cpui, a, pc, hist = words
     ent = hist >> 13
     past = (hist >> 12) & 1
@@ -129,6 +144,8 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
+    ap.add_argument("--layout", choices=("link", "trace"), default="link",
+                    help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
     ap.add_argument("--loader-rom", default=os.path.join(
@@ -143,7 +160,7 @@ def main():
         if words is None:
             print(f"boot {i}: FAILED -- {note}")
             continue
-        desc = summary(words)
+        desc = summary_trace(words) if args.layout == "trace" else summary_link(words)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

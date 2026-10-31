@@ -601,3 +601,33 @@ Name the instruction that diverts the 65816, because a symptom at $7C7F is not t
 - User Test: NOT RUN
 
 ---
+
+## 19 COMMIT Unreleased 2026-10-31T15:08:25-07:00
+
+#### Coming From:
+
+Unreleased 3162485
+
+#### Purpose:
+
+Name the ROM code the 65816 was executing at the point it diverged, because every measurement so far described the destination rather than the departure.
+
+#### Outcome:
+
+The trace probe needed no new RTL: `TINYSNES_TRACE_PROBE` keeps the last four `ROM_ADDR` values on a ring that advances on each start of a ROM access, and `tools/sample_boot_states.py` gained a `--layout trace` formatter so it could be sampled over repeated boots the same way the link probe is. Seed 7 built clean with zero hold/min violations and passed the timing gate, giving `tinysnes.fs` SHA-256 `fbbf90169922e99f250103ff37182711ccd860a72be2b9bd7a68d5881e6e4d57`. Five boots produced three distinct ring states. Three boots froze on ROM address $0008EF, which is the LoROM mapping of the 65816's $88EF -- the `D0 FB` branch in the upload loop's echo-wait, with all four ring entries identical and the status band grey, meaning a ROM access had occurred within the last 0.2 s. One boot froze on $007FE6, the LoROM mapping of $FFE6, which is an address in the vector table rather than in code. One boot's ring held a clean descending run of $0003F2, $0003F4, $0003F6, $0003F8 -- four 2-byte steps of linear forward execution, the LoROM mapping of $83F2 to $83F8 -- with a cyan band, meaning no ROM access in the last 0.2 s, so that boot was running real code and then stopped fetching altogether. Reading the image's vector table turned the middle result into a lead: $FFE6 holds the emulation-mode BRK vector, and in this image that vector is $FFFF. A BRK taken in emulation mode therefore jumps to $FFFF, which in a LoROM image is the last byte of padding, and the bytes there are $FF rather than instructions. The other vectors are all sane -- RESET is $8000, IRQ/BRK native and IRQ emulation are $82D8, NMI emulation is $89D8, and COP, ABORT and the native BRK and NMI vectors are all $822C -- so $FFFF at $FFE6 is the one entry in the table that cannot be a handler, which makes it a trap for an unexpected BRK and a plausible explanation for the open-bus execution at $7C7F that entry 16 recorded. Two limits are stated rather than glossed. A ROM access is recorded for vector reads as well as opcode fetches, so an address in the vector table may be a vector being read rather than an instruction being executed, and the $FFE6 result is reported in that light. And five boots against three states is enough to establish nondeterminism, which entry 18 already did, but not enough to attach a frequency to any one state. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 18 were not rewritten, revised BRD-003 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the nineteen-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Decide whether the CPU is taking a BRK, an interrupt or neither, because the three are separable with one sticky instrument and the vector table now says the answer matters: latch whether the 65816's program counter has ever been in the vector table range $FFE0-$FFFF after it has been seen outside it, and alongside that latch the processor status byte seen at the moment it was last in that range, since the emulation bit and the interrupt-disable bit together say whether the CPU was in emulation mode and whether interrupts were masked at the time. A CPU seen in that range with the emulation bit set and the BRK vector of $FFFF confirms the trap and makes the next question why a BRK fired, which points at the interrupt lines rather than at the fetch path; a CPU never seen there moves the explanation back to the open-bus execution and the $7C7F destination, and the instrument becomes a latch of the first address outside the LoROM window together with the four ring entries immediately before it, which names a jump rather than a vector. Do not spend further cycles sampling current state on a machine that now provably varies between boots without also recording how many boots a result came from, and prefer instruments that record history over those that record a snapshot. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all twelve diagnostic builds as the regression set and run `tools/tests/probe_tb.sh` -- eight benches -- after any sampler change, and use `tools/sample_boot_states.py` with `--layout trace` or `--layout link` for any comparison across builds.
+
+#### Files Modified:
+
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
