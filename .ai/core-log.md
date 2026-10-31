@@ -571,3 +571,33 @@ Attack the write side while the machine is live, because reads are now proven st
 - User Test: NOT RUN
 
 ---
+
+## 18 COMMIT Unreleased 2026-10-31T14:59:06-07:00
+
+#### Coming From:
+
+Unreleased ccc78bf
+
+#### Purpose:
+
+Establish whether the failure is deterministic, because four different failure shapes from one image could mean a marginal path that drifts or a race that always lands the same way, and nothing measured so far distinguished them.
+
+#### Outcome:
+
+`tools/sample_boot_states.py` boots one bitstream repeatedly -- each load reconfigures the FPGA and is therefore a true cold start -- streams the same ROM after every load, captures three seconds and decodes the five stripes by majority over all frames that are not torn, then reports the distinct states and a verdict. It needed no new RTL: it re-boots `build/past_s7/tinysnes.fs`, the exact cycle-16 link probe whose SHA-256 `5c8effe1b9257f816b6e93fee7957d3fdc7b8bb61663843d2a540463b7e9ea4a` matches entry 16's record. One defect in the tool itself was found and fixed on first use: it resolved the ROM loader one directory too high and every boot failed with "can't open file" before that was corrected. Five boots of an identical bitstream and an identical ROM produced five distinct states, so the failure is nondeterministic and neither a logic error in the image nor a fixed protocol defect: boot 1 read CPUO $BB10, A $00B8, PC $7C7F, Y $FF with two routine entries; boot 2 read A $00D8 with three entries; boot 3 read CPUO $BB0B, A $F6F0, PC $FFCF, Y $0C with two entries and the SPC still inside its IPL; boot 4 read A $0100, PC $7C7F, Y $00 with four entries; and boot 5 read CPUO $BB27, CPUI $0010, A $0110, PC $88EF, Y $28 with two entries and the SPC inside its IPL. What is constant across all five is more informative than what varies: the busy bit for a past-the-handshake sighting, the $CC sighting, a non-zero Y and a changed CPUO are set in every single boot, so the 65816 always wrote $CC, the SPC700 always ran, always advanced Y and CPUO always changed. The handshake always completes; what varies is where the 65816 ends up -- $7C7F in three of five, $88EF in one and $FFCF in one -- together with its A, its routine entry count between two and four, whether the SPC left its IPL and how far Y had advanced. $7C7F in bank $00 is below the LoROM window, and following the decode in SNES.v it selects BUSA with CA[15:8] of $7C, which is neither $40 nor $43, so BUSA_DO returns DI: the address reads open bus rather than ROM. Three of five boots are therefore executing data that was merely last on the bus, which is self-sustaining garbage rather than code, and that is the same signature entry 5 recorded at $7C7C. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 17 were not rewritten, revised BRD-003 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighteen-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Name the instruction that diverts the 65816, because a symptom at $7C7F is not the fault and every measurement so far has been of the destination rather than the departure: the trace probe already exists for this and needs no new RTL -- `TINYSNES_TRACE_PROBE` keeps the last four `ROM_ADDR` values on a ring that advances only on ROM accesses, so a CPU that has left the ROM leaves the ring frozen on exactly the fetches before the jump, and LoROM bank 0 is the image offset directly, which makes those four addresses disassemblable against `zelda.smc` without any further work. Boot that build several times rather than once, since the states now provably vary, and disassemble the newest ring entry from each boot: a last address inside the upload routine whose following branch target looks sane points at a computed or indirect transfer reading corrupted data, while a last address that is already wrong, or an opcode no compiler would emit, points at the fetch itself having returned something other than the image. Because reads are proven stable at rest and the handshake completes in every boot, the leading explanation is now state that differs between power-ups rather than a path that is merely marginal: WRAM and the parts of SDRAM below the image are not cleared by this design, so any routine that reads them before writing them behaves differently on each boot, and the second instrument worth building is a sticky record of whether the 65816 ever read outside the loaded image before its first write -- an address-range check on its bus, not on its PC. If the trace ring instead shows the diversion coming from a vector, the interrupt path and the reset and enable sequencing between the two processors are the next candidates, since that is the only thing which has varied across every boot measured in this session. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all twelve diagnostic builds as the regression set and run `tools/tests/probe_tb.sh` -- eight benches -- after any sampler change, and use `tools/sample_boot_states.py` rather than single boots whenever a result is compared across builds.
+
+#### Files Modified:
+
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
