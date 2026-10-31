@@ -35,6 +35,12 @@ module snes2hdmi (
 
     output reg pause_snes_for_frame_sync,
 
+    // TinySNES diagnostic: three machine-state bits shown as the border colour,
+    // because the OSD text page is blank on this core and there is no other way
+    // to see inside the machine from the bench.  Bit order: R = header_finished,
+    // G = loaded, B = loading.
+    input [2:0] dbg,
+
     // output [7:0] led,
 
 	// output signals
@@ -270,12 +276,32 @@ module snes2hdmi (
     // calc rgb value to hdmi
     always @(posedge clk_pixel) begin
         if (active) begin
+`ifdef TINYSNES_OVERLAY_ONLY
+            // Diagnostic build: the overlay path only, no line-buffer BRAM read,
+            // so the picture proves the raster and the overlay meter without
+            // involving the SNES-side clock domain.
+            rgb <= overlay ? {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0}
+                           : 24'h101010;
+`elsif TINYSNES_TEST_PATTERN
+            // Diagnostic build: fixed vertical colour bars every 16 pixels, so a
+            // picture proves the HDMI plumbing (PLL, OSER10s, ELVDS, packets)
+            // independently of the SNES machine and the overlay.  Never in a
+            // core meant to play a game.
+            rgb <= {xx[7:5]==3'd0 ? 8'hFF : 8'h00,
+                    xx[7:5]==3'd1 ? 8'hFF : (xx[7:5]==3'd3 ? 8'hC0 : 8'h00),
+                    xx[7:5]==3'd2 ? 8'hFF : 8'h00};
+`else
             if (overlay)
                 rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
             else
                 rgb <= {mem_portB_rdata[4:0], 3'b0, mem_portB_rdata[9:5], 3'b0, mem_portB_rdata[14:10], 3'b0};                
+`endif
         end else
+`ifdef TINYSNES_DBG_BORDER
+            rgb <= {dbg[2] ? 8'hFF : 8'h00, dbg[1] ? 8'hFF : 8'h00, dbg[0] ? 8'hFF : 8'h00};
+`else
             rgb <= 24'h303030;
+`endif
     end
 
     // HDMI output.

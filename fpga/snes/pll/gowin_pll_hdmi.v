@@ -1,27 +1,26 @@
 // SPDX-License-Identifier: MIT
 //
-// The HDMI clocks, from the 27 MHz PLL that gowin_pll_27 makes from the 50 MHz
-// crystal: 27 * 55 / 4 = 371.25 MHz (clkout0, the serialiser bit clock, hclk5)
-// and 27 * 55 / 20 = 74.25 MHz (clkout1, the 720p pixel clock, hclk).
+// 371.25 MHz from the 27 MHz PLL: 27 * 55 / 4, the HDMI serialiser bit clock.
 //
-// Hand-written instantiation of the PLL primitive, derived from TinyTang's
-// fpga/desktop/pll/gowin_pll_hdmi.v -- that core enables clkout0 only, and
-// SNESTang needs the pixel clock from clkout1 as well, so ODIV1_SEL is 20
-// instead of 8 and CLKOUT1_EN is TRUE, matching the parameters in the Gowin
-// IP-generator wrapper this replaces.  This project brings no vendor-generated
-// file into the repository.  See THIRD_PARTY.md.
+// Hand-written instantiation of the PLL primitive.  The Gowin IP-generator
+// wrapper that carried this name opened with "Copyright (C)2014-2025 Gowin
+// Semiconductor Corporation.  All rights reserved.", and this project's rule is
+// that no vendor-generated file is brought into the repository, so the
+// configuration is expressed here instead.  See THIRD_PARTY.md.
 //
 // The module name, the port list, the inner instance name and the net structure
-// match the generated wrapper; snestang_top and snes2hdmi instantiate them by
-// name.
+// are deliberately unchanged.  desktop.cst pins the flattened cell `pll_hdmi.PLL_inst`, and
+// on this device and toolchain the netlist decides the placement, the placement
+// decides where the clocks land, and that decides whether the core runs at all.
+// Tidying these dangling nets is therefore not a safe refactor: bit-for-bit
+// identity with the generated build is the requirement.
 
-module gowin_pll_hdmi (clkout0, clkout1, clkin);
+module gowin_pll_hdmi (clkout, clkin);
 
-output clkout0;
-output clkout1;
+output clkout;
 input  clkin;
 
-wire lock, clkout2, clkout3, clkout4, clkout5, clkout6, clkfbout;
+wire lock, clkout1, clkout2, clkout3, clkout4, clkout5, clkout6, clkfbout;
 wire gw_vcc, gw_gnd;
 
 assign gw_vcc = 1'b1;
@@ -35,14 +34,14 @@ PLL #(
     .MDIV_FRAC_SEL(0),
     .ODIV0_SEL(4),
     .ODIV0_FRAC_SEL(0),
-    .ODIV1_SEL(20),
+    .ODIV1_SEL(8),
     .ODIV2_SEL(8),
     .ODIV3_SEL(8),
     .ODIV4_SEL(8),
     .ODIV5_SEL(8),
     .ODIV6_SEL(8),
     .CLKOUT0_EN("TRUE"),
-    .CLKOUT1_EN("TRUE"),
+    .CLKOUT1_EN("FALSE"),
     .CLKOUT2_EN("FALSE"),
     .CLKOUT3_EN("FALSE"),
     .CLKOUT4_EN("FALSE"),
@@ -55,7 +54,7 @@ PLL #(
     .CLKOUT0_PE_FINE(0)
 ) PLL_inst (
     .LOCK(lock),
-    .CLKOUT0(clkout0),
+    .CLKOUT0(clkout),
     .CLKOUT1(clkout1),
     .CLKOUT2(clkout2),
     .CLKOUT3(clkout3),

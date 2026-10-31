@@ -7,6 +7,18 @@
 // link.  Pin assignments are unchanged, so the board's HDMI, SDRAM,
 // UART, button and LED wiring is exactly what SNESTang was tested on.
 
+// Clock placement, copied from TinyNES's ae350_soc.cst and TinyTang's
+// desktop.cst, which run HDMI on this board.  The serial-clock PLL sits at
+// PLL_R[3] beside the TMDS pins with its 27 MHz reference at PLL_R[1], and the
+// pixel-clock divider goes in the right side's HCLK block (block 1, lane 0);
+// left to the placer it lands in block 0, from where the pixel clock does not
+// route to the OSER10s.  pll_snes, which makes the SNES and SDRAM clocks, takes
+// PLL_R[0].
+INS_LOC "pll_snes.PLL_inst" PLL_R[0];
+INS_LOC "pll_27.PLL_inst" PLL_R[1];
+INS_LOC "pll_hdmi.PLL_inst" PLL_R[3];
+INS_LOC "div5" RIGHTSIDE[4];
+
 IO_LOC "sys_clk" V22;
 IO_PORT "sys_clk" IO_TYPE=LVCMOS33 PULL_MODE=NONE DRIVE=OFF;
 

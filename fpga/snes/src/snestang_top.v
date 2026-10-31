@@ -166,7 +166,19 @@ gowin_pll_27 pll_27 (
 );
 gowin_pll_hdmi pll_hdmi (
     .clkin(clk27),              // 27 Mhz input
-    .clkout0(hclk5), .clkout1(hclk)
+    .clkout(hclk5)              // 371.25Mhz; TinyTang's wrapper has one output
+);
+
+// TinySNES: the pixel clock is the 5x clock divided by five here, in the shape
+// TinyNES's ae350_soc.sv:545 and TinyTang's desktop core both use on this
+// board.  A single-output PLL, one CLKDIV pinned to the right side's HCLK block
+// beside the TMDS pins (tinysnes.cst), and no second PLL output to compete with
+// it for the fast-clock lanes.
+CLKDIV #(.DIV_MODE("5")) div5 (
+    .CLKOUT(hclk),              // 74.25Mhz
+    .HCLKIN(hclk5),
+    .RESETN(resetn),
+    .CALIB(1'b0)
 );
 
 `endif
@@ -612,6 +624,7 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
+    .dbg({header_finished, loaded, loading}),
     .pause_snes_for_frame_sync(pause_snes_for_frame_sync),
     .dotclk(dotclk), .hblank(~hblankn),.vblank(~vblankn),.rgb5(rgb_out),
     .xs(x_out), .ys(y_out), 

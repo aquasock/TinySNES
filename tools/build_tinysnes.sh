@@ -31,6 +31,8 @@ pydeps="${PYDEPS:-$HOME/tools/pydeps}"
 device=GW5AST-LV138PG484AC1/I0
 family=GW5AST-138C
 seed="${TINYSNES_SEED:-1}"
+# Extra preprocessor defines for a diagnostic build, e.g. TINYSNES_DEFINES=-DTINYSNES_TEST_PATTERN
+defines="${TINYSNES_DEFINES:-}"
 
 [[ -f "$suite/environment" ]] || { echo "missing open toolchain: $suite" >&2; exit 2; }
 # shellcheck disable=SC1090
@@ -134,7 +136,7 @@ bbflags=$(echo "$bb" | sed 's/^/--blackboxed-module /' | paste -sd' ')
 
 yosys -Q -T -q -l "$out/synth.log" -p "
     read_verilog -lib $shim/cells_xtra_gw5a.v
-    read_slang --std 1800-2017 -U SYNTHESIS -D GW_IDE --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 ${hdmi_slang[*]} ${sources[*]}
+    read_slang --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 ${hdmi_slang[*]} ${sources[*]}
     synth_gowin -family gw5a -top snestang_top
     write_json $out/tinysnes.json
 " || { echo "synthesis failed; see $out/synth.log" >&2; exit 1; }

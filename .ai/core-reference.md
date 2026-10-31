@@ -77,6 +77,10 @@ rules:
 | Why does `get_nets {mclk}` match nothing? | TCL | TCL-003 |
 | Why did `module ALU` fail to elaborate, and why did `MUX2` fail to place? | TCL | TCL-004 |
 | Why do `$fdisplay` and the vendor `` `error `` directive fail synthesis? | TCL | TCL-005 |
+| How must the HDMI clocks be generated and placed? | TCL | TCL-006 |
+| How does TangCore load a SNES ROM? | EXT | EXT-003 |
+| Why does the machine show a static tile grid after a ROM loads? | TCL | TCL-007 |
+| How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
 
 ---
 
@@ -87,7 +91,9 @@ BRD-001 SDRAM pins · BRD-002 clock enable
 PRO-001 core ID 2 versus TinyTang's table
 EXT-001 SNESTang console138k file list and clocks · EXT-002 hdl-util HDMI
 TCL-001 slang front end and cell-library shim · TCL-002 SDC subset ·
-TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported constructs
+TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported constructs ·
+TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture
+EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading
 
 ---
 
@@ -245,6 +251,61 @@ TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported cons
   sources:
     - "SNESTang commit 5f0ef19, the named files; oss-cad-suite slang error output from this session"
   verification: "Reproduced before the change and cleared after it, with synthesis otherwise unchanged."
+
+- record_id: TCL-006
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "HDMI works on this board only with the pixel clock divided from the 5x clock and the PLLs and divider placed"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "TinyNES's fpga/ae350_soc/ae350_soc.cst pins hdmi_pll27 at PLL_R[1], hdmi_pll at PLL_R[3] and pix_div at RIGHTSIDE[4], and its ae350_soc.sv:545 makes the 74.25 MHz pixel clock with CLKDIV #(.DIV_MODE(\"5\")) from the 371.25 MHz clock; TinyTang's fpga/desktop/desktop.cst pins the same sites and records that without them nextpnr lands the PLL in a row-108 gap. In this project the same arrangement - gowin_pll_hdmi as TinyTang's single-output 371.25 MHz wrapper, a CLKDIV named div5, and those four INS_LOC lines - produced a synced and stable picture, while three earlier images built with the pixel clock on the PLL's second output produced no signal at all. Attempts to divide the clock without the placements failed to route, once with 'Net hclk5 has no route to the FCLK of s2h.hdmi.serializer.gwSer0 (sink wire X181Y102/FCLKA)'."
+  consequence: "These five constraints are load-bearing, not tuning: removing the placements makes the design either unroutable or silent. fpga/snes/tinysnes.cst carries them and fpga/snes/pll/gowin_pll_hdmi.v is the single-output wrapper. A change that re-enables the PLL's second output or drops an INS_LOC should be expected to break the picture."
+  sources:
+    - "TinyNES, fpga/ae350_soc/ae350_soc.cst: INS_LOC hdmi_pll27 PLL_R[1], hdmi_pll PLL_R[3], pix_div RIGHTSIDE[4], with the comment about the row-81 HCLK block and the 9.86 ns general route at PLL_L[3]"
+    - "TinyNES, fpga/ae350_soc/ae350_soc.sv:545: CLKDIV #(.DIV_MODE(\"5\")) pix_div"
+    - "TinyTang commit 207f9af, fpga/desktop/desktop.cst and fpga/desktop/pll/gowin_pll_hdmi.v"
+    - "This project's build/sweep6 routed netlists (bench only, not committed)"
+  verification: "Observed on this board on 2026-10-30: three builds with the second PLL output gave 'no signal', and the constrained build gave a stable picture the user confirmed. The failure and success were reproduced across separate loads."
+
+- record_id: EXT-003
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "TangCore's SNES loader: loading state, 64 header bytes, then the file in 1024-byte frames"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "nand2mario's firmware-bl616 loads a SNES ROM in this order: set_loading_state(1); send the 64 bytes at 0x7FC0 + off, where off is 512 when the file has a copier header; seek to off and send the file in 1024-byte chunks; overlay(0); set_loading_state(0). Frames are 0xAA then the length big-endian then the type byte then the payload, with the length counting the type byte, so a data frame of n bytes carries len = n + 1. loaders must also let the tail settle before releasing the loading state, because the core writes to SDRAM as data arrives."
+  consequence: "tools/load_snes_rom.py implements exactly this and the core agrees: with the harness driving the debug border, header_finished and loaded are both set after a load in one-wire and in two-wire, which is the evidence that the protocol and the header parse are correct and that the remaining fault is in the machine's memory path."
+  sources:
+    - "firmware-bl616 (github.com/nand2mario/firmware-bl616), core/snes.cpp: the load sequence, and utils/utils.cpp: send_fbuf_data() and set_loading_state()"
+    - "SNESTang commit 5f0ef19, src/iosys/iosys_bl616.v: the command list and the 0xAA frame format"
+  verification: "Read from the upstream firmware and cross-checked against the core's own RTL this session; the header-parse and release half was then confirmed on hardware by the debug border."
+
+- record_id: TCL-007
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "SNESTang's SDRAM capture is hand-tuned for Gowin's fitter and does not carry over: the SNES machine does not execute"
+  status: SOURCED
+  verified_date: 2026-10-30
+  statement: "In SNESTang, ROM, WRAM and ARAM all live in the external SDRAM, and sdram_cl2_2ch.v drives O_sdram_clk from the PLL's 225-degree output (fclk_p) while sampling SDRAM_DQ directly on posedge fclk. TinyNES's ahb_sdram.sv, which works on this board in the same open flow, instead clocks the part from an ODDR on clk and captures dq on negedge followed by posedge before use. With the header parse and the loading release confirmed, this project's SNES machine still displays a static 8x7 grid of black tiles with a grey top edge after loading either a commercial cart or a 32 KiB hand-built ROM that only writes CGRAM colour 0."
+  consequence: "The working theory is that the posedge capture window is wrong under nextpnr, so every SDRAM read - ROM fetch, WRAM, ARAM - returns garbage while writes may still land. The fix is to adopt TinyNES's capture and move the controller's fixed sampling points to match; the gate is the 32 KiB test ROM turning the active area blue. This record is SOURCED rather than VERIFIED because the mechanism is inferred from the code difference and the symptom, not yet proven by a working build."
+  sources:
+    - "SNESTang commit 5f0ef19, src/sdram_cl2_2ch.v (dq_in assignment, O_sdram_clk = fclk_p) and src/snestang_top.v"
+    - "TinyNES, fpga/ae350_soc/ahb_sdram.sv: ODDR sdram_clk_oddr, dq_fall on negedge, dq_rise on posedge"
+  verification: "Code comparison read this session; the symptom was observed on hardware on 2026-10-30 with the debug border showing header_finished and loaded set while the picture stayed static. No build has yet demonstrated the corrected capture."
+
+- record_id: BRD-003
+  kind: BOARD
+  topic_id: BRD
+  title: "Core bring-up: one-wire loads over the FT2232 with openFPGALoader, two-wire over tangload, and the console may drop after a load"
+  status: VERIFIED
+  verified_date: 2026-10-30
+  statement: "With the board cold-started on the OTG cable alone, the host enumerates the SIPEED FT2232 (0403:6010) with /dev/ttyUSB0 and /dev/ttyUSB1, and openFPGALoader -b tangconsole writes a .fs into SRAM, reporting 'Load SRAM ... Done'. With the board on its power input it enumerates the TinyTang CDC (ffff:5454) as /dev/ttyACM0, tangload loads a .bin from the card, and the core answers 'fpga: core N answering on UART1 at 2000000 baud'. After a tangload the console was seen several times to report readiness but return no data until the port was reopened or the board power-cycled."
+  consequence: "One-wire is the faster loop for video work (no card copy, no firmware in the way) and it also lets the host drive the core's UART directly at /dev/ttyUSB1, 2000000 baud 8N1, which is how the ROM and OSD frames were sent without the firmware. Two-wire is needed only for the card and the shell. Treat a dead console after tangload as expected noise and reopen the port before concluding anything."
+  sources:
+    - "Observed on this bench on 2026-10-30: lsusb, /dev/serial/by-id, openFPGALoader -b tangconsole, tangload output, fpga output"
+    - "TinyTang .ai/core-reference.md BRD-006 and USB-009 for the mode selection, and this project's core-log entry 2 for the observed drops"
+  verification: "Both paths exercised repeatedly this session; the FT2232 enumeration, the openFPGALoader load and the tangload load each reported success, and the console drops were seen three times after tangload and cleared by a power cycle."
+
 ```
 
 ---
