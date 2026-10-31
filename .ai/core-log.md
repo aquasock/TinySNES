@@ -504,3 +504,35 @@ Measure whether the 65816 ever got past the first handshake and how many times i
 - User Test: NOT RUN
 
 ---
+
+## 16 COMMIT Unreleased 2026-10-31T13:23:09-07:00
+
+#### Coming From:
+
+Unreleased 4928b56
+
+#### Purpose:
+
+Distinguish a 65816 that never cleared its first handshake from one that cleared it and re-entered its upload routine, since the boots on record differ in exactly that and no existing field could tell them apart.
+
+#### Outcome:
+
+`TINYSNES_LINK_PROBE` gained two more pieces of history in the four bits the top stripe had spare, so no existing field moved: bit 76 records that the 65816's program counter has been seen above $8894, which is only reachable by passing the first handshake, and bits 79:77 hold a saturating count of visits to $8888, the routine's entry. Building the second one found a real defect before hardware: it counted samples rather than visits, so holding $8888 for a few revolutions added several per visit and three visits read as seven, and it now counts only a transition into the address, remembering the previous accepted sample. The bench was corrected twice as well and both corrections are worth recording because they were errors of the test rather than the design: the first expected `st_past` to stay clear at $88EC, which was an arithmetic mistake -- $88EC is inside the range that means "past the handshake" and the design was right -- and the entry-count test asserted only a lower bound, which a sample-counting counter satisfies by overshooting, so it now requires exactly three. Mutation testing confirms all three new behaviours are covered: counting samples instead of visits, never setting `st_past`, and widening the `st_past` range to include the handshake are each caught by a specific check. Seed 7 built clean with zero hold/min violations, passing the timing gate at fclk 190.440 against 64.516 MHz, hclk 168.919 against 74.250 and iosys.clk 31.058 against 21.505, giving `tinysnes.fs` SHA-256 `5c8effe1b9257f816b6e93fee7957d3fdc7b8bb61663843d2a540463b7e9ea4a`; it was loaded one-wire and the bench's 1 MiB `zelda.smc` streamed at the core's UART. The readout, identical in all 170 decoded frames of 172 captured, is a fourth distinct boot state: every history bit is set, the entry count is four, Y has reached $FF, CPUO reads $10BB, CPUI reads $0000, A reads $00C8, and the 65816's program counter moves through $7C7C, $7C7D, $7C7E and $7C7F. The question this cycle asked is therefore answered on this boot: the CPU did clear the first handshake and it did re-enter the upload routine, four times. But the state it ended in is not a handshake stall at all. $7C7C in bank $00 is below the LoROM window, so it is WRAM and register space rather than code, and a program counter cycling through four consecutive addresses there is the jump-to-self signature entry 5 recorded as "executing where no ROM is mapped" -- which means this boot ran the upload four times and then left valid code altogether. Four boot states are now on record from consecutive loads of the same image: the SPC700 never advancing with the CPU parked in its echo-wait, the SPC mid-copy with the CPU waiting for $BBAA, and now the SPC mid-copy with the CPU crashed out of the ROM after four routine entries. They share one property and it is the only one that has survived every measurement: the two processors never stay in step. A failure that changes shape between boots of unchanged code is not a logic error in either processor's program; it is a race, a marginal timing path, or a read that sometimes returns the wrong data. The instrument cannot tell those apart, and no further field on this probe will, because it measures state rather than correctness. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 15 were not rewritten, revised TCL-008 and TCL-013 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixteen-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Stop adding state fields and test whether the machine reads the same data twice, because the varying failure shape across four boots now points at data corruption rather than at either processor's program, and entry 5 already named the first suspect: the SDRAM refresh competing with the CPU port, which answers four master clocks into a six-clock window, so a refresh that steals the slot returns stale data and the CPU executes a corrupted instruction. The instrument is a read-back comparison rather than a state probe: re-run the shape of `TINYSNES_ROM_CHECK`, which already reads the loaded image back out through the CPU's own port and compares it, but run it repeatedly and continuously while the machine executes instead of once before it starts, and count mismatches. A non-zero count proves the read path returns wrong data under load and makes the refresh-versus-CPU arbitration in `sdram_cl2_2ch.v` the fault; a zero count across a long run refutes it and moves the work to the write side, where the loader and the ARAM port would be re-examined with the machine live. The refresh gate is the specific code to read first either way: at `cycle[2]` the controller issues an AutoRefresh only when `!we_latch[0] && !oe_latch[0] && !we_latch[1] && !oe_latch[1]`, which looks correctly gated for a request already latched at `cycle[0]`, but nothing has verified that the gate holds for a request accepted in the same slot, and that is a two-line examination of the RTL rather than a hardware cycle. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all eleven diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` -- seven benches -- after any sampler change, and mutation-test each new history bit.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/link_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

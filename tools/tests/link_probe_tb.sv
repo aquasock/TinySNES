@@ -17,7 +17,7 @@
 //   [55:48] 65816 PC low  [63:56] 65816 PC high
 //   [71:64] SPC700 Y
 //   [72] CPUO ever != $AA   [73] Y ever != 0   [74] SPC PC ever < $FFC0
-//   [75] CPUI ever == $CC   [79:76] zero
+//   [75] CPUI ever == $CC   [76] 65816 past $8894   [79:77] $8888 sightings
 //
 // Checked here:
 //   1. every field lands where the comment says, with values that cannot be
@@ -157,11 +157,13 @@ module tb;
         check(probe_bus[31:16], 16'h7A44, "field 2: CPUI 1 above CPUI 0");
         check(probe_bus[47:32], 16'h0144, "field 3: 65816 A");
         check(probe_bus[63:48], 16'h88EC, "field 4: 65816 PC");
-        // [79:64] = {4'd0, st_cc, st_ipl, st_y, st_cpuo, y_r}.  o0 is $44, which
-        // is not the value st_cpuo is armed on, so that bit is clear; spc_y is
-        // $45, so st_y is set; spc_pc is $FFDC, so st_ipl is armed but clear;
-        // i0 is $44, so st_cc is clear.
-        check(probe_bus[79:64], 16'h0245, "field 5: st_y set, st_ipl armed, others clear");
+        // [79:64] = {cpu_ent, st_past, st_cc, st_ipl, st_y, st_cpuo, y_r}.
+        // o0 is $44, not the value st_cpuo arms on, so that bit is clear; spc_y
+        // is $45 so st_y is set; spc_pc is $FFDC so st_ipl is armed but clear;
+        // i0 is $44 so st_cc is clear; cpu_pc is $88EC, which is above $8894, so
+        // st_past is SET -- the upload loop is reachable only by passing the
+        // handshake.  cpu_ent is zero because $8888 has not been seen.
+        check(probe_bus[79:64], 16'h1245, "field 5: st_past and st_y set, st_ipl armed, st_cpuo/st_cc clear");
 
         // ---- sticky bits: arming, then history ---------------------------
         // The bit that tests "CPUO has changed away from $AA" must not fire
@@ -302,9 +304,120 @@ module tb;
         end else
             $display("ok   st_cc ignores $CD");
 
+        // ---- st_past: did the CPU ever clear the first handshake? ---------
+        // $88EC is the upload loop's echo-wait.  It is reached only by falling
+        // through $8891/$8894, so it DOES count as past the handshake -- the
+        // first version of this test asserted the opposite and was wrong about
+        // the range, not the design.
+        cpu_pc = 16'h8888;
+        repeat (40) @(posedge mclk);
+        @(negedge mclk); resetn = 1'b0; repeat (4) @(posedge mclk); resetn = 1'b1;
+        cpu_pc = 16'h88EC;
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[76] !== 1'b1) begin
+            $display("FAIL st_past not set at $88EC, which is only reachable past the handshake");
+            errors = errors + 1;
+        end else
+            $display("ok   st_past sets at $88EC, the upload loop past the handshake");
+
+        // From a clean reset, the handshake addresses themselves must not set it.
+        @(negedge mclk); resetn = 1'b0; repeat (4) @(posedge mclk); resetn = 1'b1;
+        cpu_pc = 16'h8891;                       // the handshake itself
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[76] !== 1'b0) begin
+            $display("FAIL st_past set at $8891, the handshake it means to have passed");
+            errors = errors + 1;
+        end else
+            $display("ok   st_past clear at $8891");
+
+        cpu_pc = 16'h8896;                       // first byte past the handshake
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[76] !== 1'b1) begin
+            $display("FAIL st_past did not set at $8896");
+            errors = errors + 1;
+        end else
+            $display("ok   st_past sets at $8896, the first address past the handshake");
+
+        cpu_pc = 16'h88EC;                       // back out of the range
+        repeat (40) @(posedge mclk);
+        latch_display;
+        if (probe_bus[76] !== 1'b1) begin
+            $display("FAIL st_past cleared when the PC left the range -- it is history");
+            errors = errors + 1;
+        end else
+            $display("ok   st_past survives the PC leaving the range");
+
+        // ---- the $8888 entry count --------------------------------------
+        // It saturates at 7 and never wraps, so a busy machine cannot alias a
+        // large count down to a small one.
+        // Move the PC off any qualifying address BEFORE releasing reset: otherwise
+        // the sampler re-sets st_past on its first revolution after reset and the
+        // check reads a value the design set legitimately, not a stale one.
+        @(negedge mclk); resetn = 1'b0;
+        cpu_pc = 16'h0000;
+        repeat (4) @(posedge mclk); resetn = 1'b1;
+        repeat (20) @(posedge mclk);
+        if (dut.cpu_ent !== 3'd0) begin
+            $display("FAIL entry count non-zero after reset: %0d", dut.cpu_ent);
+            errors = errors + 1;
+        end else
+            $display("ok   entry count starts at zero");
+        // Read the sampler's own register, not probe_bus: probe_bus is the
+        // latched display and would show a stale value after the reset.
+        if (dut.st_past !== 1'b0) begin
+            $display("FAIL st_past survived a reset");
+            errors = errors + 1;
+        end else
+            $display("ok   st_past cleared by reset");
+
+        // Each visit to $8888 that the probe samples adds one.  Dwell long
+        // enough on each that an 11-mclk sampler cannot miss it.
+        begin : entries
+            integer k;
+            for (k = 0; k < 3; k = k + 1) begin
+                cpu_pc = 16'h8888;
+                repeat (40) @(posedge mclk);
+                cpu_pc = 16'h9000;               // off the address between visits
+                repeat (40) @(posedge mclk);
+            end
+        end
+        latch_display;
+        // Exactly three, not "at least three": a counter that added one per
+        // SAMPLE rather than per VISIT would read 7 here, and a lower-bound test
+        // would pass it.  Each visit dwells 40 mclk, well over one revolution,
+        // so the lower-bound caveat does not apply to this stimulus.
+        if (probe_bus[79:77] !== 3'd3) begin
+            $display("FAIL entry count %0d after three visits to $8888, want exactly 3",
+                     probe_bus[79:77]);
+            errors = errors + 1;
+        end else
+            $display("ok   entry count is exactly 3 after three visits");
+
+        // Saturate rather than wrap.
+        @(negedge mclk); resetn = 1'b0; repeat (4) @(posedge mclk); resetn = 1'b1;
+        begin : saturate
+            integer k;
+            for (k = 0; k < 12; k = k + 1) begin
+                cpu_pc = 16'h8888;
+                repeat (40) @(posedge mclk);
+                cpu_pc = 16'h9000;
+                repeat (40) @(posedge mclk);
+            end
+        end
+        latch_display;
+        if (probe_bus[79:77] !== 3'd7) begin
+            $display("FAIL entry count %0d after twelve visits, want saturation at 7",
+                     probe_bus[79:77]);
+            errors = errors + 1;
+        end else
+            $display("ok   entry count saturates at 7");
+
         // Restore the machine state the later checks assume, so these tests do
         // not leave the bench inspecting values they changed themselves.
-        o0 = 8'h44; spc_y = 8'h45; i0 = 8'h44;
+        o0 = 8'h44; spc_y = 8'h45; i0 = 8'h44; cpu_pc = 16'h88EC;
         repeat (30) @(posedge mclk);
 
         // ---- 2. the two directions are independent ----------------------
@@ -372,12 +485,12 @@ module tb;
         repeat (4) @(posedge mclk);
         #1;
         if (dut.st_cpuo !== 1'b0 || dut.st_y !== 1'b0 || dut.st_ipl !== 1'b0
-            || dut.st_cc !== 1'b0) begin
-            $display("FAIL sticky bits not cleared by reset: cpuo=%b y=%b ipl=%b cc=%b",
-                     dut.st_cpuo, dut.st_y, dut.st_ipl, dut.st_cc);
+            || dut.st_cc !== 1'b0 || dut.st_past !== 1'b0 || dut.cpu_ent !== 3'd0) begin
+            $display("FAIL history not cleared by reset: cpuo=%b y=%b ipl=%b cc=%b past=%b ent=%0d",
+                     dut.st_cpuo, dut.st_y, dut.st_ipl, dut.st_cc, dut.st_past, dut.cpu_ent);
             errors = errors + 1;
         end else
-            $display("ok   reset clears all four sticky bits");
+            $display("ok   reset clears all five history bits and the entry count");
 
         if (errors == 0) $display("PASS");
         else             $display("FAIL: %0d mismatches", errors);

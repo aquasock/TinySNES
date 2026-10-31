@@ -584,13 +584,30 @@ assign dbg_dat_in = 8'h00;
 //   [47:32] 65816 A                    its compare operand at $88EC
 //   [63:48] 65816 PC                   where the CPU is, which dates the desync
 //   [71:64] SPC700 Y                   its index in the block-copy loop
-//   [79:72] four zeros above four sticky history bits:
+//   [79:77] a saturating count of times the 65816's PC was seen at $8888, the
+//            entry to its upload routine; a lower bound, for the reason below
+//   [76]    the 65816's PC has been seen past $8894, i.e. the CPU cleared the
+//            first handshake at least once on this boot
+//   [75:72] four sticky history bits:
 //             [75] CPUI port 0 has ever held $CC, the byte the IPL waits for
 //             [74] the SPC700's PC has been outside $FFC0-$FFFF since it was
 //                  first seen inside it
 //             [73] the SPC700's Y has ever been non-zero
 //             [72] CPUO port 0 has changed away from $AA since it was first
 //                  seen at $AA
+//
+// st_past and the entry count answer the next one.  Three boots are now on
+// record and they differ in exactly one respect that matters: two reached $88EC
+// through the first handshake and one never left $8891.  A CPU that has never
+// been seen past $8894 with a SPC700 that ran a full copy means something other
+// than this call drove the transfer, while a CPU seen past $8894 and back at
+// $8888 again means the routine completed and was re-entered -- and a second
+// entry waits for a $BBAA that only a restart of the SPC can produce.
+//
+// The entry count is a lower bound and is documented as one: the probe samples
+// the 65816's PC every 11 mclk, one 65816 cycle is about 6 mclk, so a sighting
+// that lasts a single cycle can be missed.  st_past is a range check on every
+// accepted sample and carries no such caveat.
 //
 // The $CC bit answers the question this build exists for: the previous build
 // established that the SPC700 has never advanced, so either it was shown $CC and
@@ -657,6 +674,9 @@ reg       st_cpuo = 1'b0;    // CPUO port 0 has changed away from $AA
 reg       st_y    = 1'b0;    // SPC700 Y has ever been non-zero
 reg       st_ipl  = 1'b0;    // SPC700 PC has left the IPL since entering it
 reg       st_cc   = 1'b0;    // CPUI port 0 has ever held $CC
+reg       st_past = 1'b0;    // the 65816's PC has been past the first handshake
+reg [2:0] cpu_ent = 3'd0;    // saturating count of VISITS to $8888 (lower bound)
+reg       cpu_at_entry = 1'b0;  // the previous accepted sample was $8888
 reg       arm_cpuo = 1'b0;   // CPUO has been seen at $AA
 reg       arm_ipl  = 1'b0;   // the SPC's PC has been seen inside the IPL
 
@@ -712,6 +732,9 @@ always @(posedge mclk) begin
         st_y     <= 1'b0;
         st_ipl   <= 1'b0;
         st_cc    <= 1'b0;
+        st_past  <= 1'b0;
+        cpu_ent  <= 3'd0;
+        cpu_at_entry <= 1'b0;
         arm_cpuo <= 1'b0;
         arm_ipl  <= 1'b0;
     end else begin
@@ -742,6 +765,25 @@ always @(posedge mclk) begin
     if (link_ph == 4'd8 && pch1 == dbg_dat_out) begin
         cpu_hi <= pch1;
         cpu_lo <= pcl;
+
+        // History on the accepted sample, so it cannot be polluted by a torn
+        // pair.  Any address above $8894 means the CPU cleared the first
+        // handshake at least once on this boot: $8891 is the compare and $8894
+        // the branch back to it, so the first address that proves the handshake
+        // was passed is the one after the branch, and the upload loop at $88EC
+        // counts because it is reached only from there.  The bound is also
+        // offset by the routine's own revisit behaviour -- $8905 holds a JSR
+        // back into $8888 -- but any sighting below $88CC still only happens
+        // after the handshake.
+        if ({pch1, pcl} > 16'h8894 && {pch1, pcl} < 16'h9000)
+            st_past <= 1'b1;
+        // Count VISITS, not samples.  Holding $8888 for several revolutions
+        // would otherwise add one per sample: the first version of this counter
+        // read 7 after three visits.  cpu_at_entry remembers the previous
+        // accepted sample, so only a transition into $8888 counts.
+        cpu_at_entry <= ({pch1, pcl} == 16'h8888);
+        if ({pch1, pcl} == 16'h8888 && ~cpu_at_entry && cpu_ent != 3'd7)
+            cpu_ent <= cpu_ent + 3'd1;
     end
 
     // Latched display snapshot, refreshed once every 2^19 phase revolutions for
@@ -750,7 +792,7 @@ always @(posedge mclk) begin
     if (link_ph == 4'd10) begin
         link_wrap <= link_wrap + 19'd1;
         if (link_wrap == 19'd0)
-            fp_bus <= {4'd0, st_cc, st_ipl, st_y, st_cpuo,
+            fp_bus <= {cpu_ent, st_past, st_cc, st_ipl, st_y, st_cpuo,
                        y_r, cpu_hi, cpu_lo, a_hi, a_lo, i1, i0, o1, o0};
     end
 end
