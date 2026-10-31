@@ -590,18 +590,38 @@ assign dbg_dat_in = 8'h00;
 //
 // probe_bus fields, low to high:
 //   [15:0]  PC at the first sample outside $FFC0-$FFFF -- the jump target
-//   [31:16] A and X latched at that moment
+//   [31:16] the SPC700's live Y above its live A
 //   [47:32] the current SPC700 PC, refreshed every latch
 //   [63:48] CPUI ports 3 and 2, the transfer address the 65816 sent
 //   [79:64] CPUI ports 1 and 0, of which port 1 becomes X above
 // A jump target of $0000, or one inside $00F0-$00FF, would land in the port or
 // timer bank where no code can run; a target that merely holds the wrong bytes
 // moves the fault into the upload itself.
+//
+// Y is why this probe exists in its present form.  On hardware the exit latch
+// never fired -- the SPC700 sat at $FFDA-$FFEA, inside the IPL's own block-copy
+// loop -- so the address a jump would have used is not the question yet.  That
+// loop is entered at $FFDA and turns entirely on its compare:
+//
+//   $FFDA  MOV $F4,A        echo A back to the 65816
+//   $FFDC  CMP Y,$F4        wait until the CPU has consumed it
+//   $FFDE  BNE $FFDC
+//   $FFE0  MOV A,$F5        next data byte from CPUI[1]
+//   $FFE2  MOV $F4,Y        publish Y as the index
+//   $FFE4  MOV $F5,A
+//   $FFE5  ADC Y,#$01       advance the index
+//   $FFE7  MOV Y,A
+//   $FFE8  CMP Y,#$10
+//   $FFEA  BNE $FFDA        until 16 bytes have moved
+//
+// So Y and CPUI port 0 are the two halves of that compare, and their relation
+// says which way the upload has failed: Y held at the index CPUI already shows
+// puts the fault in the echo path, Y below it means bytes are being dropped as
+// they are stored, and Y above it means the SPC has run ahead of the CPU.
 reg [3:0] ipl_ph = 4'd0;
 reg [7:0] pch1 = 8'd0, pcl = 8'd0;
-reg [7:0] a_r = 8'd0, x_r = 8'd0;
+reg [7:0] a_r = 8'd0, x_r = 8'd0, y_r = 8'd0;
 reg [7:0] i0 = 8'd0, i1 = 8'd0, i2 = 8'd0, i3 = 8'd0;
-reg [7:0] exit_a = 8'd0, exit_x = 8'd0;
 reg [15:0] exit_pc = 16'd0;
 reg [15:0] cur_pc = 16'd0;
 reg        in_ipl = 1'b0;         // the IPL range has been seen at least once
@@ -616,6 +636,7 @@ reg [79:0] fp_bus = 80'd0;
 always @(*) begin
     case (ipl_ph)
     4'd0, 4'd1, 4'd2, 4'd3, 4'd4: dbg_sel = 8'h08;   // the SPC700 core
+    4'd9:                         dbg_sel = 8'h08;   // the SPC700 core, live Y
     default:                      dbg_sel = 8'h10;   // the SMP wrapper's ports
     endcase
 end
@@ -629,22 +650,26 @@ always @(*) begin
     4'd5:    dbg_reg = 8'h00;                    // CPUI 0
     4'd6:    dbg_reg = 8'h01;                    // CPUI 1
     4'd7:    dbg_reg = 8'h02;                    // CPUI 2
-    default: dbg_reg = 8'h03;                    // CPUI 3
+    4'd8:    dbg_reg = 8'h03;                    // CPUI 3
+    default: dbg_reg = 8'h02;                    // SPC700 Y
     endcase
 end
 
 always @(posedge mclk) begin
     dbg_reg_wr <= 1'b0;
-    ipl_ph     <= (ipl_ph == 4'd8) ? 4'd0 : ipl_ph + 4'd1;
+    ipl_ph     <= (ipl_ph == 4'd9) ? 4'd0 : ipl_ph + 4'd1;
     case (ipl_ph)
     4'd0: pch1 <= dbg_dat_out;
     4'd1: pcl  <= dbg_dat_out;
     4'd3: a_r  <= dbg_dat_out;
-    4'd4: x_r  <= dbg_dat_out;
+    4'd4: x_r  <= dbg_dat_out;   // captured but not displayed: X is the IPL's
+                                 // own scratch, set from CPUI[1] at $FFF8, and
+                                 // there is no spare stripe for it this cycle
     4'd5: i0   <= dbg_dat_out;
     4'd6: i1   <= dbg_dat_out;
     4'd7: i2   <= dbg_dat_out;
     4'd8: i3   <= dbg_dat_out;
+    4'd9: y_r  <= dbg_dat_out;
     endcase
 
     // The PC pair is accepted only when the high byte read on both sides of the
@@ -665,18 +690,16 @@ always @(posedge mclk) begin
         // must not overwrite the evidence.
         if (in_ipl && {pch1, pcl} < 16'hFFC0 && ~exit_seen) begin
             exit_pc   <= {pch1, pcl};
-            exit_a    <= a_r;
-            exit_x    <= x_r;
             exit_seen <= 1'b1;
         end
     end
 
     // Latched display snapshot, refreshed once every 2^19 phase revolutions for
     // the reason in core-reference TCL-011: a live bus cannot be photographed.
-    if (ipl_ph == 4'd8) begin
+    if (ipl_ph == 4'd9) begin
         ipl_wrap <= ipl_wrap + 19'd1;
         if (ipl_wrap == 19'd0)
-            fp_bus <= {i1, i0, i3, i2, cur_pc, exit_a, exit_x, exit_pc};
+            fp_bus <= {i1, i0, i3, i2, cur_pc, y_r, a_r, exit_pc};
     end
 end
 

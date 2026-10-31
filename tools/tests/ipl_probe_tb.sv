@@ -9,7 +9,7 @@
 // the 65816 all use overlapping register numbers.
 //
 // probe_bus bit layout, from the concatenation in the sampler:
-//   [15:0]  exit_pc   [23:16] exit_x    [31:24] exit_a   [47:32] cur_pc
+//   [15:0]  exit_pc   [23:16] A (live)  [31:24] Y (live) [47:32] cur_pc
 //   [55:48] CPUI[2]   [63:56] CPUI[3]   [71:64] CPUI[0]  [79:72] CPUI[1]
 //
 // What is checked, in the order the machine would break it:
@@ -51,6 +51,7 @@ module tb;
     reg [15:0] spc_pc = 16'hFFC0;   // starts at the IPL's reset vector
     reg  [7:0] spc_a  = 8'h00;
     reg  [7:0] spc_x  = 8'h00;
+    reg  [7:0] spc_y  = 8'h00;
     reg  [7:0] cpui0  = 8'h00, cpui1 = 8'h00, cpui2 = 8'h00, cpui3 = 8'h00;
 
     function [7:0] reg_data(input [7:0] sel, input [7:0] regno);
@@ -59,6 +60,7 @@ module tb;
                 case (regno)
                     8'h00:   reg_data = spc_a;
                     8'h01:   reg_data = spc_x;
+                    8'h02:   reg_data = spc_y;
                     8'h03:   reg_data = spc_pc[7:0];
                     8'h04:   reg_data = spc_pc[15:8];
                     default: reg_data = 8'hDD;
@@ -158,13 +160,14 @@ module tb;
         repeat (40) @(posedge mclk);
         spc_pc = 16'hFFC9; repeat (20) @(posedge mclk);
         spc_pc = 16'hFFCF; repeat (20) @(posedge mclk);
-        // The jump.  A and X here are what the JMP used.
-        spc_pc = 16'h0A55; spc_a = 8'h34; spc_x = 8'h02;
+        // The jump.  Y and A are deliberately different from each other and from
+        // every other field, so a transposed pair cannot pass.
+        spc_pc = 16'h0A55; spc_a = 8'h34; spc_x = 8'h02; spc_y = 8'h5C;
         repeat (60) @(posedge mclk);
         latch_display;
 
         check(probe_bus[15:0],  16'h0A55, "field 1: first PC outside the IPL is the jump target");
-        check(probe_bus[31:16], 16'h3402, "field 2: A above X at the jump");
+        check(probe_bus[31:16], 16'h5C34, "field 2: live Y above live A");
         check(probe_bus[47:32], 16'h0A55, "field 3: current PC");
         check(probe_bus[63:48], 16'h0B55, "field 4: CPUI 3 above CPUI 2");
         check(probe_bus[79:64], 16'h02AA, "field 5: CPUI 1 above CPUI 0");
@@ -177,6 +180,16 @@ module tb;
         latch_display;
         check(probe_bus[15:0],  16'h0A55, "exit latched once and not overwritten");
         check(probe_bus[47:32], 16'h1234, "current PC does keep moving");
+
+        // Y and A must be live, not frozen at the exit moment: move both and
+        // confirm the stripe follows, because the whole point of this cycle is
+        // reading the SPC's index against CPUI port 0 as the machine runs.
+        spc_y = 8'h7E; spc_a = 8'h11; cpui0 = 8'h9F;
+        repeat (30) @(posedge mclk);
+        latch_display;
+        check(probe_bus[31:16], 16'h7E11, "field 2 follows live Y and A");
+        check(probe_bus[79:72], 8'h02, "field 5 high byte is CPUI 1, unchanged at $02");
+        check(probe_bus[71:64], 8'h9F, "field 5 low byte follows live CPUI 0");
 
         // ---- 4. a tearing PC pair is rejected ---------------------------
         // The invariant: while the high byte moves between the probe's two reads

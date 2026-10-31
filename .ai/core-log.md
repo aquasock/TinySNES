@@ -343,3 +343,35 @@ Read the SPC700's Y in the same frame as CPUI port 0, because the IPL's block lo
 - User Test: NOT RUN
 
 ---
+
+## 11 COMMIT Unreleased 2026-10-31T12:07:44-07:00
+
+#### Coming From:
+
+Unreleased 2bc2536
+
+#### Purpose:
+
+Read the SPC700's Y in the same frame as CPUI port 0, because the IPL block-copy loop turns on `CMP Y,$F4` and the deadlock is two processors waiting on a value that should be equal.
+
+#### Outcome:
+
+The IPL probe grew a tenth phase that reads the SPC700's Y, and the stripe that used to carry A and X from the one moment the exit latch never fires now carries live Y above live A; the live-follow behaviour is asserted by the bench rather than assumed, by moving both and checking that the stripe follows. The bench caught two of its own errors before hardware: an expected value taken from a field it had already changed, and a declaration removed while the capture that used it remained. Seed 5 failed place and route with two hold violations on `posedge fclk`, which is the seed sensitivity this project already records, and seed 6 built clean and passed the timing gate at fclk 272.777 against 64.516 MHz, hclk 162.022 against 74.250 and iosys.clk 30.284 against 21.505, giving `tinysnes.fs` SHA-256 `1b90e66f1da3646f01fb62ba0856b0d440a5e9cba67b11658ff09d4595ed6d70`. It was loaded one-wire and the bench's 1 MiB `zelda.smc` streamed at the core's UART; the status band reads cyan again, so the exit latch still has not fired and the SPC700 is still inside its IPL ROM. The readout, from 177 of 180 decoded frames and identical in every one: Y is $45, A is $7A, CPUI port 0 is $44, CPUI port 1 is $7A, CPUI ports 3 and 2 are $40 and $00 giving a $4000 transfer address, and the program counter moves through $FFDA, $FFDC, $FFDD and $FFEB. Decoded against the IPLROM, that loop at $FFDA is `CMP Y,$F4 / BPL`, then `MOV A,$F5`, `MOVW $F4,YA`, `MOV [$00]+Y,A`, `INC Y`, and back to the compare, so its steady state is that Y runs one ahead of CPUI port 0 while the SPC waits for the 65816 to publish the next index. The measured relation is exactly that: Y is $45 and CPUI port 0 is $44, and A equals CPUI port 1, which is the byte the 65816 published. The SPC700 is therefore doing its job correctly -- it consumed the CPU's byte, stored it through ARAM at [$00]+Y, published Y into CPUO, advanced, and is now waiting for the next index -- and the fault is on the 65816 side, which has published index $44 and sits at $88EC comparing `$2140` against its own A without ever advancing to $45. That refines entry 10 rather than contradicting it, and it withdraws the third branch that entry's Next Steps offered: the SPC has not run ahead of the CPU through any fault of its own. The two remaining explanations are the ones the earlier branches named, and the measurement that separates them is CPUO port 0 beside the 65816's A in the same frame, which no current probe carries -- the APU probe has CPUO and A but not Y and CPUI in a form that pairs with them, and this probe has Y and CPUI but not CPUO. One observation is recorded without interpretation because it does not fit a clean reading: Y at $45 is above the $0F that the block loop's own `CMP Y,#$10` bound implies, and whether that means Y is a running byte counter across blocks or that the loop was entered on a different path has not been established. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 10 were not rewritten, made no change to `core-reference.md` this cycle beyond the diagnostic-build count already revised in entry 10, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eleven-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Put CPUO port 0 and the 65816's A into the same snapshot as CPUI port 0, CPUI port 1 and the SPC700's Y, because that single frame decides between the two remaining explanations and every probe built so far carries only half of it: the APU probe has CPUO and the 65816's A, and this one has the SPC's Y and the CPUI banks. The cleanest instrument is one build that merges them -- CPUO ports 1 and 0, CPUI ports 1 and 0, the 65816's A, and the SPC700's Y and PC -- and the readout that matters is whether CPUO port 0 holds $44, the echo the SPC published, beside a 65816 whose A is also $44. If CPUO holds $44 and the CPU still sits at $88EC, the CPU's read of `$2140` is not returning CPUO and the fault is in the APU port read path after all, which would reopen the question entry 8 closed -- and the way to test it without touching timing is to compare the value the CPU reads against the value the SPC published in the same frame rather than one probe apart. If CPUO holds something else, the SPC's publish at $FFE0 is landing in the wrong register or being overwritten, and the fault is in the `MOVW $F4,YA` write path in smp.v. Do not re-time the port-0 read path, the DQ capture or the SDRAM clock, do not reintroduce the ODDR on fclk, and do not build a diagnostic display branch on an `elsif` that ORs two macros. Keep all ten diagnostic builds as the regression set and run `tools/tests/probe_tb.sh` -- six benches -- after any sampler change.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/ipl_probe_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
