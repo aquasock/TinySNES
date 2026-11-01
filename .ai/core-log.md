@@ -757,3 +757,33 @@ None.
 - User Test: NOT RUN
 
 ---
+
+## 24 COMMIT Unreleased 2026-10-31T19:22:18-07:00
+
+#### Coming From:
+
+Unreleased f577564
+
+#### Purpose:
+
+Check the user's recollection that TinyGBA had already met this fault, by reading its recent findings against this design's routed netlist.
+
+#### Outcome:
+
+The recollection was right and the match is exact. TinyGBA's entry 4 records that `clk67` fell back to general routing on all 255 of its sinks with 1.2 to 1.9 ns of skew, that this cost clean seeds on every netlist change, and that it was suspected of both a failed SDRAM readback and an absent picture; the cause was a missing database entry rather than any design compromise, because apicula's `_gw5a_pll_clk_wires` carried only two pips into the clock plane, both from `CLKOUT0`, so a second PLL output had no way to reach the plane at all. TinyGBA measured two vendor builds, established that a second output reaches the plane on a lane whose number follows the output number, added `(0, 'CLKOUT2') -> 'TLPLL0CLK2'`, regenerated the chipdb and rebuilt nextpnr, and the result went from three clean seeds of six to eight of eight with `clk67` on global resources. Applying the same question to this design found the same class of fault, larger. The fork's pip table carries exactly three entries -- `(0, CLKOUT0) -> TLPLL0CLK0`, `(4, CLKOUT0) -> TRPLL0CLK0` and `(0, CLKOUT2) -> TLPLL0CLK2` -- and this design's three PLLs sit at `PLL_R[0]`, `PLL_R[1]` and `PLL_R[3]` with outputs `CLKOUT0`, `CLKOUT1` and `CLKOUT2`. So only `mclk` from `PLL_R[0]` `CLKOUT0` has a pip; `fclk` from `CLKOUT1` has none anywhere in the database, `fclk_p` from `CLKOUT2` has no slot-4 entry, and `clk27` from `PLL_R[1]` `CLKOUT0` has no slot-5 entry. Reading the routed netlist confirms what that means in silicon: `iosys.clk`, which is `mclk`, runs 11910 segments through the `CLK1`/`GB10` global taps as expected, while `fclk` runs 1281 segments of ordinary interconnect -- `X151Y19/W130`, `X150Y19/N830` -- with no spine and no global tap anywhere in its route, and it clocks 225 flip-flops spread from X140 to X180 and Y0 to Y20. `hclk5` is unaffected because it takes the `FCLKA`/`HCLK32` dedicated high-speed lane to the OSER10s, which is the correct path for that clock. `fclk` is the SDRAM controller's clock: `sdram_snes` takes `.clk(fclk)`, so the ROM, WRAM, ARAM and loader paths all run on a net the router placed on general interconnect with no skew guarantee, at 15.5 ns per period. That is the same fault TinyGBA found, on the clock that matters most here, and it is the first hypothesis this session that explains the shape of every measurement: the compact self-tests place their handful of `fclk` flip-flops close together and pass, while the machine spreads 225 of them across 40 tiles of width and fails, which is exactly the split between byte-lane tests that pass and a machine that does not run. It also explains the nondeterminism without invoking anything else, because a marginal rather than broken path resolves differently depending on power-up state, temperature and the exact phase at which the loader releases the core. The bound is stated: this is a mechanism matched against a sibling project's measured result and confirmed present in this design's netlist, not yet proven to be the cause, and the untested step is whether putting `fclk` on the clock plane makes the machine run. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 23 were not rewritten, revised DEV-004 and TCL-007 in place and added TCL-015, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-four-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Add the missing pip for `PLL_R[0]` `CLKOUT1` and test whether `fclk` reaches the clock plane and the machine runs, because that is the one lever nothing this session has touched: TinyGBA's evidence establishes that an output's lane number follows its output number, from `CLKOUT0` on lane 0 and `CLKOUT2` on lane 2 measured in two vendor builds, so `CLKOUT1` on `TRPLL0CLK1` is the entry to add as `(4, 'CLKOUT1') -> 'TRPLL0CLK1'`. The fork's own rule is that only measured entries belong in that table, so this needs a vendor measurement first, in the shape TinyGBA used: a Gowin IDE build with `CLKOUT1` alone enabled driving a register bank, unpacked and read for the spine and bridge it takes. That is a change to a tool three projects share, so it needs the user's approval and should be offered to TinyNES and TinyGBC rather than kept here. The narrower test that needs no fork change at all is to move `fclk` onto `PLL_R[4]` or another slot that already has a `CLKOUT0` pip, rebuilding `gowin_pll_snes` with the same dividers so `mclk`, `fclk` and `fclk_p` come from outputs that have database entries -- `mclk` from one PLL's `CLKOUT0` and `fclk` from another's `CLKOUT0`, at the cost of one more PLL and the phase relationship between them, which is why the pip is the better fix and this is the fallback. Either way, confirm the result with `tools/clock_plane_report.py` before loading and with `tools/sample_boot_states.py` across five boots after, and extend `tools/clock_plane_report.py` to flag any clock net that carries more than a handful of flip-flops without a spine tap, since that check would have caught this and catches the next one. Do not build another memory test and do not sweep more seeds.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

@@ -89,6 +89,7 @@ rules:
 | Why did a probe readout carry a different value in every row? | TCL | TCL-011 |
 | Why did a diagnostic build draw nothing at all? | TCL | TCL-012 |
 | Which clock-plane pips are safe on this board? | DEV | DEV-004 |
+| Why is a clock on general routing instead of the global network? | TCL | TCL-015 |
 | Why did a gated flag silently not apply? | TCL | TCL-014 |
 | Why does a sticky history bit always read as set? | TCL | TCL-013 |
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
@@ -107,7 +108,7 @@ TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported cons
 TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch path
 TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route · TCL-010 read latency and the CPU's latch ·
 TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with two macros selects nothing ·
-TCL-013 a sticky bit must be armed against its reset value
+TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol
@@ -466,6 +467,20 @@ EXT-006 the IPL block-copy protocol
     - "This repository, tools/build_tinysnes.sh, the clock-plane gate invocation"
     - "bash manual, parameter expansion, `${parameter:+word}`"
   verification: "Observed on 2026-10-31 (core-log entry 22): six seeds were refused although TINYSNES_ALLOW_UNMEASURED_CLOCKS=1 was exported, and the same seeds all built once the flag was assembled as an array."
+
+- record_id: TCL-015
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "apicula's PLL-to-clock-plane table carries only CLKOUT0 at slots 0 and 4 and CLKOUT2 at slot 0, so any other PLL output falls back to general routing"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "`apycula/chipdb.py`'s `_gw5a_pll_clk_wires['GW5AST-138C']` holds exactly three entries: `(0, 'CLKOUT0') -> 'TLPLL0CLK0'`, `(4, 'CLKOUT0') -> 'TRPLL0CLK0'` and `(0, 'CLKOUT2') -> 'TLPLL0CLK2'`.  A PLL output with no entry here has no pip into the 24-wire clock plane, and nextpnr then routes it on ordinary interconnect: in this design `fclk`, which is `PLL_R[0]`'s `CLKOUT1`, takes 1281 general-routing segments (`X151Y19/W130`, `X150Y19/N830`) with no spine and no global tap, and clocks 225 flip-flops spread from X140 to X180 and Y0 to Y20, while `mclk`, which is the same PLL's `CLKOUT0`, runs 11910 segments through the `CLK1`/`GB10` global taps.  TinyGBA measured the mechanism from the other side on 2026-10-31: `clk67` on general routing had 255 sinks with 1.2 to 1.9 ns of skew and was suspected of a failed SDRAM readback and an absent picture; two vendor builds showed a second output reaches the plane on the lane matching its output number, the `CLKOUT2` entry was added, and eight of eight seeds then routed on global resources."
+  consequence: "Placing a PLL at a site whose output has no entry in this table silently costs the clock its global network, and the design fails in ways that look like logic or memory faults: skew across a domain makes paths marginal rather than broken, so compact self-tests that place their flip-flops close together pass while a machine that spreads the same domain over tens of tiles fails, and the failure point moves between boots.  Any clock that carries more than a handful of flip-flops must be checked for a spine tap in the routed netlist before a failure is blamed on logic -- `tools/clock_plane_report.py` now reports this, and the general-routing case is the one to look for.  Adding a pip needs a vendor measurement in the shape TinyGBA used, because the fork's rule is that only measured entries go in the table; the alternative that needs no database change is to re-place the PLL onto a slot that already has a `CLKOUT0` entry."
+  sources:
+    - "aquasock/apicula epic/gw5ast138c 495661a, apycula/chipdb.py _gw5a_pll_clk_wires"
+    - "TinyGBA .ai/core-log.md entry 4 and the two vendor builds it describes"
+    - "This repository, build/kpl7/tinysnes-routed.json and fpga/snes/tinysnes.cst"
+  verification: "The table contents were read directly from the fork on 2026-10-31 and the consequence measured on this design's routed netlist (core-log entry 24): `fclk` has 1281 general-routing segments, no spine and no global tap, against `mclk`'s global route.  Whether putting `fclk` on the plane makes the machine run has not been tested."
 
 - record_id: BRD-003
   kind: BOARD
