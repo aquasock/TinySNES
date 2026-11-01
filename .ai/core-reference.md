@@ -111,7 +111,8 @@ TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch p
 TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route · TCL-010 read latency and the CPU's latch ·
 TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with two macros selects nothing ·
 TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip ·
-TCL-016 a ROM-address ring names a hot address, not a fetch sequence
+TCL-016 a ROM-address ring names a hot address, not a fetch sequence ·
+TCL-017 the WRAM debug channel is selected but never driven
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
@@ -538,6 +539,19 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "This repository, fpga/snes/src/snestang_top.v: the TINYSNES_TRACE_PROBE and TINYSNES_JUMP_PROBE rings and their `~ROM_CE_N && ROM_CE_N_d` edge test"
     - "This repository, tools/sample_boot_states.py: the trace and jump layouts"
   verification: "Measured on 2026-10-31 and 2026-11-01 (core-log entries 31 and 32): the trace ring read `$8894` four times on a boot whose loop fetches five distinct addresses, which cannot be a complete fetch sequence, while the same instrument in the same session also reported four distinct addresses on a boot that had left the cartridge, so the ring does track real changes and is not stuck."
+
+- record_id: TCL-017
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "The SNES debug selector offers a WRAM channel whose data wire is never driven, so a WRAM read through DBG_SEL[2] returns an undriven value"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "`SNES.v` declares `DBG_WRAM_DAT`, assigns `WRAM_DBG_WR = DBG_SEL[2] & DBG_REG_WR`, and selects `DBG_WRAM_DAT` onto `DBG_DAT_OUT` when `DBG_SEL[2]` is set, so the design presents a WRAM debug channel in its selector map.  The wire itself is never assigned anywhere: a search of `fpga/` finds it in the declaration and in the selector mux and nowhere else, and the `SWRAM` instance takes no debug port at all, connecting only its clock, reset, enables, address and data ports.  A read with `DBG_SEL[2]` therefore returns an undriven net rather than memory contents, and synthesis resolves it to a constant.  The other channels in the same selector are real: `DBG_SEL[0]` reaches the 65816, `[3]` the SPC700 core, `[4]` the SMP wrapper's port banks."
+  consequence: "Memory contents cannot be inspected through the debug port, so any question about what WRAM holds -- a stacked return address, a corruption in the port-0 upload buffer -- has to be answered by watching the WRAM bus, which is a first-class port of `SNES.v` and visible in `snestang_top.v` as `WRAM_ADDR`, `WRAM_D`, `wram_rd` and `wram_wr`.  Watching the bus gives writes for free and reads only as addresses, so an instrument that needs the value at an address must either capture the write that put it there or latch `WRAM_Q` on the read, which is one SDRAM turnaround behind and needs the same care as the ROM fetch probe.  The stack page is `WRAM_ADDR[16:8] == $01`, which makes a write filter on the stack one comparison wide."
+  sources:
+    - "SNESTang commit 5f0ef19, src/SNES.v: the DBG_WRAM_DAT declaration, the WRAM_DBG_WR assign, the DBG_DAT_OUT mux, and the SWRAM instantiation port list"
+    - "This repository, a search of DBG_WRAM_DAT across fpga/ showing the declaration and the mux with no driver"
+  verification: "Confirmed by searching for every occurrence of DBG_WRAM_DAT in the tree on 2026-11-01 (core-log entry 33) before writing the stack instrument, which was then built against the WRAM bus instead of the debug port and worked: it captured stack-page writes and a reproducible stack pointer at the departure."
 
 - record_id: BRD-003
   kind: BOARD

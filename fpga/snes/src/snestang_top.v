@@ -1176,6 +1176,137 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_STACK_PROBE
+// Diagnostic build: what the CPU is returning through.
+//
+// TINYSNES_JUMP_PROBE established that three of five boots depart the cartridge
+// at $1035 with the newest fetch at $8887, which disassembles to `RTL` at a
+// verified instruction boundary (core-log entry 32).  So the CPU is executing a
+// return, and the return address it pops is not a cartridge address.  `RTL`
+// takes three bytes -- PC low, PC high, then the program bank -- from the stack,
+// so the question "what did it return through" is answered by the bytes at the
+// stack pointer, and nothing else in the machine carries that information.
+//
+// There is no debug path to WRAM: SNES.v declares DBG_WRAM_DAT and selects it on
+// DBG_SEL[2], but the wire is never driven anywhere in the design, so a read of
+// the WRAM debug register returns an undriven value and cannot be used.  The
+// WRAM bus itself, however, is a first-class port of SNES.v and is visible in
+// this module as WRAM_ADDR, WRAM_D and the write strobe, so the instrument
+// watches the bus rather than interrogating memory.
+//
+// The stack page is $0100-$01FF in every bank, which is WRAM_ADDR[16:8] == $01,
+// and a push is a write to that page.  A three-deep ring of those writes holds
+// exactly the three bytes an `RTL` pops when nothing else was pushed after them,
+// and holds a superset worth comparing against when something was.  The SP at
+// the departure says which of the two cases applies: a correct `RTL` leaves S
+// three higher than the value that pointed at the pulled PC low byte, so a
+// reported S that is not where the ring's newest write sits means the pushes and
+// the pointer disagree and the fault is in the pointer, while an S that agrees
+// with the ring means the stack was consistently written with the wrong values
+// and the fault is in the caller.
+//
+// probe_bus fields, low to high:
+//   [15:0]  the first PC below $8000 seen after arming -- the departure address
+//   [23:16] the 65816's SP at that sample
+//   [39:24] the newest stack-page write at the departure: address then data
+//   [55:40] the write before it, address then data
+//   [71:56] the write before that one, address then data
+//   [79:72] a saturating count of stack-page writes seen since reset
+//
+// SP, P and PBR are read through DBG_REG one byte each; the PC is the only
+// multi-byte field and is read with its high byte on both sides of its low byte,
+// dropped unless the two reads agree.  A dropped PC pair cannot arm the bit, so a
+// torn sample cannot fake a departure.  The ring is advanced on the rising edge
+// of the write strobe rather than its level, because WRAM_WE_N stays asserted for
+// the length of the access and testing the level would fill the ring with three
+// copies of one write.
+//
+// The departure test is the one EXT-009 justifies and TCL-013 says must be
+// armed: cartridge is mapped only at $8000-$FFFF in a LoROM, and PC resets to
+// $0000, so the bit arms on a sample at $8000 or above before it may fire.
+reg [2:0] st_ph = 3'd0;
+reg [7:0] pch1 = 8'd0, pcl = 8'd0;      // PC, high read on both sides of low
+reg [7:0] sp_r = 8'd0, p_r = 8'd0, pbr_r = 8'd0;
+
+// The live ring of stack-page writes, and the frozen copy taken at the departure.
+reg [7:0] w_a0 = 8'd0, w_d0 = 8'd0;
+reg [7:0] w_a1 = 8'd0, w_d1 = 8'd0;
+reg [7:0] w_a2 = 8'd0, w_d2 = 8'd0;
+reg [7:0] w_cnt = 8'd0;
+reg       wwr_d = 1'b0;                 // previous write strobe, for the edge
+wire      stk_sel = wram_wr && (WRAM_ADDR[16:8] == 9'h001);
+
+reg        st_arm  = 1'b0;
+reg        st_done = 1'b0;
+reg [15:0] d_pc = 16'd0;
+reg [7:0]  d_sp = 8'd0;
+reg [7:0]  d_a0 = 8'd0, d_d0 = 8'd0;
+reg [7:0]  d_a1 = 8'd0, d_d1 = 8'd0;
+reg [7:0]  d_a2 = 8'd0, d_d2 = 8'd0;
+reg [18:0] st_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// Case, not chained ternaries, with st_ph on the right, so the block has
+// sensitivity: a constant on the right of `always @(*)` never drives.
+always @(*) begin
+    case (st_ph)
+    3'd0, 3'd5: dbg_reg = 8'h07;        // PC high, first read and second read
+    3'd1:       dbg_reg = 8'h06;        // PC low
+    3'd2:       dbg_reg = 8'h09;        // SP
+    3'd3:       dbg_reg = 8'h08;        // P
+    3'd4:       dbg_reg = 8'h0D;        // PBR
+    default:    dbg_reg = 8'h07;        // parked on PC high
+    endcase
+end
+
+always @(posedge mclk) begin
+    dbg_sel    <= 8'h01;                // the 65816, every phase
+    dbg_reg_wr <= 1'b0;
+    st_ph      <= (st_ph == 3'd6) ? 3'd0 : st_ph + 3'd1;
+
+    if (st_ph == 3'd0) pch1 <= dbg_dat_out;
+    if (st_ph == 3'd1) pcl  <= dbg_dat_out;
+    if (st_ph == 3'd2) sp_r <= dbg_dat_out;
+    if (st_ph == 3'd3) p_r  <= dbg_dat_out;
+    if (st_ph == 3'd4) pbr_r <= dbg_dat_out;
+
+    wwr_d <= stk_sel;                   // rising edge of a write, not the level
+    if (stk_sel && ~wwr_d) begin
+        w_a2 <= w_a1; w_d2 <= w_d1;
+        w_a1 <= w_a0; w_d1 <= w_d0;
+        w_a0 <= WRAM_ADDR[7:0]; w_d0 <= WRAM_D;
+        if (w_cnt != 8'hFF) w_cnt <= w_cnt + 8'd1;
+    end
+
+    if (~resetn) begin
+        st_arm  <= 1'b0;
+        st_done <= 1'b0;
+        w_cnt   <= 8'd0;
+    end else if (st_ph == 3'd5 && pch1 == dbg_dat_out) begin
+        // The accept point: pch1 arrived on phase 0, pcl on phase 1, and the
+        // byte arriving on this edge is the second read of PC high.
+        if ({pch1, pcl} >= 16'h8000) begin
+            st_arm <= 1'b1;
+        end else if (st_arm && ~st_done) begin
+            st_done <= 1'b1;
+            d_pc <= {pch1, pcl};
+            d_sp <= sp_r;
+            d_a0 <= w_a0; d_d0 <= w_d0;
+            d_a1 <= w_a1; d_d1 <= w_d1;
+            d_a2 <= w_a2; d_d2 <= w_d2;
+        end
+    end
+
+    if (st_ph == 3'd6) begin
+        st_wrap <= st_wrap + 19'd1;
+        if (st_wrap == 19'd0)
+            fp_bus <= {w_cnt, d_a2, d_d2, d_a1, d_d1, d_a0, d_d0, d_sp, d_pc};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_IPL_PROBE
 // Diagnostic build: catch the address the IPL jumps to.  Decoded from the
 // IPLROM in smp.v, the path after the $CC handshake is
@@ -1931,6 +2062,14 @@ snes2hdmi s2h(
     // probe_bus carries both directions of the APU link and both CPUs' state per
     // the field order in the TINYSNES_LINK_PROBE block.
     .dbg({header_finished, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_STACK_PROBE
+    // Diagnostic build: R = a departure from the cartridge has been recorded,
+    // G = loaded, B = enable.  probe_bus carries the departure PC, the SP at
+    // that sample, the last three stack-page writes and their count, per the
+    // field order in the TINYSNES_STACK_PROBE block.
+    .dbg({st_done, loaded, enable}),
     .bist_mask(fp_bus[15:0]),
     .probe_bus(fp_bus),
 `elsif TINYSNES_JUMP_PROBE

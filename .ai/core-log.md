@@ -1045,3 +1045,35 @@ Find out why the stack holds a bad return address at the `$8887 RTL`, which is n
 - User Test: NOT RUN
 
 ---
+
+## 33 COMMIT Unreleased 2026-11-01T00:29:51-07:00
+
+#### Coming From:
+
+Unreleased abbfaae
+
+#### Purpose:
+
+Find out what the 65816 is returning through at the `$8887 RTL`, since entry 32 established the departure is a return and left the stacked address as the open question.
+
+#### Outcome:
+
+`TINYSNES_STACK_PROBE` was built, and the design first had to be established rather than assumed: `SNES.v` presents a WRAM channel on `DBG_SEL[2]` but never drives `DBG_WRAM_DAT` and the `SWRAM` instance has no debug port, so memory contents are not readable through the debug path at all and the instrument had to watch the WRAM bus instead, which is a first-class port and is visible in the top module as `WRAM_ADDR`, `WRAM_D` and the write strobe; that finding is recorded as TCL-017 because the undriven channel reads as a working feature in the selector map. The probe filters writes to the stack page `$01xx` into a three-deep ring of address and data pairs, reads `SP`, `P` and `PBR` through the debug port, and freezes everything on the single edge that accepts the first PC below `$8000` after arming at `$8000` or above. Build and placement at seed 7 were clean, the read path was checked on this tree before any reading was taken with `ROM_Q` `0x0000`, `0x0000`, `0x8000` and `ROM_ADDR` `0x7FFC`/`0x007F`, and the result tightens entry 32's signature to a constant: all five boots now depart to `$1035` with `SP` reading `$01FD`, where entry 32 saw three of five. Because a 65816 pull reads and then increments, a post-`RTL` stack pointer of `$01FD` places the three bytes that return took at `$01FA`, `$01FB` and `$01FC`, which is the first time this session has known where the return address physically was. The ring did not cleanly capture those bytes and that limitation is reported rather than worked around: two boots show a tail whose data in time order is `$01FC`=`$10`, `$01FB`=`$35`, `$01FA`=`$CC`, which read straight through the pointer gives `$10:$35CC` and does not match the departure, and the remaining three show a repeated `$01FA` write that a single push cannot produce. Reading that tail one byte higher, with `PCL` from `$01FB`=`$35` and `PCH` from `$01FC`=`$10`, gives exactly `$1035`, the measured departure, which is a fit too exact to dismiss and too poorly grounded to accept: it needs the pull to have begun at `$01FB` when the stack pointer says `$01FA`, and a one-byte discrepancy of exactly that shape is what a caller pushing two bytes and the callee popping three would produce, since a `JSR` pushes a return address and an `RTL` pulls a bank that was never pushed. That mismatch is the leading hypothesis and nothing more: the ring is a write filter and cannot prove what was at an address, its tails differ between boots, and the stack pointer sample is taken three phases before the PC that it is being compared against. Ten boots across the two instruments now show the departure at `$1035` in eight, which is the most repeatable fault signature recorded in this session, and the shape of it is a return whose low sixteen bits land on a plausible value while the program bank, which `RTL` fetches from a byte no `JSR` would have written, does not. Production synthesis was re-run and completed cleanly and all nine benches in `tools/tests/probe_tb.sh` pass. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 32 were not rewritten, added TCL-017 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-three-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Settle the one-byte question directly instead of inferring it, because the hypothesis is now narrow enough that a single measurement decides it: read the four bytes at `$01FA` through `$01FD` at the departure rather than relying on the write ring, either by latching `WRAM_Q` on reads to that page or by building a probe that holds the last four stack-page writes with a deeper ring and no repeated-address collapse, and take `SP` in the same phase as the PC so the two cannot disagree by three master clocks. If `$01FB` and `$01FC` really hold `$35` and `$10`, the return address was pushed correctly and the fault is a caller that pushed two bytes into a routine that returns with `RTL`, which is a defect in how this machine executes `JSR` and `RTL` rather than in the cartridge; if they hold something else, the corruption is in the push path and the next place to look is the WRAM write lane under a live stack operation, which the static byte-lane test of entry 20 passed and nothing has exercised since. Do not build another departure instrument: the address, the stack pointer and the fetch before it are all known and reproduce. Do not revisit the APU link, the interrupt chain, the SPC700 or the sound-upload deadlock, all four of which entries 30 and 31 settled.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

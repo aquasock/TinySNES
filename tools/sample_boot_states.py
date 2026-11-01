@@ -177,6 +177,29 @@ def summary_jump(words):
             f"prev={d_r1:04X} up2={d_r2:04X}")
 
 
+def summary_stack(words):
+    """Describe a TINYSNES_STACK_PROBE snapshot: what the RTL returned through.
+
+    `RTL` pops three bytes -- PC low, PC high, then PBR -- starting at the stack
+    pointer.  So the three writes shown are, when nothing was pushed after them,
+    exactly the address the CPU returned to.  Compare `w0` against `departure`:
+    if the popped PC matches the departure address the stack was right and the
+    jump target is the fault, and if it does not the stack held something else.
+    """
+    v = sum(w << (16 * i) for i, w in enumerate(words))
+    dpc  = v & 0xFFFF
+    sp   = (v >> 16) & 0xFF
+    a0   = (v >> 24) & 0xFF
+    d0   = (v >> 32) & 0xFF
+    a1   = (v >> 40) & 0xFF
+    d1   = (v >> 48) & 0xFF
+    a2   = (v >> 56) & 0xFF
+    d2   = (v >> 64) & 0xFF
+    cnt  = (v >> 72) & 0xFF
+    return (f"departure={dpc:04X} SP={sp:02X} wrote={cnt:3d} | "
+            f"w0={a0:02X}:{d0:02X} w1={a1:02X}:{d1:02X} w2={a2:02X}:{d2:02X}")
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
@@ -223,7 +246,7 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
-    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where", "jump"), default="link",
+    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where", "jump", "stack"), default="link",
                     help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
@@ -240,7 +263,8 @@ def main():
             print(f"boot {i}: FAILED -- {note}")
             continue
         desc = {"trace": summary_trace, "cpu": summary_cpu, "irq": summary_irq,
-                "where": summary_where, "jump": summary_jump}.get(args.layout, summary_link)(words)
+                "where": summary_where, "jump": summary_jump,
+                "stack": summary_stack}.get(args.layout, summary_link)(words)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

@@ -36,6 +36,9 @@
 `ifdef TINYSNES_JUMP_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_STACK_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 `ifdef TINYSNES_IRQ_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
@@ -138,6 +141,9 @@ module snes2hdmi (
     //   TINYSNES_JUMP_PROBE: the PC the CPU departed to, the ROM bank and the
     //     newest ROM address fetched before it left, the two fetches before
     //     that, and the 65816's PBR at the departure
+    //   TINYSNES_STACK_PROBE: the PC the CPU departed to, its SP at that moment,
+    //     then the last three writes to the stack page newest first as address
+    //     above data, and a count of stack-page writes in the top stripe
     input [79:0] probe_bus,
 `endif
 
