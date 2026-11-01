@@ -60,6 +60,9 @@
 `ifdef TINYSNES_TIMING_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_LINEFILL_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 
 // The two memory self-tests share one display, so they are folded into a single
 // define rather than tested in one `elsif` expression.  `elsif A || B does NOT
@@ -170,6 +173,10 @@ module snes2hdmi (
     //     no outstanding JSL), the outstanding long-call balance, the PBR at the
     //     departure, and the newest ROM address
     input [79:0] probe_bus,
+`ifdef TINYSNES_LINEFILL_PROBE
+    output [79:0] linefill_bus,     // write-side counts, driven below
+    output [2:0]  linefill_dbg,
+`endif
 `endif
 
     // output [7:0] led,
@@ -280,7 +287,94 @@ module snes2hdmi (
     // Data input
     //
     reg r_dotclk, r_vblank, r_hblank;
-`ifdef TINYSNES_LINEBUF_TEST
+`ifdef TINYSNES_LINEFILL_PROBE
+// Diagnostic build: is the line buffer being written?
+//
+// Every earlier attempt to answer this from the top level asked about hblankn and
+// vblankn, which are the PPU's HDE and VDE after two inversions and a port rename.
+// A hardware probe that counted `hblankn === 1'b1` and `hblankn === 1'b0` came back
+// zero for both, which is not a measurement: synthesis of a four-state comparison
+// against a constant folds both branches to false and increments a third counter
+// that was never displayed.  Simulation then showed HDE and VDE are healthy -- 2942
+// HDE edges, 12 VDE edges, both high 64.6 percent of the time, no X -- so the
+// signals were never the problem and the probe was.
+//
+// So this measures the write itself, inside the module that owns it, with no
+// polarity argument in the way: every assertion of mem_portA_we is a pixel going
+// into the buffer.
+//
+//   [15:0]  mem_portA_we assertions in the window
+//   [31:16] cycles with dotclk high in the window
+//   [47:32] cycles with hblank low  (HDE asserted)
+//   [63:48] cycles with vblank low  (VDE asserted)
+//   [79:64] {mem_portA_we, dotclk, vblank, hblank, mem_portB_rdata[2:0], 9'b0}
+//
+// If mem_portA_we is zero while dotclk, hde and vde all count, the fault is in the
+// write condition and the numbers say which term; if it is non-zero the buffer is
+// being filled and the fault is in the read side or the HDMI path.
+reg [15:0] lf_we    = 16'd0;
+reg [15:0] lf_dot   = 16'd0;
+reg [15:0] lf_hb    = 16'd0;
+reg [15:0] lf_vb    = 16'd0;
+reg [15:0] lf_ys    = 16'd0;
+reg [13:0] lf_win   = 14'd0;
+reg [79:0] lf_bus   = 80'd0;
+reg  [2:0] lf_dbg   = 3'b000;
+
+always @(posedge clk) begin
+    if (~resetn) begin
+        lf_we <= 16'd0; lf_dot <= 16'd0; lf_hb <= 16'd0; lf_vb <= 16'd0;
+    end else begin
+        if (mem_portA_we)  lf_we   <= lf_we   + 16'd1;
+        if (dotclk)        lf_dot  <= lf_dot  + 16'd1;
+        // hblank and vblank are counted separately.  "Both low" reading zero says
+        // at least one of them is stuck high, and which one it is decides whether
+        // the fault is horizontal or vertical -- two different places in the PPU.
+        if (~hblank) lf_hb <= lf_hb + 16'd1;
+        if (~vblank) lf_vb <= lf_vb + 16'd1;
+
+        lf_win <= lf_win + 14'd1;
+        if (lf_win == 14'd0) begin
+            lf_bus <= {mem_portA_we, dotclk, vblank, hblank,
+                       mem_portB_rdata[2:0], 9'b0,
+                       lf_vb, lf_hb, lf_dot, lf_we};
+            lf_we <= 16'd0; lf_dot <= 16'd0; lf_hb <= 16'd0; lf_vb <= 16'd0;
+        end
+    end
+end
+
+always @(*) lf_dbg = {mem_portA_we, ~vblank, ~hblank};
+assign linefill_bus = lf_bus;
+assign linefill_dbg = lf_dbg;
+`endif
+
+`ifdef TINYSNES_LINEFILL_NO_HDE
+// Diagnostic build: write the line buffer without the horizontal-enable term.
+//
+// Measured on the board: mem_portA_we never asserts, while dotclk runs, ys is in
+// the visible range 86 percent of the time, and VDE asserts -- but HDE never
+// does, so the write condition `dotclk rising && ~hblank && ~vblank && ys < 224`
+// can never be met and the picture stays whatever the buffer powered up with.
+// Simulation says HDE asserts once per scanline, so the disagreement is between
+// the RTL and what the board does with it, and this build answers the question
+// that matters more than why: if HDE is the only thing standing between the
+// machine and a picture, then dropping it here should draw one.
+//
+// It is not a fix.  HDE exists to mark the horizontal display period, and writing
+// the buffer outside it would smear the picture sideways.  It is an isolation
+// experiment: a picture here says every other part of the video path works and
+// the HDE term is the sole blocker, which makes the next question sharp.
+    always @(posedge clk) begin
+        r_dotclk <= dotclk;
+        r_vblank <= vblank;
+        mem_portA_we <= 1'b0;
+        if (dotclk && ~r_dotclk && ~vblank && ys[7:0] < 224) begin
+            mem_portA_addr  <= {ys[BUF_WIDTH-1:0], xs[8:1]};
+            mem_portA_wdata <= rgb5;
+            mem_portA_we    <= 1'b1;
+        end
+    end
+`elsif TINYSNES_LINEBUF_TEST
     // Diagnostic build: write the line buffer from a free-running counter rather
     // than from the PPU, so the buffer, its two clock domains (port A on mclk,
     // port B on the pixel clock) and the read path are exercised with no

@@ -2742,9 +2742,23 @@ wire [7:0] overlay_y;
 
 wire [7:0] dbg_dat_out_loader;
 
+`ifdef TINYSNES_LINEFILL_PROBE
+wire [79:0] lf_bus_top;
+wire  [2:0] lf_dbg_top;
+`endif
+
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_TIMING_PROBE
+`ifdef TINYSNES_LINEFILL_PROBE
+    // Diagnostic build: is the line buffer written?  The counts come from inside
+    // snes2hdmi, next to the write they describe, so no polarity argument and no
+    // port rename stands between the measurement and the mechanism.
+    .dbg(lf_dbg_top),
+    .bist_mask(lf_bus_top[15:0]),
+    .probe_bus(lf_bus_top),
+    .linefill_bus(lf_bus_top),
+    .linefill_dbg(lf_dbg_top),
+`elsif TINYSNES_TIMING_PROBE
     // Diagnostic build: why the raster is dead.  See the TINYSNES_TIMING_PROBE
     // block for the field order.
     .dbg(tm_dbg),

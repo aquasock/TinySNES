@@ -1369,3 +1369,35 @@ Trace the wire between the PPU's `HDE`/`VDE` outputs and the line-buffer write g
 - User Test: NOT RUN
 
 ---
+
+## 43 COMMIT Unreleased 2026-11-01T12:23:00-07:00
+
+#### Coming From:
+
+Unreleased 75aa646
+
+#### Purpose:
+
+Settle whether the PPU's display-enable outputs actually assert, because three hardware probes had disagreed about them and the answer decides whether the line buffer's write gate is at fault or the signals feeding it are.
+
+#### Outcome:
+
+A new bench proves the PPU's `HDE` and `VDE` are correct in the RTL, and a probe placed next to the line-buffer write proves `HDE` never asserts on the board, so the fault is now a single disagreement between simulation and hardware rather than a class of possibilities. `tools/tests/hde_tb.sv` instantiates the real `SNES.v` with behavioural memories and a cartridge of NOPs whose reset vector is `$8000`, and measures the two outputs directly: over four million master clocks it sees 2942 `HDE` rising edges, one per scanline, and 12 `VDE` rising edges, one per frame, with the two high together for 64.57 percent of the time and no undefined value on either, and it passes. That removes every explanation in which the PPU fails to produce its display-enable signals. The hardware side then moved the measurement inside `snes2hdmi.v` itself, next to the write it describes, under a new `TINYSNES_LINEFILL_PROBE` that counts `mem_portA_we` assertions rather than inferring them through two inversions and a port rename: on the board it reports zero writes in a 16384-clock window while `dotclk` is high for 8191 of them, `HDE` is low for 0 and `VDE` is low for 14015. The dot clock runs, the vertical enable works at 86 percent of the window exactly as the bench predicts, and the horizontal enable never asserts at all. That is why the buffer is never written and why the screen keeps its power-up content, and the earlier probe readings are explained rather than merely discarded: a hardware probe that counted `hblankn === 1'b1` and `hblankn === 1'b0` reported zero for both, and synthesis of a four-state comparison against a constant folds both branches to false and increments a counter that is never displayed, so the reading was void rather than contradictory. One isolation experiment was run to establish that `HDE` is the sole blocker: a `-DTINYSNES_LINEFILL_NO_HDE` build drops the horizontal term from the write condition and the write counter moves from zero to between 120 and 128 per window, so the buffer, its two clock domains and its port A path all work and only the gate term stands in the way. It is not a fix and is documented as one, because writing outside the horizontal display period would smear the picture and `VDE` is asserted for all but three percent of the window, so roughly a hundred pixels go in where a frame needs 57,344. Two findings of this cycle correct earlier ones. The static grid is confirmed not to be PPU output at all, because the `stacktest` cartridge never writes `$2100` and so leaves the PPU in force blank, where its output is a single flat colour, yet that cartridge shows the same grid. And a claim made during the cycle that the flattened netlist showed zero nets named `hblankn` and therefore an undriven wire was wrong and was withdrawn immediately: a flattened netlist renames everything, and `build/chk/tinysnes.json` contains no net named `vblankn` either while `vblankn` demonstrably carries data. The default build is unaffected, with synthesis clean and all nine probe benches passing, and every addition is behind an `ifdef`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 42 were not rewritten and recorded the superseding findings here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-three entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Explain why `HDE` asserts 2942 times in the bench and never on the board when `VDE` comes from the same always block, the same counters and the same port path and works on both; the two candidates are a broken wire between `main` and the top level, testable by instantiating `main` in a bench and watching `HBLANKn` directly, or a real dependence in `ppu.v` on conditions the bench's free-running clock does not reproduce, since `HDE` is assigned from `H_CNT == 19-1` inside the `ENABLE && DOT_CLKR_CE` block while `VDE` is assigned from `V_CNT` in the same block. The wire is the likelier of the two because `VDE` shares everything else, and the `main`-level bench settles it without another bitstream. Once `HDE` reaches `snes2hdmi`, the write counter is the instrument to watch, because it moves the moment the gate opens and needs no picture to be read; only after that does the ladder continue to the PPU register writes, NMI, the controller ports and the APU, with RetroRegen-SNES-Test as the end-to-end check once the display path is alive.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- fpga/snes/src/snestang_top.v
+- tools/tests/hde_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
