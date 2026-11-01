@@ -1269,3 +1269,33 @@ Find out why the same core that boots to a displayed picture in the bench does n
 - User Test: NOT RUN
 
 ---
+
+## 40 COMMIT Unreleased 2026-11-01T02:53:15-07:00
+
+#### Coming From:
+
+Unreleased fdf66f0
+
+#### Purpose:
+
+Record a handoff so the next agent can resume from this state without re-deriving thirty-nine cycles of evidence, and correct two claims made earlier in the session that later work disproved.
+
+#### Outcome:
+
+The project stands with a core that is proven correct in simulation and a board that still does not draw a picture, and the gap between those two is now the entire problem. What the bench in `tools/sim/snes_tb.sv` establishes, on the real `SNES.v` with behavioural memories: the 65816 resets, runs its prologue, completes the APU boot handshake and the whole sound upload at a flat 521 master clocks per byte, leaves the SPC700 executing at `$0800` in ARAM at cycle 28271823, enables NMI at `$4200` at cycle 28463228, runs the game's initialisation, enters the NMI handler at `$89D8`, writes 34 distinct PPU registers and turns the display on with `$2100`=`$0F` at cycle 30952029, with the PPU producing 7135 colour changes across thirty million visible pixels; a full boot is about thirty million master clocks, or 1.4 seconds at 21.5 MHz. What the board shows, on three separate deployments this session: the same static grid of white bars between grey borders, unchanged, on every build. Several long-held readings must be treated as superseded and this entry is the place to say so plainly. The APU deadlock of entries 8 to 12 does not exist -- the upload was simply unfinished when those probes sampled it, so a machine a quarter of the way through a 64 KiB transfer was repeatedly mistaken for a stalled one, and the `cc` bit of entry 31 was a correct reading and is the one that refuted the deadlock, while the unmatched `RTL` and the `$1035` departure of entries 33 to 36 were real behaviour of a machine whose instruction stream had desynchronised for a reason outside those instruments, so those readings described the symptom rather than the fault. The cartridge-latency finding of entry 37 is real in simulation but forcing slowrom did not fix the board, and entry 38 found why those two facts coexist: the same netlist boots or fails depending only on which spine the placer gave the master clock, with a hold-clean seed 9 build never departing in ten boots and hold-clean seed 5 and seed 11 builds departing on every boot. What the bench models rather than instantiates is worth writing down exactly, because it is where the remaining fault must live: the cartridge, WRAM and ARAM are SDRAM on the board behind `sdram_cl2_2ch.v` and plain arrays in the bench, while VRAM, CGRAM and OAM are block RAM on both sides (`vram_spb`, `ppuhoam.v`, `ppuoam.v`, `ppucgram.v`) and are modelled faithfully, which corrects a claim made earlier this session that VRAM ran through SDRAM. The static grid itself is not PPU output: the picture path in `snes2hdmi.v` reads `mem_portB_rdata` from the line buffer, and a regular repeating pattern is what that block RAM holds when nothing has written it, so the grid says the PPU side of the line buffer was never initialised rather than that the PPU drew something wrong. Operations that took time to learn and should not be relearned: `tools/sim/run_sim.sh` builds and runs the bench under Verilator in seconds and takes `--cycles`, `--lat` for cartridge read latency, `--define` for a build define, `--vcd` for waves and `--stoplow` to halt on a departure, and Icarus cannot build this design at all because it cannot parse the `localparam` arrays in `dsp.vh`; a hardware measurement must use a placement with no hold violations and must have its spine checked with `tools/clock_plane_report.py` before deployment, because the seed number does not carry its placement to a different netlist; the ROM is `/tmp/zelda.smc`, LoROM, SHA-256 `75267ac610cba5ab0b4a4516a669fa43879552c15677dc6c6ca9e9c35b9dd1ac`, and deployment is `openFPGALoader -b tangconsole` from oss-cad-suite followed by `tools/load_snes_rom.py --uart /dev/ttyUSB1`, with the picture read from `/dev/video0` four seconds after the load, which is ample for a 1.4 second boot. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed that `.ai/core.md` was not changed, checked that entries 1 to 39 were not rewritten, corrected no settled entry and recorded the superseding findings here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Build an instrument that measures the cartridge and WRAM read latency on the board end to end, because that is now the only modelled quantity standing between a core proven correct and a board that does not boot -- `TINYSNES_FETCH_PROBE` samples `ROM_Q` once, on the first fetch only, and says the word is present at +4 mclk, while the bench's own matrix puts the slowrom window at five master clocks and the fastrom window at three, so a distribution over a stream of accesses is what decides the question rather than a single sample. If the board's real path is worse than the window, the fix is a wait-state input so the core waits for the cartridge instead of assuming a speed, which is the only correction that keeps fastrom and does not cost instruction throughput; if it is inside the window, the departure of entries 37 and 38 is a placement artefact alone and the memory question moves to WRAM, which the sound upload and the game's own stack both exercise heavily and which no instrument has ever timed. Only after that should the line buffer be examined, because if the CPU never completes its PPU programming on hardware then the uninitialised line buffer is a symptom rather than a cause, and the cheap check that separates the two is to compare the PPU register writes the board sees against the 34 the bench records and the values it writes against the bench's. Two habits are worth carrying forward and both were earned the hard way this session: when two instruments disagree about something as basic as whether the CPU writes a register, suspect the path underneath before the CPU, and read a probe's status band before its stripes, since a latched snapshot that never fired decodes as a legitimate-looking set of zeros and was reported as a measurement more than once.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
