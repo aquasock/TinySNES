@@ -68,6 +68,15 @@ def band_colour(path):
     return tuple(int(v) for v in cols[int(np.argmax(cnts))])
 
 
+def summary_cpu(words):
+    """Describe a TINYSNES_CPU_PROBE snapshot: ROM accesses, PC, SP and status."""
+    acc_hi, acc_lo, pc, sp, status = words
+    acc = (acc_hi << 16) | acc_lo
+    flags = (f"int={status>>7&1} rst={status>>6&1} nmi={status>>5&1} irq={status>>4&1} "
+             f"rdy={status>>3&1} en={status>>2&1} wai={status>>1&1} stp={status&1}")
+    return f"ROMacc={acc:5d} PC={pc:04X} SP={sp:04X} status={status:02X} | {flags}"
+
+
 def summary_trace(words):
     """Describe a TINYSNES_TRACE_PROBE snapshot: the last four ROM fetches.
 
@@ -144,7 +153,7 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
-    ap.add_argument("--layout", choices=("link", "trace"), default="link",
+    ap.add_argument("--layout", choices=("link", "trace", "cpu"), default="link",
                     help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
@@ -160,7 +169,7 @@ def main():
         if words is None:
             print(f"boot {i}: FAILED -- {note}")
             continue
-        desc = summary_trace(words) if args.layout == "trace" else summary_link(words)
+        desc = {"trace": summary_trace, "cpu": summary_cpu}.get(args.layout, summary_link)(words)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

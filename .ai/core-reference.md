@@ -84,6 +84,7 @@ rules:
 | How do I read a CPU register from the bench without changing upstream? | EXT | EXT-004 |
 | The 65816 is stuck in `CMP $2140`: which side of the APU link failed? | EXT | EXT-005 |
 | What does the IPL actually do, instruction by instruction? | EXT | EXT-006 |
+| Why does the 65816 stop: is it waiting, or lost? | EXT | EXT-007 |
 | Why did an ODDR SDRAM clock kill the picture? | TCL | TCL-009 |
 | How long does a CPU-port ROM read take, and when does the CPU latch it? | TCL | TCL-010 |
 | Why did a probe readout carry a different value in every row? | TCL | TCL-011 |
@@ -111,7 +112,7 @@ TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with t
 TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
-EXT-006 the IPL block-copy protocol
+EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte
 
 ---
 
@@ -481,6 +482,19 @@ EXT-006 the IPL block-copy protocol
     - "TinyGBA .ai/core-log.md entry 4 and the two vendor builds it describes"
     - "This repository, build/kpl7/tinysnes-routed.json and fpga/snes/tinysnes.cst"
   verification: "The table contents were read directly from the fork on 2026-10-31 and the consequence measured on this design's routed netlist (core-log entry 24): `fclk` has 1281 general-routing segments, no spine and no global tap, against `mclk`'s global route.  Revised 2026-10-31 (core-log entry 25): `fclk` was moved onto a PLL output that does have a pip -- a second PLL at `PLL_L[0]` driving it from `CLKOUT2`, hence `TLPLL0CLK2` and out of `CBRIDGEOUT_TOP2` -- and it now routes in 699 segments with a spine.  The machine's behaviour changed with it: the 65816 began executing cartridge code at `$80FD` and `$82DD` instead of bus data at `$7C7F`, but the picture did not change and five boots still gave five states, so the clock plane was a real defect whose repair moves the failure without fixing it."
+
+- record_id: EXT-007
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The 65816's WAI and STP halt the core until reset, and the sample of its status is the only way to tell a waiting CPU from a lost one"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "In `P65C816.v`, `WAIExec` and `STPExec` are set when `STATE == 0` and the fetched opcode is `$CB` or `$DB` respectively, and are cleared only by reset.  Both drive `assign EN = RDY_IN & CE & (~WAIExec) & (~STPExec)`, so a CPU that executes either stops advancing until it is reset -- `WAI` resumes on an interrupt in hardware terms, but this core has no wake path other than reset for either flag.  `GotInterrupt` is not comparable: it is assigned at `LAST_CYCLE` and cleared at the next one, so it describes a single instruction sequence and a sampled zero proves nothing about whether an interrupt ever arrived.  The module also carries `assign IsBRKInterrupt = (IR == 8'h00)`, a combinational signal that distinguishes a software `BRK` from an interrupt and which no debug register exposes; `DBG_REG` `0x15` packs GotInterrupt, IsResetInterrupt, IsNMIInterrupt, IsIRQInterrupt, RDY_IN, EN, WAIExec and STPExec but not IsBRKInterrupt."
+  consequence: "The `DBG_REG` `0x15` status byte, read by `TINYSNES_CPU_PROBE`, is the instrument that separates three states a ROM-address trace cannot: a CPU running, a CPU halted on `WAI` waiting for an interrupt, and a CPU halted on `STP`.  Measured over five boots of the loaded image (core-log entry 27), four read `$0A` (`WAIExec`) and one `$09` (`STPExec`), with ROM access counts in the millions -- so the machine executes a great deal of code and then waits, which points at a missing interrupt rather than corrupt data.  A diagnosis built on `GotInterrupt` being zero is not sound for the reason above; adding `IsBRKInterrupt` to a probe would make the BRK question answerable."
+  sources:
+    - "SNESTang commit 5f0ef19, src/65C816/P65C816.v: the WAIExec/STPExec set at STATE 0, `assign EN`, the GotInterrupt assignment at LAST_CYCLE, `assign IsBRKInterrupt`, and the DBG_REG 0x15 packing"
+    - "This repository, fpga/snes/src/snestang_top.v: the TINYSNES_CPU_PROBE sampler"
+  verification: "Read from the RTL and then measured on the board on 2026-10-31 (core-log entry 27): five boots, four on WAI and one on STP, with ROM access counts between 1.1 and 12.6 million.  The sticky nature of WAIExec and STPExec is what makes the reading sound; the transience of GotInterrupt is what makes the earlier BRK inference in the same cycle unsound, and that inference was withdrawn."
 
 - record_id: BRD-003
   kind: BOARD

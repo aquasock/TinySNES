@@ -851,3 +851,34 @@ None.
 - User Test: NOT RUN
 
 ---
+
+## 27 COMMIT Unreleased 2026-10-31T21:48:38-07:00
+
+#### Coming From:
+
+Unreleased cdf4438
+
+#### Purpose:
+
+Test whether the fast-ROM read window is the fault, since the image's header marks it a fast cartridge and the fetch path was tuned against a slow one, and then read the CPU's own status rather than inferring from ROM addresses.
+
+#### Outcome:
+
+The header check came first: ROM `0x7FD5` reads `$30`, so this image is LoROM with bit 4 set, a fast cartridge, which confirms the LoROM mapping every address in this session has assumed and puts the CPU on the fast timing path. For banks `$80-$BF` the region decode sets `SLOWFAST`, `MEMSEL` then selects `FAST`, and `CPU_LAST_CLOCK` is 5 rather than 7, so the CPU latches a ROM read at mclk 5 while entry 4 measured the SDRAM path delivering at mclk 4 -- one master clock of margin instead of three. That looked strong because entry 4 also recorded `ROM_Q` reading zero at the first assertion of `ROMSEL`, and a zero read is the `BRK` opcode, which would explain the `$FFFE` vector fetch entry 26 found. A diagnostic build gated behind `TINYSNES_FORCE_SLOW_ROM` forced `SLOW` for those banks, giving three mclk of margin, and the hypothesis is refuted on hardware: the production image still draws the static grid of entry 2, and the trace probe with the same define still fetched `$FFFE` in four of five boots. Reading the CPU's own status byte through `TINYSNES_CPU_PROBE` over five boots replaced the inference with a measurement and changed the picture completely. ROM access counts are in the millions -- 1,114,112, 1,179,648, 6,291,456, 11,730,944 and 12,648,448 -- so the machine is executing a great deal of cartridge code rather than dying at once, and in four of five boots the status byte is `$0A`, which is `WAIExec` set, and in the fifth `$09`, which is `STPExec`. `WAIExec` is sticky, cleared only by reset, and it drives `EN` low through `assign EN = RDY_IN & CE & (~WAIExec) & (~STPExec)`, so in four boots of five the 65816 has executed `WAI` and halted waiting for an interrupt that has not arrived, and in the fifth it executed `STP` and halted outright. One inference made earlier in this cycle is withdrawn before it can be relied on: `GotInterrupt` is zero in all five samples, and I read that as proof the `$FFFE` fetch was a `BRK` rather than an interrupt, but `GotInterrupt` is only held for one instruction sequence -- it is cleared at the next `LAST_CYCLE` -- so sampling instants cannot prove an interrupt never fired. The sound statement is the narrower one: at every sampled instant the CPU is halted on `WAI` or `STP` with no interrupt in progress. The RTL also carries `IsBRKInterrupt`, a combinational `IR == 8'h00`, which is exactly the signal that would settle the `BRK` question and which no probe exposes. For the first time the machine's failure has a shape that points at a missing input rather than corrupt data: a CPU that runs millions of instructions and then waits for an interrupt is behaving correctly, and what is absent is the interrupt. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 26 were not rewritten, revised TCL-008 and added EXT-007, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-seven-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Instrument the interrupt inputs, because the CPU is waiting rather than lost and the next question is which interrupt is missing: add sticky bits for whether `VBLANK` has ever risen, whether `NMI_EN` has ever been set, whether `NMI_FLAG` has ever been set, and whether the 65816's own `IsBRKInterrupt` has ever been asserted, and read them beside the `WAI` state. A CPU waiting on `WAI` with `NMI_EN` set and `VBLANK` having risen but `NMI_FLAG` never set puts the fault in the `VBLANK && ~VBLANK_OLD2 && DOT_CLK_CE` edge detector in `cpu.v`; `VBLANK` never rising puts it in the PPU's vblank generation, which would also explain why the picture never initialises, since the CPU would be waiting before it drew anything; `NMI_EN` never set means the game never reached the code that writes `$4200` bit 7, and the `$FFFE` vector fetch has to be re-examined as a `BRK` with `IsBRKInterrupt` as the evidence rather than `GotInterrupt`. Read the PPU's vblank output first because it costs no hardware cycle: `INT_VBLANK` leaves `SNES.v` and reaches `cpu.v` as `VBLANK`, and the counters at `$78` that produce it depend on `DOT_CLK_CE`, `ENABLE` and the H/V blank inputs from the PPU, so a mistake in that chain is visible in the RTL. Do not change the clock plane again while this is open, do not build another memory test, and do not sweep seeds. Keep `TINYSNES_FORCE_SLOW_ROM` in `cpu.v` as a documented negative result rather than removing it, and use `tools/sample_boot_states.py --layout cpu` for any comparison across boots.
+
+#### Files Modified:
+
+- fpga/snes/src/cpu.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

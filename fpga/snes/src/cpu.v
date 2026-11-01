@@ -347,16 +347,32 @@ always @* begin
                  P65_A[15:13] == 3'b011)                // $6000-$7FFF | Slow
             SPEED = SLOW;
         else if (P65_A[15]) begin                       // $8000-$FFFF | Fast,Slow
+`ifdef TINYSNES_FORCE_SLOW_ROM
+            // TinySNES: diagnostic build. The test image is a fast-ROM
+            // cartridge (header map mode 0x30, bit 4 set), so for these banks
+            // CPU_LAST_CLOCK is 5 and the CPU latches a ROM read at mclk 5,
+            // while the SDRAM path delivers at mclk 4. A latch one mclk early
+            // reads ROM_Q before the controller answers, and that value is
+            // zero -- which is the BRK opcode, and the BRK vector is what the
+            // trace ring keeps finding. Forcing SLOW gives three mclk of
+            // margin instead of one, without moving any clock.
+            SPEED = SLOW;
+`else
             if (~P65_A[23])
                 SPEED = SLOW;
             else
                 SPEED = SLOWFAST;
+`endif
         end else
             SPEED = FAST;
     end else if (P65_A[23:22] == 2'b01)                 // $40-$7D | $0000-$FFFF | Slow
       SPEED = SLOW;                                     // $7E-$7F | $0000-$FFFF | Slow
     else if (P65_A[23:22] == 2'b11)                     // $C0-$FF | $0000-$FFFF | Fast,Slow
+`ifdef TINYSNES_FORCE_SLOW_ROM
+      SPEED = SLOW;                                     // TinySNES: diagnostic, see above
+`else
       SPEED = SLOWFAST;
+`endif
 end
 
 assign INT_A =  HDMA_RUN ? HDMA_A :
