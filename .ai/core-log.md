@@ -1432,3 +1432,33 @@ Explain why Yosys proves `mem_portA_we` constant when simulation shows the same 
 - User Test: NOT RUN
 
 ---
+
+## 45 COMMIT Unreleased 2026-11-01T12:46:00-07:00
+
+#### Coming From:
+
+Unreleased b5bd155
+
+#### Purpose:
+
+Correct a misreading in entry 44 of the synthesised netlist's port connections, and record what the netlist does and does not establish about the line buffer's write path.
+
+#### Outcome:
+
+Entry 44 reported that the line-buffer cell's clock enable and write enable were "both constant" in the shipped netlist, and that claim is wrong as written. The two ports named in that entry are connected to integer entries in the Yosys JSON, and an integer is a net index, not a constant; only the strings `0`, `1`, `x` and `z` are constants. Re-reading `build/proof/tinysnes.json` with the element types printed confirms it: the clock enable, the write enable and the write address are all integers, and the write address has one integer bit followed by don't-cares, while only the write data port is entirely `x`. What the netlist therefore establishes is narrower and still sufficient for the conclusion entry 44 reached by a different route: the memory's data input has been resolved to don't-care, which is what Yosys emits for a memory it has proved is never written, so the line buffer cannot be written and the picture is its power-up content. The supporting evidence is unaffected, because the hardware write counter reads zero in every build, which is the measurement the conclusion actually rests on and which does not depend on reading the netlist at all. Two further facts were established and belong on the record. First, the whole write cone is absent from default netlists rather than `HDE` alone: neither `main.SNES.PPU.HDE` nor `main.SNES.PPU.VDE` appears in `build/proof/tinysnes.json` or in a build with `(* keep *)` placed on `mem_portA_we`, while the vertical one does survive in a build whose probe observes it, so dead-code elimination is taking the entire cone once the write enable is proved zero rather than singling out the horizontal term. Second, the `ifdef` structure around that write block was checked rather than assumed, because this session edited it twice while adding diagnostic variants, and the default branch still contains the original write logic, so the fold is not an artifact of those edits. One measurement still does not reconcile and is carried forward as open rather than explained: the count of cycles with the vertical term active came back as 14015 in one build and 512 in another, with the same RTL and the same cartridge, while the derived condition-without-the-horizontal-term figure of 120 to 128 is self-consistent with the smaller of the two. The larger figure would make the vertical term active 86 percent of the window, which is what simulation predicts, and the smaller would make it 3 percent, so the two readings disagree about whether the board's vertical blanking behaves like the bench's. Until that is settled, hardware level counts from a single capture are treated as samples and not as measurements, and the write counter is the only figure this cycle leans on. No engineering files were changed by this cycle; the `(* keep *)` experiment was reverted and the tree is clean. The default build remains unaffected, with synthesis clean and all nine probe benches plus both new benches passing. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 44 were not rewritten and recorded the correction here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-five entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Settle the vertical-blank discrepancy before any further netlist reasoning, because it decides whether the remaining fault is in synthesis or in the PPU's vertical timing on the board, and the two need opposite work. The cheap way to settle it is to run `tools/tests/main_hde_tb.sv` for the bench side, which already reports the vertical term at 85.75 percent, and to repeat the hardware capture several times in one build while writing the vertical count and the horizontal count into separate stripes with no other fields changing, so that a single reading cannot be mistaken for a distribution; the earlier 14015 and 512 came from builds whose stripe packing differed, and packing is the first thing to rule out. After that, the question to answer is why Yosys proves the write enable zero when the bench shows the condition satisfiable, and the way in is to synthesise to the `fine` stage, write the resulting netlist out, and inspect which of the four terms feeding the condition has already been replaced by a constant at that point rather than to keep bisecting whole stages whose results did not reproduce. Only when a build leaves the memory's data input driven rather than don't-care is another hardware deployment worth making, because that single netlist check is what the last three deployments have each failed.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
