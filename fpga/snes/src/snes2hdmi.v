@@ -369,7 +369,29 @@ assign linefill_bus = lf_bus;
 assign linefill_dbg = lf_dbg;
 `endif
 
-`ifdef TINYSNES_LINEFILL_COUNTER
+`ifdef TINYSNES_BUF_PATTERN
+// Diagnostic build: prove the line buffer and its read path on hardware, with no
+// dependence on the SNES, the PPU or the write gate.
+//
+// Every other buffer experiment in this project has been gated on a condition
+// derived from the PPU, and `synth_gowin` proves that condition constant and
+// deletes the write port.  This one has nothing to prove: port A is written every
+// master clock from a free-running counter, address and data both, so the cone
+// cannot fold.  Port B and the HDMI path are untouched.
+//
+// What appears on screen is therefore a property of the memory and the read path
+// alone.  Coloured bands that move means the BRAM, its two clock domains and the
+// scan-out all work, and the picture fault is entirely in what fills the buffer.
+// The same picture as before means the buffer is not the problem and the read
+// side is.
+    reg [19:0] bp_cnt = 20'd0;
+    always @(posedge clk) begin
+        bp_cnt <= bp_cnt + 20'd1;
+        mem_portA_addr  <= bp_cnt[12:0];
+        mem_portA_wdata <= bp_cnt[19:5];
+        mem_portA_we    <= 1'b1;
+    end
+`elsif TINYSNES_LINEFILL_COUNTER
 // Diagnostic build: write a free-running counter into the line buffer through the
 // same ungated path the RAW build uses, and display the buffer normally.
 //
@@ -637,6 +659,14 @@ assign linefill_dbg = lf_dbg;
     wire [15:0] live_stripe = yy[5] ? probe_bus[47:32] : probe_bus[15:0];
 `endif
 
+`ifdef TINYSNES_LIVE_TESTPATTERN
+    // Free-running pixel counter for the display-path test.  Declared at module
+    // level because Verilog does not allow an always block inside another one,
+    // which is what the first version of this diagnostic did.
+    reg [23:0] ltp_cnt = 24'd0;
+    always @(posedge clk_pixel) ltp_cnt <= ltp_cnt + 24'd1;
+`endif
+
     // calc rgb value to hdmi
     always @(posedge clk_pixel) begin
         if (active) begin
@@ -719,7 +749,27 @@ assign linefill_dbg = lf_dbg;
             rgb <= (xx[4:0] > 5'd29) ? 24'h000000
                                      : (bist_mask[xx[7:5]] ? 24'hC00000 : 24'h00C000);
 `else
-`ifdef TINYSNES_SOLID_WHITE
+
+`ifdef TINYSNES_LIVE_TESTPATTERN
+    // Free-running pixel counter for the display-path test, declared outside the
+    // pixel always block because Verilog does not allow one always inside another.
+`endif
+`ifdef TINYSNES_LIVE_TESTPATTERN
+// Diagnostic build: does the display path carry a moving image at all?
+//
+// A build forcing a constant white proved the path from this assignment to the
+// HDMI pins works, and a build writing a counter into the line buffer every
+// master clock -- with its write port verified present in the netlist -- produced
+// no change on screen.  Those two results together say the picture is not coming
+// from the line buffer, so this removes the buffer from the question entirely and
+// drives the colour from a counter directly.
+//
+// Moving colour bars here mean the raster, the serialiser and the panel are all
+// fine and only the source of the colour is in doubt.  No change means the fault
+// is downstream of this assignment after all, and the white build's result was
+// about something narrower than it appeared.
+    rgb <= {ltp_cnt[23:16], ltp_cnt[15:8], ltp_cnt[7:0]};
+`elsif TINYSNES_SOLID_WHITE
     // Diagnostic build: the active area is a constant white, whatever the buffer
     // and the overlay hold.  This settles where the picture is made.  If the
     // screen goes white, everything from this assignment to the HDMI pins works

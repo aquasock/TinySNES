@@ -1556,3 +1556,34 @@ Defeat the synthesis fold, with `video2_tb.sv`'s 25,759,024 write-enable asserti
 - User Test: NOT RUN
 
 ---
+
+## 49 COMMIT Unreleased 2026-11-01T14:56:11-07:00
+
+#### Coming From:
+
+Unreleased a8e3053
+
+#### Purpose:
+
+Attack the synthesis fold that deletes the line buffer's write port, and establish on the Tang what the display path can and cannot carry when the write gate is not involved.
+
+#### Outcome:
+
+Four surgical attempts at the fold all failed and one of them produced a result that matters more than the fold itself: a build that drives `rgb` straight from a counter shows a live moving image on the Tang with 4626 distinct colours changing on every capture, which proves the raster, the serialiser, the differential outputs and the panel all work end to end with live data. `tools/check_linebuf_synth.sh` now makes the question mechanical: it synthesises one configuration, reads the line-buffer cell out of the netlist, and reports whether the write data input came out driven or don't-care, printing the element types alongside the verdict so the integers-are-net-indices mistake of entry 45 cannot recur. Against that check, the default configuration folds, and so do four candidate formulations: naming the blanking inversions as explicit wires in `snestang_top.v` before they reach the video module, and replacing the `dotclk` edge term with `xs[0]`, which is the same signal because `X_OUT` is `{OUT_X, DOT_CLK}`. The earlier bisect already showed the fold happens between `map_gates` and `map_ffs`, and reading the intermediate netlists shows why: at `map_ffram` the write condition is an and-tree of four terms over `DOT_CLK`, its registered copy, `VDE` and `ys < 224`, and the horizontal term is simply absent, so `~hblank` has been proved constant 1 and therefore `HDE` proved constant 0, even though `HDE` is a live flip-flop with `D` tied high, a synchronous set at `H_CNT == 18` and a synchronous reset at `H_CNT == 274`, and even though the PPU's `H_CNT` survives synthesis with 39 uses. On the hardware side a new `TINYSNES_BUF_PATTERN` build writes the buffer from a free-running counter on every master clock with nothing to prove, and `check_linebuf_synth.sh` confirms its write port survives, so it is the one buffer build that cannot be argued with. Deployed to the Tang it shows the same unchanged grid as every other build. Taken with the counter-driven `rgb` result, that means the grid on screen is not the buffer's contents under the control of anything this project has tried: the display carries live data when the colour is driven directly, and does not change when the buffer is written every clock, so port B is not reading what port A writes on the board. The counter build of entry 47 is consistent with that and now reads differently: its 138 changed pixels confined to capture columns 160 to 165 are writes that did reach the screen at one address, which is a partial connection rather than a stuck coordinate. Entry 47's inference that `OUT_X` was stuck is therefore withdrawn a second time and for a better reason, since simulation proves `OUT_X` spans all 256 columns and the board's own behaviour is better explained by the buffer's two ports not seeing the same memory. One of this cycle's own experiments was void and is recorded: the first `TINYSNES_LIVE_TESTPATTERN` build failed elaboration because it placed an `always` block inside another, and the bitstream packed for the test was therefore stale, so the grid it reported was the previous build's. The default build is unaffected, with synthesis clean, all nine probe benches passing, and every addition behind an `ifdef`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 48 were not rewritten and recorded the superseding findings here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-nine entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out why the line buffer's port B does not return what port A writes, because that is now the whole picture fault and it is a memory-instantiation question rather than a logic one: a build writing a counter into every address on every master clock changes nothing on screen, while a build driving `rgb` from a counter shows a live moving image, and the one build that did change pixels changed them only in the leftmost column. The first thing to check is the `DPB` cell's clock and enable wiring as it survives into the routed netlist rather than the synthesized one, since `CLKA` is taken from `iosys.clk` and `CLKB` from `hclk` and a dual-clock block RAM needs both to be real and both enables to be asserted; the second is whether the `BUF_WIDTH` address split `{yy[4:0], xx}` still selects the same locations the write side uses after `opt` has rewritten the comparison logic. The separate synthesis fold should be parked until that is settled, because a buffer that cannot be read back makes the write gate unobservable, and because the fold has now resisted four formulations and is better approached as a build-configuration question -- ABC9 disabled for that cone, or the memory marked to be excluded from it -- which is a trade the user should choose rather than one to take silently.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- tools/check_linebuf_synth.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
