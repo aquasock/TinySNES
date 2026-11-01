@@ -821,3 +821,33 @@ Find where the 65816 goes after the reset code, because it now executes cartridg
 - User Test: NOT RUN
 
 ---
+
+## 26 COMMIT Unreleased 2026-10-31T20:05:34-07:00
+
+#### Coming From:
+
+Unreleased 2743665
+
+#### Purpose:
+
+Find where the 65816 goes after the reset code, now that the clock-plane repair moved it from executing bus data to executing cartridge code.
+
+#### Outcome:
+
+`TINYSNES_TRACE_PROBE` was rebuilt on the new clock plan at seeds 7 and 9, both with zero hold/min violations and `fclk` on `TLPLL0CLK2` through `CBRIDGEOUT_TOP2`, and seed 7 (`build/tr7/tinysnes.fs`, SHA-256 beginning `bbe5c53a853bc4b8`) was sampled over five boots with `tools/sample_boot_states.py --layout trace`. The ring holds the last four ROM byte addresses, and LoROM bank 0 maps CPU `$8000+n` to ROM offset `n`, so each entry reads directly as an image offset. ROM `0x7FFE` -- CPU `$FFFE`, the IRQ/BRK vector -- appears in all five rings, and it is the newest entry in four of them. Boot 4 is the decisive one because its ring is complete: `1E10`, then `7FFE`, then `02DB` and `02DC`, which is a read of the vector at `$FFFE` followed by execution at ROM `0x02DB` = CPU `$82DB`, three bytes past the vector's own target `$82D8` and therefore inside the handler that target begins. The CPU took an interrupt or a break and ran its handler. The other boots show what look like ordinary instruction fetches immediately before the vector read -- `0084`, `0088`, `008A` ascending, and `02A3`, `02A6`, `02A9` ascending -- so the CPU is running code and then the vector fetch happens, rather than the fetch being the first thing after reset. Two RTL checks narrow the mechanism without another hardware cycle. The 65816's status register resets to `9'b100110100`, whose low byte is `$34`: the emulation, memory-select and index-select flags are set and so is the interrupt-disable bit, so an IRQ would be masked from the first instruction. The core's gate agrees with that, since `GotInterrupt <= (IRQ_ACTIVE & ~P[2]) | NMI_ACTIVE` and `IsIRQInterrupt <= IRQ_ACTIVE & ~P[2]` both respect it. That leaves a BRK, whose opcode is `$00` and which takes the `$FFFE` vector regardless of the interrupt-disable flag, and it leaves NMI, whose vectors are ROM `0x7FEA` and `0x7FFA` and which appear in none of the five rings. Since the two escapes are indistinguishable in a ROM-address trace -- a vector read and an opcode fetch look alike on that bus -- what this cycle establishes is the chain and not its cause: the CPU reaches the `$FFFE` vector and executes its handler on every boot. Two limits are stated rather than glossed. The bytes near the departure points do not read as unmistakable code to manual inspection -- ROM `0x0084` holds `87 83 A4 83 A4 99 99 F8`, which decodes to valid but implausible instructions -- and this image's bank 0 layout has not been established here, so no claim is made that the CPU is diverging at a specific wrong branch. And the trace ring cannot tell a vector fetch from an opcode fetch, which entry 19 recorded and which is exactly the ambiguity that matters now. The production image from the same tree still draws the static grid recorded in entry 2, so the machine does not boot. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 25 were not rewritten, revised TCL-008 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-six-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Distinguish a vector fetch from an opcode fetch, because that is the one thing standing between this measurement and its explanation, and the existing debug port already carries the state needed: read the processor status byte at `DBG_REG` 0x08 and the flags at 0x15 together with the program counter in the same snapshot the moment the counter is seen above `$8000` and again whenever it is in `$FFE0-$FFFF`, so a CPU that enters the vector range with the interrupt-disable bit still set is executing an opcode there rather than taking an interrupt, which would make the byte at `$FFFE` the instruction and the ring's four entries the fetches before it. A cheaper first check that needs no build is to read the image's bank-0 layout properly, since ROM `0x0084` holding `87 83 A4 83` suggests the region the ring names is not the code path this game boots through, and a disassembler run over ROM `0x0000-$7FFF` would say whether the addresses the ring reports are reachable instructions at all; if they are not, the ROM-address mapping itself is suspect rather than the CPU, and `ROM_WORD` and the mapper in `chip/DSP/DSP_LHRomMap.v` come back into question despite entry 4's finding. Do not change the clock plane again while this question is open, do not build another memory test, and do not sweep seeds for a better placement: five boots have twice given five states, so a seed that happens to look better is not evidence. Keep the production image and each probe built from the same tree, and use `tools/sample_boot_states.py` for every comparison across boots.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
