@@ -304,9 +304,9 @@ module snes2hdmi (
 // into the buffer.
 //
 //   [15:0]  mem_portA_we assertions in the window
-//   [31:16] cycles with dotclk high in the window
-//   [47:32] cycles with hblank low  (HDE asserted)
-//   [63:48] cycles with vblank low  (VDE asserted)
+//   [31:16] cycles with hblank low  (HDE asserted)
+//   [47:32] cycles with vblank low  (VDE asserted)
+//   [63:48] the whole condition without the hblank term
 //   [79:64] {mem_portA_we, dotclk, vblank, hblank, mem_portB_rdata[2:0], 9'b0}
 //
 // If mem_portA_we is zero while dotclk, hde and vde all count, the fault is in the
@@ -315,6 +315,7 @@ module snes2hdmi (
 reg [15:0] lf_we    = 16'd0;
 reg [15:0] lf_dot   = 16'd0;
 reg [15:0] lf_hb    = 16'd0;
+reg [15:0] lf_and   = 16'd0;
 reg [15:0] lf_vb    = 16'd0;
 reg [15:0] lf_ys    = 16'd0;
 reg [13:0] lf_win   = 14'd0;
@@ -324,21 +325,27 @@ reg  [2:0] lf_dbg   = 3'b000;
 always @(posedge clk) begin
     if (~resetn) begin
         lf_we <= 16'd0; lf_dot <= 16'd0; lf_hb <= 16'd0; lf_vb <= 16'd0;
+        lf_and <= 16'd0;
     end else begin
+        // The write condition is counted term by term and then whole, so a zero
+        // can be attributed instead of guessed at.  `lf_and` is the condition
+        // with the hblank term omitted: if it is large while `lf_we` is zero, the
+        // hblank term is the only thing stopping writes; if `lf_and` is itself
+        // small, the terms that do not involve hblank are the problem.
         if (mem_portA_we)  lf_we   <= lf_we   + 16'd1;
-        if (dotclk)        lf_dot  <= lf_dot  + 16'd1;
-        // hblank and vblank are counted separately.  "Both low" reading zero says
-        // at least one of them is stuck high, and which one it is decides whether
-        // the fault is horizontal or vertical -- two different places in the PPU.
+        if (dotclk && ~r_dotclk) lf_dot <= lf_dot + 16'd1;
         if (~hblank) lf_hb <= lf_hb + 16'd1;
         if (~vblank) lf_vb <= lf_vb + 16'd1;
+        if (dotclk && ~r_dotclk && ~vblank && ys[7:0] < 8'd224)
+            lf_and <= lf_and + 16'd1;
 
         lf_win <= lf_win + 14'd1;
         if (lf_win == 14'd0) begin
             lf_bus <= {mem_portA_we, dotclk, vblank, hblank,
                        mem_portB_rdata[2:0], 9'b0,
-                       lf_vb, lf_hb, lf_dot, lf_we};
+                       lf_and, lf_vb, lf_hb, lf_we};
             lf_we <= 16'd0; lf_dot <= 16'd0; lf_hb <= 16'd0; lf_vb <= 16'd0;
+            lf_and <= 16'd0;
         end
     end
 end

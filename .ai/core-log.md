@@ -1401,3 +1401,34 @@ Explain why `HDE` asserts 2942 times in the bench and never on the board when `V
 - User Test: NOT RUN
 
 ---
+
+## 44 COMMIT Unreleased 2026-11-01T12:40:57-07:00
+
+#### Coming From:
+
+Unreleased 37a5758
+
+#### Purpose:
+
+Find why the PPU's `HDE` asserts in simulation and never on the board, by testing the level the board actually instantiates and by reading the shipped netlist rather than probing the wires above it.
+
+#### Outcome:
+
+The answer is in the netlist, and it reframes the whole video fault: in a default build the line buffer's write port is tied off, so the buffer cannot be written by anything and the picture is its power-up content by construction rather than by any CPU, PPU or cartridge misbehaviour. `tools/tests/main_hde_tb.sv` runs the real `main.v` with behavioural memories and a NOP cartridge and measures the ports the top level consumes, not the PPU's: over four million master clocks `HBLANKn` is high 75.29 percent of the time, `VBLANKn` 85.75 percent, both 64.57 percent, which reproduces the `SNES.v`-level result exactly and proves the `SNES.v` to `main.v` rename is sound. It passes both with `enable` held high and with `enable` pulsed the way `snestang_top` pulses it, so a PPU stopped mid-scanline is not the explanation either. Reading a freshly synthesised default netlist then shows the mechanism directly: the line-buffer block `s2h.mem.0.0` has its clock enable and write enable both constant, its write address constant with every other bit a don't-care, and its write data entirely don't-care, which is what Yosys emits for a memory whose write port it has proved can never fire. The write enable `mem_portA_we` is therefore constant zero in the shipped bitstream, and the chain closes: the condition `dotclk && ~r_dotclk && ~hblank && ~vblank && ys < 224` is proved false, the write port is deleted, the buffer keeps its power-up contents, and those contents repeat every 32 lines because `BUF_WIDTH` is five, which is the seven rows of bars this project has photographed since entry 25. Two supporting measurements were taken on the board. A term-by-term probe inside `snes2hdmi.v` reads zero writes in every build and zero for the horizontal term in every build, while the condition with the horizontal term removed counts 120 to 128, so the buffer and its port-A path are live and only the horizontal term stands in the way. Separately, `ppu.v` contains a genuine defect found while reading it: `if (H_CNT == 323 && H_CNT == 327)` can never be true and was plainly meant to be a disjunction, so the six-dot line the code intends to select is never selected. One result of this cycle does not reconcile and is recorded as open rather than explained: the vertical term, which is `~vblank` in the same probe, counted 14015 in one build and 512 in another with the same RTL and the same cartridge, so hardware readings of these two signals are not yet trustworthy in the way the write count is; the write count is stable at zero across every build and agrees with the netlist, and the conclusion above rests on that agreement rather than on the level counts. A mistake of my own is recorded too: the first version of `main_hde_tb.sv` reported PASS on a criterion that measured `HBLANKn` and `VBLANKn` both being low, which is the complement of the condition the design needs, and it was caught only because 3.52 percent was the wrong figure for that arithmetic. The default build is unaffected, with synthesis clean, all nine probe benches passing and both new benches passing, and every addition behind an `ifdef`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 43 were not rewritten and recorded the superseding findings here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-four entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Explain why Yosys proves `mem_portA_we` constant when simulation shows the same RTL asserting `HDE` 2942 times, and do it by synthesising progressively and inspecting the netlist after each pass rather than by deploying another bitstream, because the netlist already contains the answer and hardware probing of these signals produced one irreconcilable result. The `proc` and `opt_clean` passes leave `main.SNES.PPU.HDE` present and driven by a real flop, so the fold happens inside `synth_gowin`, and the passes to bisect are the ones between `fine` and `map`, which is where ABC rewrites the cone; a plausible mechanism to test first is that `HDE`'s only surviving live load is the write condition, that `mem_writeto` is assigned but never read so the `r_hblank` cone is already dead, and that ABC then dissolves the last load and takes the flop with it. The correction is likely to be a design change rather than a probe: the line-buffer write must not depend on a term whose only consumer is itself, which means either giving `HDE` another live consumer, or restructuring the write gate so that its terms are observably independent. Only once a build leaves both `CEA` and `WREA` non-constant in the netlist is another hardware deployment worth making, and the check costs a netlist read rather than a cycle.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/main_hde_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
