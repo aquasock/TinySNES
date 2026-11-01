@@ -727,3 +727,33 @@ Get the machine clock off `SPINE25/CBRIDGEOUT_TOP1` and `SPINE0/CBRIDGEOUT_TOP0`
 - User Test: NOT RUN
 
 ---
+
+## 23 COMMIT Unreleased 2026-10-31T19:02:06-07:00
+
+#### Coming From:
+
+Unreleased a8983ae
+
+#### Purpose:
+
+Test whether the clock plane is the fault by building with the routing-order knob applied and sampling repeated boots against the distribution recorded before it.
+
+#### Outcome:
+
+Two link-probe builds were made with `NPNR_GOWIN_CLK_FIRST=iosys.clk` set, at seeds 7 and 9 in `build/kpl7` and `build/kpl9`, both with zero hold/min violations; seed 7 passed the timing gate at hclk 173.611 against 74.250 MHz and iosys.clk 30.398 against 21.505, giving `tinysnes.fs` SHA-256 `dc54750985f80fdd686bea2677e83a980f83d5d1311d8af9ef5a18bdaf25d6fa`, and that image was loaded one-wire and sampled over five boots with `tools/sample_boot_states.py`. The knob did change the route: the machine clock moved from SPINE0, SPINE16, SPINE18, SPINE26 and SPINE8 in all on TOP entries to SPINE0, SPINE16 and SPINE25 only, so SPINE18/TOP1 and SPINE26/TOP0 dropped out and SPINE25/TOP1 came in. It did not remove the exposure, because `SPINE0/CBRIDGEOUT_TOP0` remains at every seed and one TOP1-family entry remains either way, so the clock never actually left an unmeasured pip. The five boots then produced five distinct states -- CPUO $BB10 with A $0100, A $011B and A $012B and three different entry counts, plus two boots at CPUO $BB01 and $BB05 with the program counter at $0006 and one at $7C7F with CPUI reading $40F9 -- which is the same verdict as the five-distinct-states baseline of entry 18 measured without the knob. That is a clean negative and its interpretation has to be exact: the clock-plane hypothesis is not refuted, it is untested, because the only thing that changed was the order in which the router considered the nets, and the router's choice of pips was the thing under test. Three of five boots again ended at $7C7F, which the earlier work established is below the LoROM window and reads back as bus data rather than code, and one ended at $0006, which is inside the WRAM mirror of banks $00 to $3F rather than in cartridge space. The consistent finding across every boot of every build this session is unchanged and is now the whole of the evidence: the handshake completes, every memory verifies byte-lane correct, the read path is stable, no sequencing defect exists, and the machine nonetheless stops somewhere different each time. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 22 were not rewritten, revised TCL-007 and DEV-004 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-three-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Move the clock rather than its routing order, which is the only lever that tests the hypothesis: the knob makes the router deterministic but still leaves the machine clock on `SPINE0/CBRIDGEOUT_TOP0` and a TOP1 pip at every seed, so the restriction has to go into the chipdb entry rule in `apicula-mathieufro`'s `fse_clock_pips_138`, which already forbids TOP entries for an HCLK CLKDIV source and could forbid a PLL source's entry into SPINE0 and into the TOP1 pips on the strength of DEV-017's eight-of-eight negative. That is a change to a tool three projects share and needs the user's approval before it is made; the safe form is an environment-gated extra restriction so the fork's default is untouched until a build shows it helps. The test after that is deliberately narrow: build the link probe with the restriction on, confirm with `tools/clock_plane_report.py` that no clock sits on an unmeasured pip, and sample five boots. If the machine runs or the distribution collapses toward a single state, the clock plane was the fault and the restriction should be offered upstream to TinyNES and TinyGBC, which would benefit from it too; if five boots again produce five states, the clock plane is retired and the work returns to the machine with a much stronger negative behind it. Do not deploy another build whose clock plane has not been read first, and do not treat the routing-order knob as evidence either way. Keep all thirteen diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` -- nine benches -- after any sampler change, run `tools/clock_plane_report.py` on every routed netlist before a hardware load, and use `tools/sample_boot_states.py` for any comparison across boots.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
