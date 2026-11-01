@@ -116,6 +116,7 @@ TCL-017 the WRAM debug channel is selected but never driven ·
 TCL-018 the display band says whether a snapshot fired ·
 TCL-019 the fastrom access window and the full-core bench ·
 BRD-005 placement, not timing, decides whether this netlist boots ·
+EXT-012 the APU handshake completes and a boot takes 30M clocks ·
 EXT-010 the opcode-commit point for instruction-level probes ·
 EXT-011 JSR/JSL/RTS/RTL microcode push and pull widths
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
@@ -621,6 +622,19 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "This repository, build/is9.log, build/is5.log and build/is11.log: the clock-plane reports and Fmax for the three builds"
     - "This repository, tools/clock_plane_report.py"
   verification: "Measured on 2026-11-01 (core-log entry 38) over fifteen hardware boots of three hold-clean builds of the same source, with the seed 9 build sampled twice to confirm its result repeats."
+
+- record_id: EXT-012
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The APU boot handshake and the sound upload complete correctly on this core, and a whole 65816 boot to a displayed picture takes about 30 million master clocks"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "Traced from inside the full-core bench.  The 65816 writes `$CC` to CPUI port 0 at `$88EC`; the IPL echoes it into CPUO at `$FFF5`; the 65816 then loads a transfer address into CPUI 2 and 3, and the upload proceeds one byte at a time, each byte acknowledged by CPUO echoing the index in its low byte and the byte in its high byte.  Measured cost is 521 master clocks per byte, constant across the whole transfer, at about 21.5 MHz that is 24 microseconds a byte.  At cycle 28271823 the SPC700 leaves its IPL ROM and begins executing at `$0800` in ARAM, and at cycle 28463228 the 65816 writes `$81` to `$4200`, enabling NMI.  The game's initialisation then runs, reaching `$87C0` and the NMI handler at `$89D8`, and by cycle 30952029 it writes `$0F` to `$2100`, turning the display on.  Over the boot the 65816 writes 34 distinct PPU registers including `$2105` BGMODE, `$2107` to `$210C` the tilemaps, `$2115` to `$2119` VRAM and CGRAM, `$212C` to `$212F` the screen designation and window registers, and `$2130` to `$2133` colour math, and the PPU produces 7135 colour changes across 30117806 visible pixels."
+  consequence: "There is no deadlock in the APU link on this core and no defect in the upload: entries 8 to 12 recorded a machine that had stopped partway, and what had actually happened is that the transfer had not finished yet.  The practical consequence is that a boot takes roughly 1.4 seconds of wall clock on hardware at 21.5 MHz, dominated by the sound upload, so a capture taken four seconds after loading should in principle see a booted machine -- which makes the hardware failure of core-log entry 39 a different fault, not a slow one.  The instruments that sampled the 65816 inside its upload loop (entries 8, 11, 12, 31, 33, 35 and 38) were all reading a machine in the middle of a working transfer, which is why each of them found a plausible but partial state."
+  sources:
+    - "This repository, tools/sim/snes_tb.sv: the APU link, PPU write and video logs"
+    - "SNESTang commit 5f0ef19, src/smp.v: the CPUI/CPUO port banks and the IPL echo"
+  verification: "Measured on 2026-11-01 (core-log entry 39) in the full-core bench: a 40 million clock run at cartridge latency 4 with slowrom timing reaches the displayed picture, with the SPC exit, the NMI enable and the `$2100` write each timestamped from the trace."
 
 - record_id: BRD-003
   kind: BOARD

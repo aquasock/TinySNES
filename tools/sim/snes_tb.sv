@@ -220,6 +220,81 @@ module snes_tb;
   wire [15:0] spc_pc  = dut.smp.SPC700.PC;
   wire [15:0] cpui    = {dut.smp.CPUI[1], dut.smp.CPUI[0]};
   wire [15:0] cpuo    = {dut.smp.CPUO[1], dut.smp.CPUO[0]};
+  // The APU link, both directions, at the two points where each side acts:
+  // the 65816 writing CPUI at $2140-$2143, and the SPC700 touching $00F4-$00F7.
+  // These are the two halves entries 8 to 12 could only ever see one of, and the
+  // deadlock is whichever of them stops matching.
+  wire cpu_wr_apu = dut.CPU.P65C816.EN & ~dut.CPU.P65C816.WE_N
+                    & (dut.CPU.P65C816.A_OUT[23:22] == 2'b00)
+                    & (dut.CPU.P65C816.A_OUT[15:8] == 8'h21);
+  wire spc_ap = dut.smp.SPC700_CE
+                & (dut.smp.SPC700_A[15:8] == 8'h00)
+                & (dut.smp.SPC700_A[7:0] >= 8'hF4) & (dut.smp.SPC700_A[7:0] <= 8'hF7);
+  // Every CPU write, by bank:offset, so the question "does the game touch the
+  // PPU" is answered by the bus rather than by a filter that could be wrong --
+  // and the first version of the PPU filter was wrong twice.
+  // Video evidence from inside the machine: whether the PPU is producing
+  // visible pixels and how many colour changes reach the output.  This is the one
+  // reading that says a boot reached the picture rather than merely running code,
+  // and it needs no capture card.
+  integer vf;
+  initial vf = 0;
+  integer hde_count = 0;
+  integer rgb_changes = 0;
+  reg [14:0] rgb_p = 15'h7FFF;
+  always @(posedge clk) begin
+    if (vf != 0) begin
+      if (HDE) hde_count <= hde_count + 1;
+      if (HDE && RGB_OUT !== rgb_p) begin
+        rgb_p <= RGB_OUT;
+        rgb_changes <= rgb_changes + 1;
+      end
+    end
+  end
+
+  // Every CPU write, by bank:offset, so the question "does the game touch the
+  // PPU" is answered by the bus rather than by a filter that could be wrong.
+  integer wf;
+  initial wf = 0;
+  wire cpu_wr = dut.CPU.P65C816.EN & ~dut.CPU.P65C816.WE_N;
+  reg [23:0] last_wa = 24'hFFFFFF;
+  always @(posedge clk)
+    if (wf != 0 && cpu_wr && dut.CPU.P65C816.A_OUT !== last_wa) begin
+      last_wa <= dut.CPU.P65C816.A_OUT;
+      $fdisplay(wf, "%0d wr %06X <- %02X", cyc, dut.CPU.P65C816.A_OUT, dut.CPU.P65C816.D_OUT);
+    end
+
+  integer af;
+  initial af = 0;
+  // Register-change detection rather than bus strobes: a write strobe is a
+  // one-mclk pulse inside a condition my sampler can step over, and the first
+  // version of this log missed every 65816 write while still showing the port
+  // banks change.  Watching the banks themselves cannot miss one.
+  reg [15:0] cpui_p = 16'hFFFF, cpuo_p = 16'hFFFF;
+  reg [15:0] spc_pc_p = 16'hFFFF;
+  always @(posedge clk) begin
+    if (af != 0) begin
+      if ({dut.smp.CPUI[1], dut.smp.CPUI[0]} !== cpui_p) begin
+        cpui_p <= {dut.smp.CPUI[1], dut.smp.CPUI[0]};
+        $fdisplay(af, "%0d CPUI %04X -> %04X   [cpuo=%04X spc_pc=%04X cpu_pc=%04X]",
+                  cyc, cpui_p, {dut.smp.CPUI[1], dut.smp.CPUI[0]},
+                  {dut.smp.CPUO[1], dut.smp.CPUO[0]}, spc_pc, pc);
+      end
+      if ({dut.smp.CPUO[1], dut.smp.CPUO[0]} !== cpuo_p) begin
+        cpuo_p <= {dut.smp.CPUO[1], dut.smp.CPUO[0]};
+        $fdisplay(af, "%0d CPUO %04X -> %04X   [cpui=%04X spc_pc=%04X cpu_pc=%04X]",
+                  cyc, cpuo_p, {dut.smp.CPUO[1], dut.smp.CPUO[0]},
+                  {dut.smp.CPUI[1], dut.smp.CPUI[0]}, spc_pc, pc);
+      end
+      if (spc_pc !== spc_pc_p) begin
+        spc_pc_p <= spc_pc;
+        $fdisplay(af, "%0d SPC  pc %04X -> %04X  [cpui=%04X cpuo=%04X cpu_pc=%04X]",
+                  cyc, spc_pc_p, spc_pc,
+                  {dut.smp.CPUI[1], dut.smp.CPUI[0]}, {dut.smp.CPUO[1], dut.smp.CPUO[0]}, pc);
+      end
+    end
+  end
+
   integer sf;
   initial sf = 0;
   reg [15:0] last_spc = 16'hFFFF;
@@ -246,9 +321,14 @@ module snes_tb;
   // the game runs in bank $80, so masking the top two bits is the test that
   // catches it.  The first version of this filter compared the whole high byte
   // to $00 and silently missed every write the game made.
+  // A[22]==0 is the test that covers both windows: $00-$3F has [23:22]=00 and
+  // $80-$BF has [23:22]=10, so masking two bits to zero excludes the game's own
+  // bank.  The first version of this filter did exactly that and reported one
+  // PPU write in a whole boot; the second version used [23:22] and repeated it.
   wire ppu_sel = dut.CPU.P65C816.EN & ~dut.CPU.P65C816.WE_N
-                 & (dut.CPU.P65C816.A_OUT[23:22] == 2'b00)
-                 & (dut.CPU.P65C816.A_OUT[15:8] == 8'h21);
+                 & (dut.CPU.P65C816.A_OUT[22] == 1'b0)
+                 & (dut.CPU.P65C816.A_OUT[15:8] == 8'h21)
+                 & (dut.CPU.P65C816.A_OUT[7:6] == 2'b00);  // $2100-$213F, the PPU
   initial pp = 0;
   always @(posedge clk)
     if (pp != 0 && ppu_sel) begin
@@ -316,6 +396,24 @@ module snes_tb;
         if (of == 0) $display("warning: could not open %0s; no oplog", op_path);
       end
       begin
+        reg [1023:0] vf_path;
+        if ($value$plusargs("vidlog=%s", vf_path)) vf = 1;
+      end
+      begin
+        reg [1023:0] wf_path;
+        if ($value$plusargs("wrlog=%s", wf_path)) begin
+          wf = $fopen(wf_path, "w");
+          if (wf == 0) $display("warning: could not open %0s; no wrlog", wf_path);
+        end
+      end
+      begin
+        reg [1023:0] ap_path;
+        if ($value$plusargs("apulog=%s", ap_path)) begin
+          af = $fopen(ap_path, "w");
+          if (af == 0) $display("warning: could not open %0s; no apulog", ap_path);
+        end
+      end
+      begin
         reg [1023:0] sp_path;
         if ($value$plusargs("spclog=%s", sp_path)) begin
           sf = $fopen(sp_path, "w");
@@ -340,6 +438,8 @@ module snes_tb;
     wait (stopped === 1'b1);
     $display("stopped at cycle %0d: last pc=%04X pbr=%02X sp=%04X p=%02X ir=%02X",
              cyc, pc, pbr, sp, p, ir);
+    $display("video: HDE pixels=%0d, colour changes on HDE=%0d, final RGB=%04X",
+             hde_count, rgb_changes, RGB_OUT);
     if (tf != 0) $fclose(tf);
     $finish;
   end

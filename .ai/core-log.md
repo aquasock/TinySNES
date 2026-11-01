@@ -1238,3 +1238,34 @@ Work the sound-upload deadlock in the bench, because it is now the only fault st
 - User Test: NOT RUN
 
 ---
+
+## 39 COMMIT Unreleased 2026-11-01T02:48:03-07:00
+
+#### Coming From:
+
+Unreleased 60a3d6c
+
+#### Purpose:
+
+Diagnose the SPC700 and 65816 sound-upload deadlock inside the bench, where both processors are visible at once and the machine runs the same way twice.
+
+#### Outcome:
+
+There is no deadlock, and the diagnosis is that entries 8 to 12 were reading a machine in the middle of a transfer that had not finished. The bench was given three logs that the hardware probes never had: every change to the two APU port banks with both program counters beside it, a count of PPU register writes, and a count of colour changes on the PPU's visible pixels. The first version of the port log watched bus strobes and missed every 65816 write while still showing the banks change, because a strobe is a one-mclk pulse that a sampler on a clock edge steps over; watching the banks themselves cannot miss one, and that version works. What it shows is the handshake completing exactly as the IPL document says it should: the 65816 writes `$CC` to CPUI port 0, the IPL echoes it into CPUO, the transfer address goes into ports 2 and 3, and the upload then proceeds one byte at a time with CPUO echoing the index in its low byte and the byte in its high byte. The cost is a flat 521 master clocks per byte, and it stays flat for the whole transfer, so nothing is stalled. At cycle 28271823 the SPC700 leaves its IPL ROM and starts running at `$0800` in ARAM, at cycle 28463228 the 65816 writes `$81` to `$4200` and enables NMI, and by cycle 30952029 it has run the game's initialisation at `$87C0`, entered the NMI handler at `$89D8` and written `$0F` to `$2100`. Over the boot it writes 34 distinct PPU registers -- BGMODE, the tilemap registers, VRAM and CGRAM ports, the screen designation and window registers, colour math -- and the PPU produces 7135 colour changes across thirty million visible pixels. So the core, the link, the upload, the interrupt path and the PPU programming are all correct, and the earlier cycles were not wrong about what they saw but wrong about what it meant: a machine a quarter of the way through a 64 KiB upload looks exactly like a machine that has stalled on it. The boot takes about thirty million master clocks, which at 21.5 MHz is 1.4 seconds, so a capture taken four seconds after a load has ample time to see a finished boot and the hardware failure of entry 38 is a different fault rather than a slow one. This cycle also deployed the slowrom build at seed 9 and photographed it: the picture is still the static grid, and that build places `hclk` on `SPINE25`, which is one of the spines the failing builds used, so the seed 9 result of entry 38 does not transfer to a different netlist and the spine has to be re-checked on every build rather than assumed from the seed number. Three defects in this cycle's own instruments were found and fixed, all by contradictory readouts: the strobe-based port log that missed every write, the PPU filter that required `A[23:22]` to be zero and so excluded bank `$80` which is where the game runs -- the second time this same mistake was made -- and a duplicated block left by a bad edit. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 38 were not rewritten, added EXT-012 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-nine-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out why the same core that boots to a displayed picture in the bench does not do so on the board, because that gap is now the whole remaining problem and the bench has narrowed it to the parts the bench models rather than the parts it instantiates. The bench instantiates `SNES.v` and its buses and models the cartridge, WRAM, VRAM and ARAM; on the board those live in SDRAM behind `sdram_cl2_2ch.v`, and the bench's model answers in two to four master clocks while the real path has to answer inside the slowrom window or the CPU desynchronises. The first measurement to take is how long the real path actually takes for a CPU read, which no instrument in this project has ever measured end to end: `TINYSNES_FETCH_PROBE` says the word is present at +4 mclk on the first access only, and a later build that samples `ROM_Q` on a stream of accesses would give a distribution rather than one sample. The second is the PPU's own data path: the bench models VRAM and CGRAM as plain memories, while the board runs them through `vram.v` and the SDRAM arbiter, so a broken or contended PPU port would draw a fixed pattern while the CPU ran perfectly. The static grid is a PPU artefact, not a CPU one, and that is where to look next: capture `VRAM_DAO`, `VRAM_ADDRA` and the PPU's register writes on hardware the way the bench does, and compare the register values written against the 34 the bench sees.
+
+#### Files Modified:
+
+- tools/sim/snes_tb.sv
+- tools/sim/run_sim.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
