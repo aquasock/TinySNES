@@ -88,6 +88,8 @@ rules:
 | How long does a CPU-port ROM read take, and when does the CPU latch it? | TCL | TCL-010 |
 | Why did a probe readout carry a different value in every row? | TCL | TCL-011 |
 | Why did a diagnostic build draw nothing at all? | TCL | TCL-012 |
+| Which clock-plane pips are safe on this board? | DEV | DEV-004 |
+| Why did a gated flag silently not apply? | TCL | TCL-014 |
 | Why does a sticky history bit always read as set? | TCL | TCL-013 |
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
 | How does a core image or ROM get onto the card? | BRD | BRD-004 |
@@ -96,7 +98,7 @@ rules:
 
 ## 4. Fast lookup index
 
-DEV-001 part and revision · DEV-002 capacity
+DEV-001 part and revision · DEV-002 capacity · DEV-004 clock-plane bridge pips
 BRD-001 SDRAM pins · BRD-002 clock enable
 PRO-001 core ID 2 versus TinyTang's table
 EXT-001 SNESTang console138k file list and clocks · EXT-002 hdl-util HDMI
@@ -436,6 +438,34 @@ EXT-006 the IPL block-copy protocol
     - "SNESTang commit 5f0ef19, src/spc700/addrgen.v: PCr <= 0 on reset"
     - "This repository, fpga/snes/src/snestang_top.v: the TINYSNES_LINK_PROBE sticky bits and their arm flags"
   verification: "Measured on 2026-10-31 (core-log entry 14): the unarmed build read all three bits set on hardware, and the armed build read all three clear on the same machine state apart from the index; the bench then caught both mutations (tracking instead of latching, and unarmed) for all three bits."
+
+- record_id: DEV-004
+  kind: DEVICE
+  topic_id: DEV
+  title: "Clock-plane bridge pips measured on this board by the sibling projects, and the build gate that carries them"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "On the GW5AST-138C a clock reaches the global network by leaving a spine mux through a bridge pip, and which pip a net gets depends on the order nextpnr routes the clock nets in.  The rule is source-dependent.  For a PLL-sourced clock, TinyNES DEV-009 measured an image entering at (54,88) SPINE16 and leaving through CBRIDGEOUT_BOTTOM0 into SPINE25 and SPINE1 that loaded with DONE and was silent, while the same image with only those muxes changed to (54,93) SPINE10 / CBRIDGEOUT_TOP2 ran, and SPINE8 / CBRIDGEOUT_TOP0 also ran: TOP works and BOTTOM0 is dead.  For an HCLK CLKDIV source, DEV-017 measured that SPINE26 <= CBRIDGEOUT_BOTTOM2 clocks every flip-flop on its branches, that SPINE17 <= CBRIDGEOUT_BOTTOM0 and SPINE18 <= CBRIDGEOUT_BOTTOM2 clock none of them, and that entering at (54,93) SPINE9 / CBRIDGEOUT_TOP1 left the clock dead in 8 of 8 seeds: BOTTOM2 at SPINE18 works and TOP is dead.  DEV-016 records a netlist that did not boot while an otherwise identical one did, differing only in clock routing order.  The aquasock Apicula fork encodes the PLL half by dropping every BOTTOM entry for a `T[LR]PLL<n>CLK<n>` source and the CLKDIV half by letting escape wires 105..112 enter only at (54,88) SPINE18; `NPNR_GOWIN_CLK_FIRST` in the nextpnr fork makes the routing order deterministic rather than alphabetical."
+  consequence: "A design on this board has to check, after place and route, which spine and bridge pips each clock actually took, because the router is free to choose paths that no one has measured and a dead choice is silent rather than loud: the image loads with DONE and nothing runs.  `tools/clock_plane_report.py` reads the routed netlist, reports every clock's pips against a table of the measurements above plus this project's own hardware evidence, and `tools/build_tinysnes.sh` refuses a build that lands on an unmeasured pip unless TINYSNES_ALLOW_UNMEASURED_CLOCKS=1.  The knob matches a net by name and after flattening Yosys names a net after the alphabetically first of its aliases, so `mclk` appears as `iosys.clk`; the build fails if nextpnr did not log applying the knob rather than assuming it took.  Unmeasured is not broken: it has simply not been shown either way, and the table is the place to record a new measurement when hardware settles one."
+  sources:
+    - "TinyNES .ai/core-reference.md DEV-009, DEV-016, DEV-017 and the build gate in TinyNES tools/build_ae350_soc.sh"
+    - "aquasock/apicula epic/gw5ast138c, apycula/chipdb.py _gw5ast138c_dead_bridge_pips and fse_clock_pips_138"
+    - "nextpnr-mathieufro himbaechel/uarch/gowin/globals.cc, the NPNR_GOWIN_CLK_FIRST block"
+    - "This repository, tools/clock_plane_report.py and tools/build_tinysnes.sh"
+  verification: "Inherited measurements were read from TinyNES's records on 2026-10-31 and not re-measured here.  This project's own entries in the table come from the working picture recorded in TCL-006, since a stable synced image proves the pixel clock and pll_27's input reach their branches.  The gate was exercised on this design's routed netlists over six seeds (core-log entry 22), which showed `iosys.clk` consistently on SPINE0/CBRIDGEOUT_TOP0 and SPINE25/CBRIDGEOUT_TOP1, neither of which has been measured.  No clock has yet been seen on a pip recorded as dead, so this record has not yet explained the machine's fault."
+
+- record_id: TCL-014
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "`${var:+}` expands to nothing, so a conditional CLI flag wired that way silently passes no flag"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "In bash, `${allow_unmeasured:+}` substitutes an empty string whether or not the variable is set, because the `:+` form expands to the alternate word after the colon and no word was written.  A build script that gated a tool invocation on `${flag:+}` therefore ran the tool without its `--allow-*` argument at every setting, and a six-seed sweep reported every seed refused for a reason the operator had already asked to override."
+  consequence: "Build a conditional argument list as an array -- `args=(); [[ \"$x\" == 1 ]] && args+=(--flag); cmd \"${args[@]}\"` -- rather than relying on a substitution inside a command line.  The failure is invisible in review because the construct looks like a guard, and it cost a whole sweep before the pattern was read carefully; a `bash -n` syntax check does not catch it because the expansion is legal."
+  sources:
+    - "This repository, tools/build_tinysnes.sh, the clock-plane gate invocation"
+    - "bash manual, parameter expansion, `${parameter:+word}`"
+  verification: "Observed on 2026-10-31 (core-log entry 22): six seeds were refused although TINYSNES_ALLOW_UNMEASURED_CLOCKS=1 was exported, and the same seeds all built once the flag was assembled as an array."
 
 - record_id: BRD-003
   kind: BOARD

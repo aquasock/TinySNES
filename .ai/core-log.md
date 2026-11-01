@@ -696,3 +696,34 @@ None.
 - User Test: N/A
 
 ---
+
+## 22 COMMIT Unreleased 2026-10-31T17:32:51-07:00
+
+#### Coming From:
+
+Unreleased 58a2323
+
+#### Purpose:
+
+Take the clock-plane safeguards the sibling projects already use on this board, because the user asked whether this fault had been solved before and the answer was that it had been, in the projects this one was ported from.
+
+#### Outcome:
+
+The user's recollection was right and the clue was in `TinyNES/.ai/core-reference.md`. DEV-017 records that on this board a clock reaching a spine through `SPINE17 <= CBRIDGEOUT_BOTTOM0` or `SPINE18 <= CBRIDGEOUT_BOTTOM2` clocks none of the flip-flops on that branch, which hold power-up 0, while `SPINE26 <= CBRIDGEOUT_BOTTOM2` clocks every one; DEV-009 records an open-flow image that loaded with DONE and was silent until three centre-mux entries were changed; DEV-016 records a failing netlist that booted with nothing changed but its clock routing order. TinyNES guards all three with `NPNR_GOWIN_CLK_FIRST`, a build gate on the routed spine and bridge pips, and a chipdb test, and TinyTang found the same class from the other side when its desktop core was dead on a left-side PLL and ran on a right-side one. Counting the guards showed TinySNES had inherited none of them: zero occurrences of the knob, of any spine check and of any bridge check, against three, eleven and four in TinyNES's build script. This cycle adds `tools/clock_plane_report.py` and wires it into `tools/build_tinysnes.sh`, which now exports `NPNR_GOWIN_CLK_FIRST` before place and route, fails if nextpnr did not log that it applied (the net not matching anything is the silent failure TinyNES recorded), and then reports every clock's spine and bridge pips and refuses any build whose clocks sit on pips nobody has measured on this board, with `TINYSNES_ALLOW_UNMEASURED_CLOCKS=1` downgrading that to a warning. The rule is source-dependent and the tool's first version got it wrong by conflating the two: for a PLL source DEV-009 puts the good entries on TOP and the dead ones on BOTTOM0, while for an HCLK CLKDIV source DEV-017 puts the good entry at SPINE18/BOTTOM2 and the dead ones on TOP. The table also carries this project's own hardware measurements, which outrank inherited ones, because the picture on this board is stable and therefore whatever the pixel clock and pll_27's input route through is known to clock its branches. Running it on the last routed netlist named the exposure precisely: the SNES master clock, `iosys.clk`, spans six spines -- 0, 8, 16, 18, 25 and 26 -- of which SPINE8/TOP0 is measured good by TinyNES and SPINE16/TOP0 and SPINE26/TOP0 are measured good by this board's working video, leaving `SPINE0/CBRIDGEOUT_TOP0` and `SPINE25/CBRIDGEOUT_TOP1` unmeasured. A six-seed sweep with the knob applied found that pair used at every seed, so it is a constant of this design rather than a placement accident, and SPINE25/TOP1 is in the TOP1 family that DEV-017 left completely dead in eight of eight seeds for a CLKDIV source. That is a lead and not a finding, and the record says why: a fully dead spine would fail deterministically, whereas five boots of one image gave five different states, so the mechanism here would have to be marginal rather than dead, which DEV-018 shows is physically possible on this board since it goes temperature-sensitive above about 41 C. What this cycle establishes is narrower and solid: the design was free to place its machine clock on spines no one has measured, it does so consistently, and the safeguards that would have caught it were absent while three sibling projects had them. One tooling defect of this cycle's own is recorded because it hid the result for a whole sweep: the first wiring passed the allow flag as `${allow_unmeasured:+}`, which expands to nothing and left every seed refused, and the fix is an array built conditionally. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 21 were not rewritten, and added DEV-004 and TCL-014, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-two-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Get the machine clock off `SPINE25/CBRIDGEOUT_TOP1` and `SPINE0/CBRIDGEOUT_TOP0` and see whether the machine runs, because that is now a named, reproducible difference between this design and every sibling that works on this board: the knob makes the routing order deterministic but does not choose the spine, so the next lever is the chipdb's own entry rule in `apicula-mathieufro`'s `fse_clock_pips_138`, which already forbids the TOP entries for an HCLK CLKDIV source and could be made to forbid a PLL source's entry into SPINE0 and the TOP1 pips the same way, on the strength of DEV-017's eight-of-eight negative -- with the caveat that widening the fork's restriction is a change to a shared tool and should be measured against a build that keeps video working before it is kept. Build that variant, confirm from `tools/clock_plane_report.py` that no clock sits on an unmeasured pip, and load it: a machine that then runs proves the clock plane; a machine that fails the same way retires the hypothesis and returns the work to the machine itself. Do not treat the present build as exonerated in the meantime, and do not re-time the port-0 read path, the DQ capture or the SDRAM clock, and do not reintroduce the ODDR on fclk. Keep all thirteen diagnostic builds as the regression set, run `tools/tests/probe_tb.sh` -- nine benches -- after any sampler change, run `tools/clock_plane_report.py` on every routed netlist before a hardware load, and use `tools/sample_boot_states.py` for any comparison across boots.
+
+#### Files Modified:
+
+- tools/build_tinysnes.sh
+- tools/clock_plane_report.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

@@ -38,6 +38,21 @@ timing_fail=""
 [[ "${TINYSNES_ALLOW_HOLD:-0}" == 1 ]] && timing_fail="--timing-allow-fail"
 # Extra preprocessor defines for a diagnostic build, e.g. TINYSNES_DEFINES=-DTINYSNES_TEST_PATTERN
 defines="${TINYSNES_DEFINES:-}"
+# Which clock net nextpnr's global router takes first.  On this device a clock
+# reaches the global network by leaving a spine mux through a bridge pip, and the
+# pins nextpnr picks depend on the order it routes the clock nets in -- TinyNES
+# core-reference DEV-016: a netlist that did not boot ran unchanged apart from
+# its clock routing order.  Setting this makes the choice deterministic instead
+# of alphabetical.  The knob matches a net by name, and after flattening Yosys
+# names a net after the alphabetically first of its aliases, so the default here
+# is the SNES master clock's post-synthesis name: mclk is joined by iosys.clk,
+# which sorts first.  Verify with tools/clock_plane_report.py rather than
+# assuming; TinyNES's own record notes the knob silently matching nothing when
+# that alias changes.
+clk_first="${TINYSNES_CLK_FIRST:-iosys.clk}"
+# Refuse a build whose clocks land on spine/bridge pips nobody has measured on
+# this board.  TINYSNES_ALLOW_UNMEASURED_CLOCKS=1 downgrades that to a warning.
+allow_unmeasured="${TINYSNES_ALLOW_UNMEASURED_CLOCKS:-0}"
 
 [[ -f "$suite/environment" ]] || { echo "missing open toolchain: $suite" >&2; exit 2; }
 # shellcheck disable=SC1090
@@ -159,6 +174,7 @@ fi
 
 # --------------------------------------------------------------- 2. place and route
 echo "=== 2. placement and routing ==="
+export NPNR_GOWIN_CLK_FIRST="$clk_first"
 "$nextpnr" \
     --json "$out/tinysnes.json" \
     --write "$out/tinysnes-routed.json" \
@@ -175,6 +191,22 @@ echo "=== 2. placement and routing ==="
         exit 1
     }
 echo "routed: $out/tinysnes-routed.json"
+
+# The router logs this when the knob applied.  If the net is named something else
+# after synthesis the knob matches nothing and the routing is alphabetical again,
+# which is the failure TinyNES recorded; catch it rather than trust it.
+if ! grep -q "experiment: routing '$clk_first' first" "$out/nextpnr.log"; then
+    echo "NPNR_GOWIN_CLK_FIRST='$clk_first' did not match any clock net;" >&2
+    echo "the clock routing order is alphabetical.  Set TINYSNES_CLK_FIRST to one" >&2
+    echo "of the net names in $out/tinysnes-routed.json." >&2
+    exit 1
+fi
+
+echo "=== 2b. clock plane ==="
+plane_args=()
+[[ "$allow_unmeasured" == 1 ]] && plane_args+=(--allow-unmeasured)
+"$suite/py3bin/python3" "$root/tools/clock_plane_report.py" \
+    "$out/tinysnes-routed.json" "${plane_args[@]}" || exit 1
 
 [[ "$stage" == pnr ]] && { echo "stopping after place and route"; exit 0; }
 
