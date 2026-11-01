@@ -2092,6 +2092,184 @@ end
 always @(*) pp_dbg = {pp_dot_seen, pp_hb_seen, pp_vb_seen};
 `endif
 
+`ifdef TINYSNES_TIMING_PROBE
+// Diagnostic build: why the raster is dead.
+//
+// The pixel probe left one contradiction that this build resolves.  It sampled
+// hblankn high and vblankn low for six seconds while the dot clock ran at exactly
+// one tick per four master clocks, which is the correct 5.37 MHz SNES dot rate.
+// A PPU that is producing dots but never leaves vertical blank and never asserts
+// horizontal blank is not a PPU with a broken frame counter, it is a PPU that is
+// not being run -- and the enable gate in this file is the reason it might not be:
+//
+//     if (~sdram_busy && ~pause_snes_for_frame_sync && loaded) enable <= 1;
+//
+// pause_snes_for_frame_sync is raised by snes2hdmi when it wants the SNES to wait
+// for the HDMI frame boundary, and cleared when the HDMI side reports its frame
+// started.  A machine paused that way holds enable low, which disables main and
+// therefore the PPU, and a disabled PPU reports exactly the static blanking levels
+// the pixel probe saw.  That is a loop with no exit if the HDMI side never reports
+// the frame boundary, and it would be entirely our own logic rather than a core
+// fault.
+//
+// Levels, counted over a window of 2^14 master clocks.  16384 is saturation, so a
+// bar that is all green means "high the whole window" and a bar that is all red
+// means "never high".
+//
+//   [15:0]  cycles with enable high
+//   [31:16] cycles with pause_snes_for_frame_sync high
+//   [47:32] cycles with hblankn high (not in horizontal blank)
+//   [63:48] cycles with vblankn high (not in vertical blank)
+//   [79:64] {pause, enable, vblankn, hblankn, refresh, loaded, header_finished, 1'b0}
+//
+// Band: R = paused for frame sync, G = enable, B = vblankn.  Blue means the PPU is
+// out of vertical blank and the machine is running normally; red means it is being
+// held by the frame-sync pause.
+reg [15:0] tm_en   = 16'd0;
+reg [15:0] tm_pa   = 16'd0;
+reg [15:0] tm_hb   = 16'd0;
+reg [15:0] tm_vb   = 16'd0;
+reg [15:0] tm_hb0 = 16'd0;
+reg [15:0] tm_hbx = 16'd0;
+reg [15:0] tm_vb0 = 16'd0;
+reg [15:0] tm_vbx = 16'd0;
+reg [13:0] tm_win  = 14'd0;
+reg [79:0] fp_bus  = 80'd0;
+reg  [2:0] tm_dbg  = 3'b000;
+
+always @(posedge mclk) begin
+    if (~resetn) begin
+        tm_en <= 16'd0; tm_pa <= 16'd0; tm_hb <= 16'd0; tm_vb <= 16'd0;
+    end else begin
+        // Both levels are counted, not just the high one.  Two earlier probes
+        // disagreed about hblankn -- one said it was never low, the other said it
+        // was never high -- and a counter that can only report one level cannot
+        // tell a stuck signal from a probe that never sampled the other state.
+        // If high + low equals the window, the wire is well defined and the level
+        // is real; if it does not, the signal is X or Z and the reading is void.
+        if (enable) tm_en <= tm_en + 16'd1;
+        if (pause_snes_for_frame_sync) tm_pa <= tm_pa + 16'd1;
+        if (hblankn === 1'b1) tm_hb <= tm_hb + 16'd1;
+        else if (hblankn === 1'b0) tm_hb0 <= tm_hb0 + 16'd1;
+        else tm_hbx <= tm_hbx + 16'd1;
+        if (vblankn === 1'b1) tm_vb <= tm_vb + 16'd1;
+        else if (vblankn === 1'b0) tm_vb0 <= tm_vb0 + 16'd1;
+        else tm_vbx <= tm_vbx + 16'd1;
+
+        tm_win <= tm_win + 14'd1;
+        if (tm_win == 14'd0) begin
+            // Five stripes, five counts, no alternation:
+            //   [15:0]  enable high          [31:16] hblankn high
+            //   [47:32] hblankn low          [63:48] vblankn high
+            //   [79:64] vblankn low
+            // The two hblank counts must sum to the window.  If they do not, the
+            // remainder is X or Z and the level reading is void rather than zero.
+            fp_bus <= {tm_vb0, tm_vb, tm_hb0, tm_hb, tm_en};
+            tm_en <= 16'd0; tm_pa <= 16'd0; tm_hb <= 16'd0; tm_vb <= 16'd0;
+            tm_hb0 <= 16'd0; tm_hbx <= 16'd0; tm_vb0 <= 16'd0; tm_vbx <= 16'd0;
+        end
+    end
+end
+
+always @(*) tm_dbg = {pause_snes_for_frame_sync, enable, vblankn};
+`endif
+
+`ifdef TINYSNES_SELFTEST_PROBE
+// Diagnostic build: read a self-test cartridge's answers off the CPU's own write
+// bus, so nothing here depends on the PPU, the raster, the line buffer, the
+// display hardware or even on WRAM actually storing anything.
+//
+// tools/make_test_rom.py --mode selftest builds the cartridge.  It writes four
+// bytes with STA to $00:0010-$00:0013, and this probe latches the data lines and
+// counts the writes that carry them, which proves the 65816 fetched from the
+// cartridge, decoded instructions and drove its write bus -- independently of
+// every subsystem currently known to be broken.
+//
+//   $10  $A5 written before anything can fail: the CPU ran
+//   $11  $02 the documented emulation-mode JMP (abs) page wrap happened,
+//        $01 the jump was linear (what the bench shows this core does)
+//   $12  a counter incremented every pass of the liveness loop
+//   $13  a counter incremented every 256th pass
+//
+// The two counters are the point of the whole exercise.  A written magic says the
+// CPU ran once; counters that move between two snapshots say it is still running
+// now, which is the difference between a machine that stalled after reset and one
+// that is executing but has a dead display.
+//
+// probes, low to high:
+//   [15:0]  $10 with its count in the high byte's place is not used; the word is
+//           the last data written to $10 and the number of such writes, packed
+//           [15:8]; see fp_bus below for the exact packing
+//
+// fp_bus, low to high:
+//   [15:0]  writes to $10 in the window, then the byte in [15:8] is the counter
+//   [31:16] same for $11
+//   [47:32] same for $12
+//   [63:48] same for $13
+//   [79:64] total CPU writes to WRAM in the window, saturating
+//
+// Band: R = the magic byte has been written, G = a result byte has been written,
+// B = enable.
+reg [7:0]  st_v10 = 8'h00, st_v11 = 8'h00, st_v12 = 8'h00, st_v13 = 8'h00;
+reg [15:0] st_c10 = 16'd0, st_c11 = 16'd0, st_c12 = 16'd0, st_c13 = 16'd0;
+reg [15:0] st_cwr = 16'd0;
+reg        st_magic = 1'b0, st_result = 1'b0;
+reg [13:0] st_refresh = 14'd0;
+reg [79:0] fp_bus     = 80'd0;
+reg  [2:0] st_dbg     = 3'b000;
+
+wire st_hit = wram_wr;
+wire [16:0] st_addr = WRAM_ADDR;
+
+always @(posedge mclk) begin
+    if (~resetn) begin
+        st_c10 <= 16'd0; st_c11 <= 16'd0; st_c12 <= 16'd0; st_c13 <= 16'd0;
+        st_cwr <= 16'd0;
+        st_magic <= 1'b0; st_result <= 1'b0;
+    end else if (enable) begin
+        if (st_hit) begin
+            if (st_cwr != 16'hFFFF) st_cwr <= st_cwr + 16'd1;
+            case (st_addr[15:0])
+            16'h0010: begin
+                st_v10 <= WRAM_D;
+                st_magic <= (WRAM_D == 8'hA5);
+                st_c10 <= st_c10 + 16'd1;
+            end
+            16'h0011: begin
+                st_v11 <= WRAM_D;
+                st_result <= 1'b1;
+                st_c11 <= st_c11 + 16'd1;
+            end
+            16'h0012: begin
+                st_v12 <= WRAM_D;
+                st_c12 <= st_c12 + 16'd1;
+            end
+            16'h0013: begin
+                st_v13 <= WRAM_D;
+                st_c13 <= st_c13 + 16'd1;
+            end
+            default: ;
+            endcase
+        end
+
+        // The counters are cleared at every snapshot, so each frame is a window
+        // and the value in a stripe is a rate rather than a lifetime total.  A
+        // stripe that reads the same in two consecutive frames is a CPU that is
+        // not executing; a stripe that changes is one that is.
+        st_refresh <= st_refresh + 14'd1;
+        if (st_refresh == 14'd0) begin
+            fp_bus <= {st_cwr,
+                       {st_v13, 8'd0}, {st_v12, 8'd0},
+                       {st_v11, 8'd0}, {st_v10, 8'd0}};
+            st_c10 <= 16'd0; st_c11 <= 16'd0; st_c12 <= 16'd0; st_c13 <= 16'd0;
+            st_cwr <= 16'd0;
+        end
+    end
+end
+
+always @(*) st_dbg = {st_magic, st_result, enable};
+`endif
+
 `ifdef TINYSNES_WAIT_PROBE
 // Diagnostic build: what the wait state is doing, because "the machine stopped
 // advancing" is the same picture whether the CPU is waiting for a word that
@@ -2566,7 +2744,19 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_PIXEL_PROBE
+`ifdef TINYSNES_TIMING_PROBE
+    // Diagnostic build: why the raster is dead.  See the TINYSNES_TIMING_PROBE
+    // block for the field order.
+    .dbg(tm_dbg),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_SELFTEST_PROBE
+    // Diagnostic build: a self-test cartridge's answers, read off the CPU's write
+    // bus.  See the TINYSNES_SELFTEST_PROBE block for the field order.
+    .dbg(st_dbg),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_PIXEL_PROBE
     // Diagnostic build: is the machine producing a raster?  See the
     // TINYSNES_PIXEL_PROBE block for the field order.
     .dbg(pp_dbg),

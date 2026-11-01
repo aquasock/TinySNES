@@ -1337,3 +1337,35 @@ Find out why the raster never leaves vertical blank, because that single conditi
 - User Test: NOT RUN
 
 ---
+
+## 42 COMMIT Unreleased 2026-11-01T11:50:52-07:00
+
+#### Coming From:
+
+Unreleased a03cad0
+
+#### Purpose:
+
+Replace the whole-machine guessing of the previous cycle with a bottom-up ladder in which a CPU program exercises one subsystem at a time, and use the first two rungs to establish that the stack works and that the PPU's own counters run on the board.
+
+#### Outcome:
+
+Two rungs of the ladder are now proven on hardware, and the search for the video fault has been narrowed to a single gate rather than a machine. The method changed because the previous cycle established that the CPU executes from the cartridge and that the picture is unwritten line-buffer content, which left no part of the machine with an established state; so `tools/make_test_rom.py` gained a small 65C816 assembler with label resolution and a set of self-checking test cartridges that write their verdicts to `$00:0010-$00:0013`, where the existing `TINYSNES_SELFTEST_PROBE` on `fpga/snes/src/snestang_top.v` latches them off the CPU's write bus without any new bitstream. The assembler emits explicit addressing modes rather than guessing, because `STA $10` is zero page and `STA $0010` is absolute and a tool that chose for you could emit a different instruction from the one its comment claims. The first rung is the WRAM stack, the subsystem every subroutine call, interrupt and PHA/PLA depends on and the one whose corruption the historical `$1035` and `SP=$01FD` signatures resemble: the `stacktest` cartridge pushes 256 distinct bytes with PHA, pops them with PLA and compares every one, which covers all 256 addresses of `$0100-$01FF` and the stack pointer's wrap, then calls four subroutines nested four deep, checks each one's distinct marker and requires SP back at `$FF`. That is the return-pairing question asked directly with no probe in the way. It passes on hardware with `$11` zero and the heartbeat advancing in every capture, and it passes identically in the bench, so the stack, the return stack and the stack page are correct and the historical departure signatures were never a stack fault. The second rung is the PPU's raster, read through `$2137` plus `$213C`/`$213D` so the answer comes back through the CPU's own bus with no dependence on the line buffer or the display. The first version of that test sampled in a fixed-length loop and reported `OPHCT` frozen at 2 while `OPVCT` moved, which the RTL forbids because `V_CNT` only increments when `H_CNT` reaches `LAST_DOT`; that reading was an aliasing artefact of a fixed sampling period against a fixed raster period, and it was reported as a frozen counter before being noticed. The corrected version sweeps its own delay and keeps maxima, and a maximum cannot alias downward: it returns `maxH=$FE` and `maxV=$FF` on the Tang, identical to the bench, so both PPU counters run to the top of their range on the board. The cycle then turned to the display-enable gate that writes the line buffer, `hblankn` and `vblankn` being the PPU's `HDE` and `VDE`, and found that three probes disagreed about that signal. Counting both levels rather than one resolved it: over a 16384-clock window `hblankn` reads high=0, low=0 and sum=0, and `vblankn` reads high=512 and low=70, sum=582. Neither signal spends the window at a defined level, and the flattened netlist confirms the consequence -- `build/timing/tinysnes.json` contains zero nets named `hblankn` or `vblankn`. The line-buffer write gate is therefore fed something that is neither of its two levels, which is why the buffer is never written and why the screen keeps its power-up grid. RetroRegen-SNES-Test v0.3.13 was verified against its own `SHA256SUMS.txt` and is a valid 256 KiB LoROM with a correct checksum and reset vector `$8000`; it loads and runs on the board without crashing and shows the grid, so it is a target for a later rung rather than an instrument for this one. Three faults in my own instruments are recorded for the next agent: the aliasing readout above, an eight-bit counter that wrapped and made a change count exceed its sample count, and the general lesson that a probe counting only the high level of a signal cannot distinguish a stuck signal from an undriven one, so both levels and their sum must be counted. The default build is unaffected: synthesis is clean, all nine probe benches pass, and every addition is behind an `ifdef`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 41 were not rewritten and recorded the superseding findings here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-two entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Trace the wire between the PPU's `HDE`/`VDE` outputs and the line-buffer write gate in `snes2hdmi.v` by reading the flattened netlist rather than deploying another build, since the netlist already answers the central question by showing that `hblankn` and `vblankn` have no nets at all; the specific thing to determine is whether `SPPU`'s `HDE` and `VDE` are being optimised away because nothing in the design consumes their semantic meaning, or whether the port naming between `SNES.v` and `main.v` leaves them connected to something that is never driven. Once a defined level reaches that gate, the line buffer will begin taking PPU pixels and the picture path becomes measurable, at which point the ladder continues to the PPU register writes, then NMI, then the controller ports and the APU, using the same self-checking cartridge pattern rather than whole-machine probes. The `hvtest` result should also be revisited after that fix, because a running raster with a documented `$B0` to `$EF` vertical blank period is what RetroRegen's H/V counter test expects, and that suite is the natural end-to-end check once the display path is alive.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- fpga/snes/src/snestang_top.v
+- tools/make_test_rom.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
