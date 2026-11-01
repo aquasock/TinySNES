@@ -482,7 +482,7 @@ EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the statu
     - "aquasock/apicula epic/gw5ast138c 495661a, apycula/chipdb.py _gw5a_pll_clk_wires"
     - "TinyGBA .ai/core-log.md entry 4 and the two vendor builds it describes"
     - "This repository, build/kpl7/tinysnes-routed.json and fpga/snes/tinysnes.cst"
-  verification: "The table contents were read directly from the fork on 2026-10-31 and the consequence measured on this design's routed netlist (core-log entry 24): `fclk` has 1281 general-routing segments, no spine and no global tap, against `mclk`'s global route.  Revised 2026-10-31 (core-log entry 25): `fclk` was moved onto a PLL output that does have a pip -- a second PLL at `PLL_L[0]` driving it from `CLKOUT2`, hence `TLPLL0CLK2` and out of `CBRIDGEOUT_TOP2` -- and it now routes in 699 segments with a spine.  The machine's behaviour changed with it: the 65816 began executing cartridge code at `$80FD` and `$82DD` instead of bus data at `$7C7F`, but the picture did not change and five boots still gave five states, so the clock plane was a real defect whose repair moves the failure without fixing it."
+  verification: "The table contents were read directly from the fork on 2026-10-31 and the consequence measured on this design's routed netlist (core-log entry 24): `fclk` has 1281 general-routing segments, no spine and no global tap, against `mclk`'s global route.  Whether putting `fclk` on the plane makes the machine run has not been tested."
 
 - record_id: EXT-007
   kind: EXTERNAL

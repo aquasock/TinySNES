@@ -81,7 +81,8 @@ def summary_irq(words):
     sticky = words[0] & 0xFF
     status = (words[0] >> 8) & 0xFF
     pc     = words[1]
-    hist = (f"vblank={sticky>>0&1} nmien={sticky>>1&1} nmiflag={sticky>>2&1}")
+    hist = (f"vblank={sticky>>0&1} nmien={sticky>>1&1} nmiflag={sticky>>2&1} "
+            f"w42xx={sticky>>3&1} w4200={sticky>>4&1}")
     st = (f"wai={status>>1&1} stp={status&1} en={status>>2&1}")
     return f"PC={pc:04X} status={status:02X} | {st} | {hist}"
 

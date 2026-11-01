@@ -915,3 +915,39 @@ Follow the 65816 from reset to the stop, because the interrupt machinery is now 
 - User Test: NOT RUN
 
 ---
+
+## 29 COMMIT Unreleased 2026-10-31T23:08:17-07:00
+
+#### Coming From:
+
+Unreleased 0ff6b86
+
+#### Purpose:
+
+Find out whether the `$4200` write the reset path performs ever reaches the decode, since entry 28 showed NMI was never enabled and the store sits only 48 bytes into the image.
+
+#### Outcome:
+
+Two sticky bits were added to `cpu.v`'s interrupt byte, testing the same condition the IO write decode uses -- `P65_EN && ~P65_R_WN && ~P65_A[22] && P65_A[15:8] == 8'h42` -- so a bit means a store reached the decode rather than merely that the address was on the bus. Reading them exposed a regression this project introduced two cycles earlier and the rest of this entry is mostly about that. The measurement first: on the build then current, no write to `$4200-$42FF` had ever been decoded, which is impossible if the CPU were executing the image, because every one of the reset path's first eight instructions is a store to `$4200-$42xx`. That pointed at the fetch rather than at the CPU, and `TINYSNES_FETCH_PROBE` -- the instrument from entry 4 -- settled it in one frame: `ROM_ADDR` read `0x7FFC` correctly while `ROM_Q` read `0x0000` at the first assertion, at +2 mclk and at +4 mclk. The word never arrived. The same probe on the tree as it stood before cycle 25 read `0x0000`, `0x0000`, `0x8000`, exactly as entry 4 recorded, and a build from a worktree at commit `67916db` reproduced that. So cycle 25, which moved `fclk` from `PLL_R[0]`'s `CLKOUT1` onto a second PLL at `PLL_L[0]`'s `CLKOUT2` to reach the global clock plane, broke the SDRAM read path. The mechanism is the one TCL-007 and TCL-003 warn about from the other direction: `fclk_p` drives `O_sdram_clk` straight to a pin while `fclk` is the capture clock, and putting `fclk` on the global clock tree changed its insertion delay relative to `fclk_p`, moving the sampling point out of the window the DQ capture was tuned into. Cycle 25 was reverted in full -- `gowin_pll_sdram.v` deleted, `gowin_pll_snes.v` and `snestang_top.v` and `tinysnes.cst` restored, and the reference record's claim that the machine began executing cartridge code withdrawn -- and the revert was verified on hardware: `ROM_Q` is `0x8000` at +4 mclk again, the production image again draws the static grid of entry 2, and the CPU probe again finds the 65816 nowhere near `WAI` or `STP`. With the read path restored the instrument gave a sound reading for the first time: `w42xx` and `w4200` are both set, so the CPU does write `$4200`, while `NMI_EN` is still clear, so the write never carried bit 7; and the program counter sits at `$8896`, inside the sound upload routine, with neither `WAI` nor `STP` set. That is the picture entries 8 and 11 described, reached from a working ROM path, and it is the baseline any further work should start from. The larger lesson is recorded plainly because it cost three cycles: entries 25 through 28 were all measured on a build whose ROM read returned zero, so their readings described a machine executing `$00` bytes rather than the cartridge. Entry 26's vector fetches, entry 27's `WAI` and `STP` halts and entry 28's interrupt history are all artefacts of that regression and none of them should be relied on. The instruments built in those cycles are sound and worth keeping -- the sticky interrupt byte, the write-history bits, the `cpu` and `irq` layouts in `sample_boot_states.py`, and `TINYSNES_FORCE_SLOW_ROM` as a recorded negative -- but their readings are void. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 28 were not rewritten, restored `TCL-015` to its pre-cycle-25 text, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-nine-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Re-measure the interrupt question on the restored baseline rather than trusting anything from entries 25 to 28, because those readings were taken with `ROM_Q` returning zero and describe a machine that was not executing the cartridge: rebuild `TINYSNES_IRQ_PROBE` from the current tree and sample it over five boots to learn whether `NMI_EN` is ever set now that the image actually runs, since the single reading taken after the revert says the CPU writes `$4200` but never with bit 7, and that wants confirming across boots before it is called a finding. Then add one more bit to the same byte for whether the program counter has ever been in `$80-$8F` in the range the reset path occupies, which separates a CPU that ran the prologue and then jumped away from one that never ran it. Only after that should the sound-upload deadlock of entries 8 to 12 be revisited, and the write-history bits make a sharper question possible than before: a CPU sitting at `$8896` with `$4200` written but NMI disabled is running its own code, so the place to look is why the 65816 and the SPC700 stop agreeing, and the `TINYSNES_LINK_PROBE` instrument from entry 12 is the one to bring back. Two habits are worth keeping from this cycle: check `ROM_Q` on any new clock or PLL arrangement before trusting any CPU reading taken on it, since a zero read produces a coherent-looking machine that executes `BRK` and never touches the IO registers; and when two consecutive probes disagree about something as basic as whether the CPU writes `$4200`, suspect the path underneath before the CPU. Do not reintroduce the second SDRAM PLL, do not re-time the port-0 read path or the DQ capture, and do not reintroduce the ODDR on fclk.
+
+#### Files Modified:
+
+- fpga/snes/pll/gowin_pll_sdram.v
+- fpga/snes/pll/gowin_pll_snes.v
+- fpga/snes/src/cpu.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/tinysnes.cst
+- tools/build_tinysnes.sh
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
