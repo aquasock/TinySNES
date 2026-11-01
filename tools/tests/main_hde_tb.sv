@@ -141,13 +141,22 @@ module main_hde_tb;
   // ------------------------------------------------------------- measurement
   integer hb_rise = 0, hb_fall = 0, both_low = 0, samples = 0;
   integer hb_high = 0, vb_high = 0, both_high = 0;
+  integer coincide = 0;
+  reg dot_r = 0;
   integer first_hb = -1;
   reg hb_r = 1;
 
   always @(posedge clk) begin
     hb_r <= HBLANKn;
+    dot_r <= DOTCLK;
     if (rst_n) begin
       samples <= samples + 1;
+      // The exact conjunction snes2hdmi uses to write its line buffer:
+      //   dotclk rising && ~hblank && ~vblank && ys < 224
+      // Synthesis proves this constant and deletes the memory write port, so the
+      // bench measures the conjunction itself rather than its terms.
+      if (DOTCLK && ~dot_r && HBLANKn && VBLANKn && Y_OUT[7:0] < 8'd224)
+        coincide <= coincide + 1;
       if (HBLANKn === 1'b1 && ~hb_r) begin
         hb_rise <= hb_rise + 1;
         if (first_hb < 0) first_hb <= samples;
@@ -204,10 +213,14 @@ module main_hde_tb;
              both_high, 100.0 * both_high / (samples == 0 ? 1 : samples));
     $display("  both low                      %0d (%.2f%%)",
              both_low, 100.0 * both_low / (samples == 0 ? 1 : samples));
+    $display("  WRITE CONDITION (dotclk rising && HDE && VDE && ys<224): %0d", coincide);
 
     if (hb_rise == 0) begin
       $display("FAIL  HBLANKn never asserts at the main.v boundary.");
       $display("      The PPU produces HDE inside SNES.v, so the break is here.");
+    end else if (coincide == 0) begin
+      $display("FAIL  the line-buffer write condition never fires.");
+      $display("      Synthesis is right: snes2hdmi can never write its buffer.");
     end else if (both_high == 0) begin
       $display("FAIL  HBLANKn and VBLANKn are never HIGH together: the write");
       $display("      condition snes2hdmi needs can never be met.");

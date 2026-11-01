@@ -1462,3 +1462,34 @@ None.
 - User Test: N/A
 
 ---
+
+## 46 COMMIT Unreleased 2026-11-01T13:17:43-07:00
+
+#### Coming From:
+
+Unreleased 4732108
+
+#### Purpose:
+
+Establish whether the line buffer's write enable is genuinely unreachable or whether synthesis is wrongly proving it so, by measuring the exact write conjunction in simulation and by bisecting the synthesis flow to the pass that folds it.
+
+#### Outcome:
+
+Synthesis is proving a falsehood, and this cycle produced the first live picture the project has ever shown. The write enable is folded to constant zero between the `map_gates` and `map_ffs` stages of `synth_gowin`, and the bisect had to be redone once because the first attempt used stage names (`rtl`, `cmos`, `fine`) that do not exist in this build's `synth_gowin`, whose real labels are `begin`, `coarse`, `map_ram`, `map_ffram`, `map_gates`, `map_ffs`, `map_luts`, `map_cells`, `check` and `vout`; with the correct names the fold reproduces exactly and `map_ffs` is the stage that does it. Reading the netlist at each stage shows the condition intact at `map_gates` and the memory's write enable replaced by a constant at `map_ffs`, with the write data and address collapsing to don't-care immediately afterwards. The HDE flop itself is well formed in the netlist: it is a `$sdffce` with `D` tied to 1, an enable of `{H_CNT==18, RST_N, ENABLE, DOT_CLKR_CE}` and a synchronous reset of `H_CNT==274`, which is a faithful rendering of the two conditional assignments in `ppu.v` and is satisfiable. `tools/tests/main_hde_tb.sv` now measures the write conjunction itself rather than its terms, and over four million master clocks the exact expression `dotclk rising && HDE && VDE && ys < 224` fires 645673 times, so the RTL can plainly write the buffer and the tool's proof that it cannot is wrong. Two attribute workarounds were tried and both fail to prevent the fold: `(* keep *)` on the PPU's `HDE` output and `(* keep *)` on the line-buffer memory itself each still leave the write data entirely don't-care. The cycle then established by experiment what the fault costs and what fixes it, using a new `TINYSNES_LINEFILL_RAW` build that drops every display gate and writes on each dot-clock edge while the SNES is on a visible line: its write counter reads 4096 per window where the shipped design reads zero, the netlist keeps its write port, and with the blink cartridge loaded the screen shows a changing picture built from real PPU pixel data for the first time in this project's history. The picture is not correct, because writing outside the display window smears the buffer and the captured frames differ from one another, but it separates two questions that were previously tangled: everything downstream of the line buffer works, and the only thing wrong with the picture is the gating. One earlier result of this cycle is superseded and named here: an intermediate build omitting only the horizontal term appeared to fix the fold and wrote 120 to 128 pixels per window, and the reason it wrote so few is the same reason the vertical term reads oddly, which remains unreconciled and is carried forward. Several of my own errors are recorded: the invalid stage names above, a `python` invocation that read Yosys JSON integers as if they were constants and produced the "both constant" claim corrected in entry 45, and an early reading of the RAW build's picture as the unchanged grid which was a frame captured before the cartridge had actually loaded. No claim in this entry rests on a hardware level count; every figure quoted is either a simulation count, a netlist fact, or the write counter, which has been stable at zero or 4096 across every build measured. The default build is unaffected, with synthesis clean, all nine probe benches passing and both new benches passing, and every addition behind an `ifdef`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 45 were not rewritten and recorded the superseding findings here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-six entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find a formulation of the line-buffer write gate that `synth_gowin` cannot fold, because the correctness work is done and the design is right; the requirement is a build whose final netlist leaves the memory's write data driven rather than don't-care, and that check costs one synthesis and a netlist read rather than a deployment. The most promising route is to stop expressing the gate as an edge detector over the PPU's `DOTCLK` combined with `HDE`, since that combination is what the tool mis-analyses, and instead build an explicit pixel-valid strobe in `snes2hdmi` from the PPU's own `X_OUT`/`Y_OUT` bounds, which the `TINYSNES_LINEFILL_RAW` build already shows reach the screen correctly; the visible-window bound the raw build lacks has to come from somewhere, and `OUT_X` holding its last value during horizontal blank is the likely source. If no formulation survives, the fallback is to synthesise this cone with ABC9 disabled or to mark it `(* abc9_box *)`, either of which trades area for correctness, and that decision should be put to the user rather than taken. Only after the netlist check passes is another hardware deployment worth making, and the expected result is a stable picture from the blink cartridge changing colour about every four seconds rather than on every capture.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/main_hde_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

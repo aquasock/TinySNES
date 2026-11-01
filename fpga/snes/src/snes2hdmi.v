@@ -355,7 +355,38 @@ assign linefill_bus = lf_bus;
 assign linefill_dbg = lf_dbg;
 `endif
 
-`ifdef TINYSNES_LINEFILL_NO_HDE
+`ifdef TINYSNES_LINEFILL_RAW
+// Diagnostic build: write every SNES pixel into the line buffer, with no display
+// gating at all.
+//
+// This is the end of a chain of narrowing.  The write gate is
+// `dotclk rising && ~hblank && ~vblank && ys < 224`, and synthesis proves that
+// conjunction constant, deletes the memory's write port, and leaves the buffer
+// holding whatever it powered up with.  Removing only the `~hblank` term lifts
+// the fold and the hardware then writes 120 to 128 pixels per window, which is
+// too few to fill a 57,344-pixel frame but proves the buffer, its port A and its
+// two clock domains all work.
+//
+// So this build removes the remaining gating as well and writes on every dot
+// clock edge while the SNES is on a visible line.  It cannot be the shipping
+// behaviour -- writing outside the display window would smear the picture -- but
+// it answers the one question that has been open since the grid was first
+// photographed: can this video path put a picture on the screen at all?
+//
+// A picture here means everything downstream of the buffer works and only the
+// gating terms are at fault.  No picture means the fault is in the read side,
+// the HDMI serialiser or the panel, and no amount of gate arithmetic will help.
+    always @(posedge clk) begin
+        r_dotclk <= dotclk;
+        r_vblank <= vblank;
+        mem_portA_we <= 1'b0;
+        if (dotclk && ~r_dotclk && ys[7:0] < 8'd224) begin
+            mem_portA_addr  <= {ys[BUF_WIDTH-1:0], xs[8:1]};
+            mem_portA_wdata <= rgb5;
+            mem_portA_we    <= 1'b1;
+        end
+    end
+`elsif TINYSNES_LINEFILL_NO_HDE
 // Diagnostic build: write the line buffer without the horizontal-enable term.
 //
 // Measured on the board: mem_portA_we never asserts, while dotclk runs, ys is in
