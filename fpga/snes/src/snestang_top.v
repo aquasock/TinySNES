@@ -152,11 +152,22 @@ end
 `else
 // Mega 138K: mclk=21.5054, fclk=64.5161
 // Primer 25K: mclk=21.4844, fclk=85.9375
+// TinySNES: the SDRAM clock pair was split onto its own PLL so fclk can reach
+// the global clock plane.  apicula carries a plane pip for CLKOUT0 at slots 0
+// and 4 and for CLKOUT2 at slot 0 only, and pll_snes's CLKOUT1 had none, so
+// fclk was routed as ordinary interconnect across 40 tiles.  See
+// fpga/snes/pll/gowin_pll_sdram.v and core-reference TCL-015.
 gowin_pll_snes pll_snes (
     .clkout0(mclk),             // 21.4844
-    .clkout1(fclk),
-    .clkout2(fclk_p),
+    .clkout1(),                 // unused: fclk moved to pll_sdram
+    .clkout2(),                 // unused: fclk_p moved to pll_sdram
     .clkin(sys_clk)             // 50 Mhz input
+);
+
+gowin_pll_sdram pll_sdram (
+    .clkout1(fclk_p),           // 64.5161, 225 degrees shifted
+    .clkout2(fclk),             // 64.5161, on the global clock plane
+    .clkin(sys_clk)
 );
 
 // HDMI clocks

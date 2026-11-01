@@ -129,6 +129,7 @@ sources=(
     "$src/pll/gowin_pll_27.v"
     "$src/pll/gowin_pll_hdmi.v"
     "$src/pll/gowin_pll_snes.v"
+    "$src/pll/gowin_pll_sdram.v"
 )
 
 for f in "${sources[@]}" "${hdmi_slang[@]}"; do

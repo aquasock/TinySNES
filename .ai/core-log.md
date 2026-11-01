@@ -787,3 +787,37 @@ None.
 - User Test: N/A
 
 ---
+
+## 25 COMMIT Unreleased 2026-10-31T19:49:06-07:00
+
+#### Coming From:
+
+Unreleased 67916db
+
+#### Purpose:
+
+Put the SDRAM clock on the global clock plane without changing the shared apicula fork, by moving it onto a PLL output that already has a clock-plane pip.
+
+#### Outcome:
+
+`fpga/snes/pll/gowin_pll_sdram.v` is a second PLL at `PLL_L[0]` driving `fclk` from `CLKOUT2` and `fclk_p` from `CLKOUT1`, with the 225-degree phase shift moved onto `CLKOUT1` so the unshifted clock is the one on the plane and the phase relation between the pair is preserved inside one PLL, which the SDRAM DQ capture depends on. `CLKOUT0` is disabled at that site because its plane wire `TLPLL0CLK0` is the one TinyNES measured as producing a dead core. `gowin_pll_snes` keeps `mclk` on `CLKOUT0` at `PLL_R[0]`, the only other slot with a `CLKOUT0` pip, and its unused outputs are disabled; `fpga/snes/tinysnes.cst` places the new PLL and `tools/build_tinysnes.sh` adds the file. The change works as intended at the routing level: `fclk` moved from 1281 general-routing segments with no spine onto `TLPLL0CLK2` through the centre mux at `X93Y54/SPINE10` and out of `X96Y27/SPINE28/CBRIDGEOUT_TOP2`, which is the pip TinyGBA measured from the vendor flow and the bridge output DEV-009 measured as running, in 699 segments with a spine and with global taps. Both seeded builds had zero hold/min violations and passed the timing gate at hclk 156.006 and iosys.clk 28.746 against 74.250 and 21.505. The hardware result is a change and not a cure, and it has to be read in two halves. The 65816's execution changed substantially: where five boots of the previous image ended at `$7C7F` -- open bus, below the LoROM window -- after entering the upload routine two to four times, five boots of this image execute real ROM code, at `$80FD` and `$82DD` in three boots and at `$7FF7` and `$6C6F` in the other two, and every history bit is now clear, so the CPU never entered the routine at `$8888` and never wrote `$CC`. `$80FD` is ROM offset `$00FD` and holds `8D 30 01`, a `STA $0130`; `$82DD` holds `5A 0B 8B 4B`, real instructions. The picture, however, is unchanged: the production image built from the same tree draws the same static grid of white lines that entry 2 recorded, so the machine does not boot. Five boots still produced five distinct states, so the nondeterminism survives the clock change. The honest reading is that the clock plane was a real defect and fixing it moved the failure, without establishing that it moved it forward: the CPU is executing cartridge code instead of bus data, which is healthier, but it now fails before the sound upload rather than during it, which is earlier in the boot. One caveat on the gate is recorded because it bears on how much weight the routing result carries: `tools/clock_plane_report.py` reports `fclk`'s pips as unmeasured, since the bridge output is `TOP2` at spine 28 rather than the spine 10 DEV-009 named. Same bridge output, different spine number, and the record keeps that distinction rather than rounding it away. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 24 were not rewritten, revised TCL-015 and DEV-004 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-five-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find where the 65816 goes after the reset code, because it now executes cartridge code and then reaches an address below the LoROM window, and the two boots that ended at `$7FF7` and `$6C6F` say the departure happens early rather than in the sound path: the trace ring is the right instrument and needs no new RTL, since it holds the last four `ROM_ADDR` values and LoROM bank 0 is the image offset directly, so sampling it over five boots and disassembling the newest entry from each gives the instruction that diverts the CPU. Read the image's reset path first -- ROM offset 0 is `78 9C 00 42 ...`, a `SEI` then `STZ` to the PPU and APU registers, and the routine at `$80FD` is only `$FD` bytes into the image -- because a CPU that reaches `$80FD` and `$82DD` on some boots and `$7FF7` on others is either taking a different branch on an uninitialised value or being reset into a different path, and the two candidates are a wrong indirect jump and a spurious interrupt. The interrupt question is now the more likely of the two and is testable cheaply: latch whether the 65816's program counter is ever in the vector table and read the processor status byte at that moment, which the APU probe already does through `DBG_REG` 0x08 and 0x15 and which would show whether the emulation bit and the interrupt-disable bit were set when it happened. Do not change the clock plane again while that question is open, since it now demonstrably alters behaviour and every further change makes the comparison harder. Do not build another memory test. Keep the production image and the link probe both built from the same tree so a picture result and a CPU result can be compared boot for boot, and use `tools/sample_boot_states.py` for every comparison across boots.
+
+#### Files Modified:
+
+- fpga/snes/pll/gowin_pll_sdram.v
+- fpga/snes/pll/gowin_pll_snes.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/tinysnes.cst
+- tools/build_tinysnes.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

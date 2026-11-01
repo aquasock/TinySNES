@@ -46,8 +46,8 @@ PLL #(
     .ODIV5_SEL(8),
     .ODIV6_SEL(8),
     .CLKOUT0_EN("TRUE"),
-    .CLKOUT1_EN("TRUE"),
-    .CLKOUT2_EN("TRUE"),
+    .CLKOUT1_EN("FALSE"),   // TinySNES: fclk moved to gowin_pll_sdram
+    .CLKOUT2_EN("FALSE"),   // TinySNES: fclk_p moved to gowin_pll_sdram
     .CLKOUT3_EN("FALSE"),
     .CLKOUT4_EN("FALSE"),
     .CLKOUT5_EN("FALSE"),
