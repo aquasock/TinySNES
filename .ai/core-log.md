@@ -951,3 +951,33 @@ Re-measure the interrupt question on the restored baseline rather than trusting 
 - User Test: NOT RUN
 
 ---
+
+## 30 COMMIT Unreleased 2026-10-31T23:13:21-07:00
+
+#### Coming From:
+
+Unreleased cdf1a15
+
+#### Purpose:
+
+Re-measure the interrupt question on the restored baseline, because every reading from entries 25 to 28 was taken on a build whose ROM read returned zero.
+
+#### Outcome:
+
+`TINYSNES_IRQ_PROBE` was rebuilt from the reverted tree and sampled over five boots, which corrects the single reading entry 29 took after the revert. Four things are invariant across all five boots: a write to `$4200-$42FF` is always decoded, a write to `$4200` specifically is always decoded, `VBLANK` has always been high, and `NMI_FLAG` has always fired. So the 65816 always runs the reset prologue that writes `$4200`, the PPU always generates vertical blank, and the vblank edge detector always works. What varies is the program counter and one bit: `NMI_EN` is set in only one boot of five. That refutes entry 29's statement, made from one sample, that the CPU writes `$4200` but never with bit 7 -- whether NMI gets enabled depends on which path the boot takes. The five states are: two boots at `$8894` and `$8895` with `NMI_EN` clear and neither halt flag set, which is the `CMP $2140 / BNE` echo-wait of the sound upload that entries 8 through 12 spent five cycles on; one at `$4C4C`, below the LoROM window and outside the cartridge; one at `$E368` with `WAIExec` set and `NMI_EN` clear, which is a CPU correctly waiting for an interrupt the game had not yet enabled; and one at `$80CE` with `STPExec` set and `NMI_EN` **set**. That last boot is the informative one: NMI was enabled and the edge detector fired, so an interrupt was available, and the CPU still ended halted. Its program counter sits in the handler prologue at `$80C9`, whose bytes `78 C2 30 48 DA 5A 0B 8B` match the `$82D8` handler's, so the CPU took an interrupt and then halted inside the handler rather than failing to receive one. Enabling NMI therefore does not save the machine, which makes the missing-interrupt reading of entry 27 -- itself an artefact of the broken build -- doubly wrong: the machine fails with the interrupt enabled as well as without. Five boots produced five states, so the nondeterminism is unchanged by any of this and remains the one property that has held across every correct measurement in the session. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 29 were not rewritten, revised EXT-008 in place, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Re-establish the sound-upload picture on the restored baseline, because two of five boots land in that loop at `$8894`/`$8895` and the link readings that diagnosed it -- entries 8, 11 and 12 -- were taken across builds that included the broken ones, so none of them can be assumed correct: rebuild `TINYSNES_LINK_PROBE` from the current tree, verify with `TINYSNES_FETCH_PROBE` that `ROM_Q` still returns `0x8000` at +4 mclk on that same bitstream, and only then sample five boots to learn whether the SPC700 and the 65816 are still ten indices apart or whether that too was an artefact. That single check decides whether the session's earlier diagnosis stands or whether it needs redoing, and it is the cheapest way to find out. If the link picture is confirmed, the next instrument is a sticky bit for whether the 65816 has ever been at `$8888`, which every boot in the earlier work did reach and which would say whether the upload is entered at all on this baseline. Do not build another interrupt instrument -- the interrupt chain is now exonerated twice over, once by the sticky bits and once by the boot that enabled NMI and still halted. Do not reintroduce the second SDRAM PLL. Do not trust a reading taken on a bitstream whose `ROM_Q` has not been checked in this session, and treat a zero `ROM_Q` as invalidating every CPU measurement on that build rather than as a machine state.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: NOT RUN
+
+---
