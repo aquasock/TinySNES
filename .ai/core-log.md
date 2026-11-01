@@ -1523,3 +1523,36 @@ Verify that a PPU register write from cartridge code actually reaches the PPU, w
 - User Test: NOT RUN
 
 ---
+
+## 48 COMMIT Unreleased 2026-11-01T14:34:10-07:00
+
+#### Coming From:
+
+Unreleased b1f29bf
+
+#### Purpose:
+
+Get video working in simulation as a known-good reference, so that the board's failure can be compared against a rendered frame rather than against another inference from hardware signals.
+
+#### Outcome:
+
+Video now works end to end in simulation and the reference frame is solid magenta, which is the blink cartridge's backdrop colour, and the two benches that produce it are the first instruments in this project that render a picture rather than counting events. `tools/tests/video_tb.sv` drives the real `SNES.v` with behavioural memories, samples the core's own pixel stream under exactly the condition `snes2hdmi` uses to write its line buffer, and writes a 256x224 PPM: over 36 million master clocks it captures 5,793,708 pixels covering all 256 columns and all 224 rows, and every one of the 57,344 framebuffer positions is filled. `tools/tests/video2_tb.sv` goes one stage further and puts that stream through the actual `snes2hdmi` module -- the 32-line BRAM ring with port A written on the SNES clock and port B read on the pixel clock, the raster-derived xx and yy, the overlay bypass and the BGR555 to RGB888 expansion -- and captures the colour the module picks for each visible pixel: 116,363,520 captures over the run, all 256 columns, and 25,759,024 assertions of the memory's write enable, which is the exact signal synthesis is deleting on the board. Its output frame is a single colour, `248,0,248`, which is `$7C1F`, the magenta the blink cartridge writes to CGRAM. The HDMI serialiser is replaced for simulation by `tools/tests/hdmi_stub.sv`, a raster generator that keeps the transmitter's interface and produces `cx`/`cy`/`frame_width`/`frame_height` at the real 720p totals, because the serialiser is the one part of the video path already proven on hardware: a build forcing the active area to a constant drew a solid white screen, so the serialiser, the PLL chain, the differential outputs and the panel all work. What this establishes is that the video path has no design fault. `OUT_X` advances across all 256 columns, contradicting the inference in entry 47 that a stuck `OUT_X` explained the board's one-column writes; that inference was drawn from a hardware build whose write path synthesis had already altered, and it does not survive a build where the write path runs. The remaining fault is therefore exactly one thing -- `synth_gowin` folds the write enable to constant zero between its `map_gates` and `map_ffs` stages -- and the acceptance test for any candidate fix is now mechanical: a build whose netlist leaves the memory's write data driven is a candidate, and one that folds it is rejected, which costs a synthesis and a netlist read rather than a hardware cycle. Two defects of my own are recorded because both hid the result temporarily: the capture condition compared an eight-bit coordinate against `8'd256`, which truncates to zero and made the whole condition false, and it was written twice, in both benches, each time producing a report of zero pixels while an added per-term diagnostic showed every stage healthy; and the tap's visible-pixel test originally gated on the same truncated comparison, which is why the first run of `video2_tb.sv` captured nothing while its write counter read 25 million. The default build is unaffected: the tap ports are behind `TINYSNES_RGB_TAP` and absent from the default netlist, synthesis is clean, and all nine probe benches pass. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 47 were not rewritten and recorded the superseding finding here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-eight entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Defeat the synthesis fold, with `video2_tb.sv`'s 25,759,024 write-enable assertions as the proof that the RTL is correct and the netlist's constant zero as the only thing left to fix, and accept nothing until a build's final netlist leaves the line buffer's data input driven rather than don't-care. The first candidate to try is to stop expressing the gate as an edge detector on `DOTCLK` combined with the PPU's `HDE`, since that particular conjunction is what `synth_gowin` mis-analyses, and to build the strobe inside `snes2hdmi` from the SNES pixel coordinates the module already receives: `xs[8:1]` for the column and `ys[7:0]` for the row are eight bits and cannot exceed the buffer's dimensions, so a write enable of `xs[0]` alone may already be sufficient and carries no cross-clock conjunction for the tool to fold. If that still folds, the next lever is build configuration rather than RTL -- running the affected cone with ABC9 disabled or marking the memory `(* abc9_box *)` -- and that trades area for correctness, so it should be put to the user rather than taken.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- tools/tests/hdmi_stub.sv
+- tools/tests/video2_tb.sv
+- tools/tests/video_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

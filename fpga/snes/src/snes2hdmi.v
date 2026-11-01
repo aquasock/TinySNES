@@ -179,6 +179,20 @@ module snes2hdmi (
 `endif
 `endif
 
+`ifdef TINYSNES_RGB_TAP
+    // Simulation tap: the colour this module decided for the pixel at (tap_x,
+    // tap_y), and whether that position is inside the visible area.  Added so a
+    // bench can reconstruct exactly what the board would show, through the real
+    // line buffer rather than through a model of it.
+    output [23:0] tap_rgb,
+    output        tap_de,
+    output [7:0]  tap_x,
+    output [7:0]  tap_y,
+    output        tap_active,
+    output        tap_we,
+    output [12:0] tap_waddr,
+`endif
+
     // output [7:0] led,
 
 	// output signals
@@ -726,6 +740,24 @@ assign linefill_dbg = lf_dbg;
             rgb <= 24'h303030;
 `endif
     end
+
+`ifdef TINYSNES_RGB_TAP
+    // The pixel the module decided, exposed for simulation.  `active` is high
+    // across the letterboxed picture, and xx/yy are the buffer coordinates, so a
+    // bench can drop this straight into a 256x224 image and compare it with what
+    // the board shows.
+    assign tap_rgb = rgb;
+    // xx and yy are eight bits, so they are always inside a 256x224 image; an
+    // earlier version compared them against 8'd256 and 8'd224, and 8'd256
+    // truncates to zero, which silently made the tap never fire while every
+    // stage behind it was working.
+    assign tap_de  = active;
+    assign tap_x   = xx;
+    assign tap_y   = yy;
+    assign tap_active = active;
+    assign tap_we     = mem_portA_we;
+    assign tap_waddr  = mem_portA_addr;
+`endif
 
     // HDMI output.
     logic[2:0] tmds;
