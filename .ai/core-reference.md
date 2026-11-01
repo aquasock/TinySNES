@@ -112,7 +112,8 @@ TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route · TCL-010 read l
 TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with two macros selects nothing ·
 TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip ·
 TCL-016 a ROM-address ring names a hot address, not a fetch sequence ·
-TCL-017 the WRAM debug channel is selected but never driven
+TCL-017 the WRAM debug channel is selected but never driven ·
+TCL-018 the display band says whether a snapshot fired
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
@@ -552,6 +553,19 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "SNESTang commit 5f0ef19, src/SNES.v: the DBG_WRAM_DAT declaration, the WRAM_DBG_WR assign, the DBG_DAT_OUT mux, and the SWRAM instantiation port list"
     - "This repository, a search of DBG_WRAM_DAT across fpga/ showing the declaration and the mux with no driver"
   verification: "Confirmed by searching for every occurrence of DBG_WRAM_DAT in the tree on 2026-11-01 (core-log entry 33) before writing the stack instrument, which was then built against the WRAM bus instead of the debug port and worked: it captured stack-page writes and a reproducible stack pointer at the departure."
+
+- record_id: TCL-018
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "A probe's display band is the authority on whether its latched snapshot fired, and a snapshot that never refreshed decodes as a full set of zeros rather than as missing data"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "Every diagnostic build paints a 32-row status band in the `dbg` colour, one bit per channel, so the captured band colour is a second reading of the same bits the stripes carry.  For the probe builds added in core-log entries 32 and 33 the band is `{done, loaded, enable}`, which makes grey `(202,202,202)` a recorded event and cyan `(2,225,198)` the state where the core is loaded and enabled but the event never happened.  The probe latches its stripes only on that event, so when it has not happened the stripe registers still hold their reset values and decode as a complete set of zeros -- `departure=$0000`, every field `$00`, every valid bit clear.  That is a well-formed readout, not an error: nothing in the sixteen-bit decoders can distinguish it from a genuine measurement of a zero."
+  consequence: "A zero readout must be cross-checked against the band before it is believed, because `departure=$0000` is a legal-looking address and was in fact reported as a measurement in core-log entries 32 and 33 before this was caught.  The sampler now does that check itself for the stack layout, whose colour mapping is unambiguous, and reports such a boot as never having departed rather than as having departed to zero.  The general rule is that the band carries the one bit that says whether the stripes mean anything, so any bootstrap layout should be read band first and stripes second; a layout whose band does not include a done bit cannot make this distinction and should be given one."
+  sources:
+    - "This repository, fpga/snes/src/snes2hdmi.v: the dbg band painted as one channel per bit, grey when all three are set and cyan when the first is clear"
+    - "This repository, tools/sample_boot_states.py: the band-colour guard in the stack layout"
+  verification: "Measured on 2026-11-01 (core-log entry 34): five boots of one bitstream reported departed addresses, and a second five-boot run of the same file reported two boots with a cyan band whose stripes decoded as all zeros.  Decoding that cyan band as `{done=0, loaded=1, enable=1}` is what identified the zeros as an unrefreshed snapshot instead of an address of $0000."
 
 - record_id: BRD-003
   kind: BOARD

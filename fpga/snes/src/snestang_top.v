@@ -1307,6 +1307,145 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_STACKBYTES_PROBE
+// Diagnostic build: the four bytes `RTL` reads, held per address.
+//
+// TINYSNES_STACK_PROBE left one question open (core-log entry 33): a post-RTL
+// stack pointer of $01FD places the bytes that return consumed at $01FA, $01FB
+// and $01FC, but a three-deep ring of the newest writes could not show what was
+// at those addresses because two pushes can land on the same address and the
+// ring then holds that address twice and one of the others not at all.  That is
+// exactly what happened, and it made a $1035 departure consistent with a
+// $10:35CC return address at the same time.
+//
+// The fix is to index by address instead of by time.  SRAM holds the last value
+// written to it, so "what is at $01FA" is "what was last written to $01FA", and
+// an eight-entry table keyed on the low three bits of the address holds the last
+// write to each of $01F8-$01FF without either of them displacing the other.  The
+// table is then frozen on the same edge that accepts the departure, so it
+// describes the stack as the CPU left it.
+//
+// This is sound because nothing else in the design writes the stack page: the
+// APU port autoport and the DMA channels write WRAM, but not this page in this
+// window, and a stale entry is visible as a wrong value rather than as a silent
+// pass because the departure address is known and the table is checked against
+// it.  A read-path instrument that latched WRAM_Q would be the independent
+// check, and it is deliberately not used here because the SDRAM return for a
+// WRAM read is several master clocks behind the address and a sampling error
+// would be indistinguishable from a wrong byte.
+//
+// SP is sampled on the phase immediately after the PC low byte and one before
+// the PC high byte that accepts the pair, so it is within one master clock of
+// the departure sample rather than the three that TINYSNES_STACK_PROBE allowed.
+//
+// probe_bus fields, low to high:
+//   [15:0]  the first PC below $8000 seen after arming -- the departure
+//   [23:16] the 65816's SP at that sample
+//   [31:24] the last byte written to $01FA
+//   [39:32] the last byte written to $01FB
+//   [47:40] the last byte written to $01FC
+//   [55:48] the last byte written to $01FD
+//   [63:56] which of those four were ever written, bit 0 for $01FA to bit 3
+//   [71:64] the 65816's PBR at the departure
+//   [79:72] a saturating count of every write to the stack page
+//
+// A `RTL` pulls PC low, then PC high, then PBR, incrementing S after each read,
+// so with the measured post-return S of $01FD the three bytes are $01FA to
+// $01FC and the entry at $01FD is context.  If $01FB and $01FC hold $35 and $10
+// then the return address was correct and the fault is a caller that pushed two
+// bytes into a routine that returns with three; if they hold anything else the
+// push path is what corrupted them.
+reg [2:0] sb_ph = 3'd0;
+reg [7:0] pch1 = 8'd0, pcl = 8'd0, sp_r = 8'd0, pbr_r = 8'd0;
+
+// Last-write-per-address shadow of $01F8-$01FF, plus a valid bit per entry.
+reg [7:0] sh_d0 = 8'd0, sh_d1 = 8'd0, sh_d2 = 8'd0, sh_d3 = 8'd0;
+reg [7:0] sh_d4 = 8'd0, sh_d5 = 8'd0, sh_d6 = 8'd0, sh_d7 = 8'd0;
+reg [7:0] sh_v  = 8'd0;
+reg       wwr_d = 1'b0;                 // previous write strobe, for the edge
+wire      sb_wsel = wram_wr && (WRAM_ADDR[16:8] == 9'h001);
+
+// Frozen copy, written once on the departure edge.
+reg        sb_arm  = 1'b0;
+reg        sb_done = 1'b0;
+reg [15:0] d_pc  = 16'd0;
+reg [7:0]  d_sp  = 8'd0;
+reg [7:0]  d_fa  = 8'd0, d_fb = 8'd0, d_fc = 8'd0, d_fd = 8'd0;
+reg [7:0]  d_val = 8'd0, d_cnt = 8'd0, d_pbr = 8'd0;
+reg [18:0] sb_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// Case, not chained ternaries, with sb_ph on the right, so the block has
+// sensitivity: a constant on the right of `always @(*)` never drives.
+always @(*) begin
+    case (sb_ph)
+    3'd0, 3'd3: dbg_reg = 8'h07;        // PC high, first read and accepting read
+    3'd1:       dbg_reg = 8'h06;        // PC low
+    3'd2:       dbg_reg = 8'h09;        // SP, between the two PC halves
+    3'd4:       dbg_reg = 8'h0D;        // PBR
+    default:    dbg_reg = 8'h07;        // parked on PC high
+    endcase
+end
+
+always @(posedge mclk) begin
+    dbg_sel    <= 8'h01;                // the 65816, every phase
+    dbg_reg_wr <= 1'b0;
+    sb_ph      <= (sb_ph == 3'd4) ? 3'd0 : sb_ph + 3'd1;
+
+    if (sb_ph == 3'd0) pch1  <= dbg_dat_out;
+    if (sb_ph == 3'd1) pcl   <= dbg_dat_out;
+    if (sb_ph == 3'd2) sp_r  <= dbg_dat_out;
+    if (sb_ph == 3'd4) pbr_r <= dbg_dat_out;
+
+    // Rising edge of the write strobe, so one access updates one entry once.
+    wwr_d <= sb_wsel;
+    if (sb_wsel && ~wwr_d) begin
+        case (WRAM_ADDR[2:0])
+        3'd0: sh_d0 <= WRAM_D;
+        3'd1: sh_d1 <= WRAM_D;
+        3'd2: sh_d2 <= WRAM_D;
+        3'd3: sh_d3 <= WRAM_D;
+        3'd4: sh_d4 <= WRAM_D;
+        3'd5: sh_d5 <= WRAM_D;
+        3'd6: sh_d6 <= WRAM_D;
+        default: sh_d7 <= WRAM_D;
+        endcase
+        sh_v <= sh_v | (8'h01 << WRAM_ADDR[2:0]);
+        if (d_cnt != 8'hFF) d_cnt <= d_cnt + 8'd1;
+    end
+
+    if (~resetn) begin
+        sb_arm  <= 1'b0;
+        sb_done <= 1'b0;
+        d_cnt   <= 8'd0;
+    end else if (sb_ph == 3'd3 && pch1 == dbg_dat_out) begin
+        // The accept point: pch1 arrived on phase 0, pcl on phase 1, and the
+        // byte arriving on this edge is the second read of PC high.
+        if ({pch1, pcl} >= 16'h8000) begin
+            sb_arm <= 1'b1;
+        end else if (sb_arm && ~sb_done) begin
+            sb_done <= 1'b1;
+            d_pc  <= {pch1, pcl};
+            d_sp  <= sp_r;
+            d_pbr <= pbr_r;
+            d_fa  <= sh_d2;             // $01FA
+            d_fb  <= sh_d3;             // $01FB
+            d_fc  <= sh_d4;             // $01FC
+            d_fd  <= sh_d5;             // $01FD
+            d_val <= {4'b0000, sh_v[5:2]};
+        end
+    end
+
+    if (sb_ph == 3'd4) begin
+        sb_wrap <= sb_wrap + 19'd1;
+        if (sb_wrap == 19'd0)
+            fp_bus <= {d_cnt, d_pbr, d_val, d_fd, d_fc, d_fb, d_fa, d_sp, d_pc};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_IPL_PROBE
 // Diagnostic build: catch the address the IPL jumps to.  Decoded from the
 // IPLROM in smp.v, the path after the $CC handshake is
@@ -2062,6 +2201,15 @@ snes2hdmi s2h(
     // probe_bus carries both directions of the APU link and both CPUs' state per
     // the field order in the TINYSNES_LINK_PROBE block.
     .dbg({header_finished, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_STACKBYTES_PROBE
+    // Diagnostic build: R = a departure from the cartridge has been recorded,
+    // G = loaded, B = enable.  probe_bus carries the departure PC, the SP taken
+    // beside it, the four stack bytes $01FA-$01FD, their valid bits, the PBR and
+    // the stack-write count, per the field order in the TINYSNES_STACKBYTES_PROBE
+    // block.
+    .dbg({sb_done, loaded, enable}),
     .bist_mask(fp_bus[15:0]),
     .probe_bus(fp_bus),
 `elsif TINYSNES_STACK_PROBE

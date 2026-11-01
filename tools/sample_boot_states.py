@@ -200,6 +200,44 @@ def summary_stack(words):
             f"w0={a0:02X}:{d0:02X} w1={a1:02X}:{d1:02X} w2={a2:02X}:{d2:02X}")
 
 
+def summary_stackbytes(words, note=""):
+    """Describe a TINYSNES_STACKBYTES_PROBE snapshot: the bytes RTL reads.
+
+    `RTL` pulls PC low, then PC high, then PBR, incrementing S after each read.
+    With the measured post-return SP of $01FD the three bytes are $01FA to
+    $01FC, so `ret` below is the address those bytes spell.  A `ret` equal to
+    the departure means the stack was correct and the jump target is the fault;
+    a `ret` that is not means the stacked bytes were wrong.
+    """
+    dpc, sp_fa, fb_fc, fd_val, pbr_cnt = words
+    sp   = sp_fa & 0xFF
+    fa   = (sp_fa >> 8) & 0xFF
+    fb   = fb_fc & 0xFF
+    fc   = (fb_fc >> 8) & 0xFF
+    fd   = fd_val & 0xFF
+    val  = (fd_val >> 8) & 0xFF
+    pbr  = pbr_cnt & 0xFF
+    cnt  = (pbr_cnt >> 8) & 0xFF
+    ret  = f"{fd:02X}:{fc:02X}{fb:02X}" if (val & 0b0110) == 0b0110 else "??"
+    # The band carries the probe's own done bit: grey means {done, loaded,
+    # enable} are all set, so a departure was recorded, and cyan means done is
+    # clear, so no departure happened on this boot and every field below is the
+    # unrefreshed initial value rather than a measurement.  Reporting the zeros
+    # as an address was a real misreading and this guard exists to stop it.
+    band = ""
+    if "band (" in note:
+        band = note.split("band (", 1)[1].rstrip(")")
+        try:
+            r, g, b = (int(x) for x in band.split(","))
+        except ValueError:
+            r = g = b = 0
+        if r < 100 and g > 150 and b > 100:
+            return f"NO DEPARTURE (band {band}: done=0, machine never left the image)"
+    return (f"departure={dpc:04X} SP={sp:02X} ret={ret} | "
+            f"FA={fa:02X} FB={fb:02X} FC={fc:02X} FD={fd:02X} "
+            f"valid={val:04b} PBR={pbr:02X} wrote={cnt}")
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
@@ -246,7 +284,7 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
-    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where", "jump", "stack"), default="link",
+    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where", "jump", "stack", "stackbytes"), default="link",
                     help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
@@ -262,9 +300,11 @@ def main():
         if words is None:
             print(f"boot {i}: FAILED -- {note}")
             continue
-        desc = {"trace": summary_trace, "cpu": summary_cpu, "irq": summary_irq,
-                "where": summary_where, "jump": summary_jump,
-                "stack": summary_stack}.get(args.layout, summary_link)(words)
+        fn = {"trace": summary_trace, "cpu": summary_cpu, "irq": summary_irq,
+              "where": summary_where, "jump": summary_jump,
+              "stack": summary_stack,
+              "stackbytes": summary_stackbytes}.get(args.layout, summary_link)
+        desc = fn(words) if fn is not summary_stackbytes else fn(words, note)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

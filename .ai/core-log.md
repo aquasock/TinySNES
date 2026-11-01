@@ -1077,3 +1077,35 @@ Settle the one-byte question directly instead of inferring it, because the hypot
 - User Test: NOT RUN
 
 ---
+
+## 34 COMMIT Unreleased 2026-11-01T00:59:06-07:00
+
+#### Coming From:
+
+Unreleased 53c5671
+
+#### Purpose:
+
+Settle the one-byte question entry 33 left open by reading the four stack bytes `RTL` consumes directly instead of inferring them from a ring of writes.
+
+#### Outcome:
+
+`TINYSNES_STACKBYTES_PROBE` replaced the three-deep write ring with an eight-entry shadow of `$01F8-$01FF` indexed by address and a valid bit per entry, so two pushes landing on the same address can no longer displace each other, and it moved the `SP` sample between the two halves of the PC read so the pointer and the departure cannot drift apart. Build and placement at seed 7 were clean, the read path was checked on this tree before any reading was taken with `ROM_Q` `0x0000`, `0x0000`, `0x8000`, and fifteen boots across two seeds were captured. The cycle did not answer the question it set out to answer, and the reason is worth recording precisely because it invalidates readings rather than the machine. The first thing it exposed is a decoding defect in this project's own tools: every probe paints a status band in the `dbg` colour, for these builds `{done, loaded, enable}`, and the sampler was reading the stripes without consulting the band, so a boot on which the probe never fired decoded as `departure=$0000` with every field zero and was reported as a measurement of a departure to zero. The band was cyan `(2,225,198)` on exactly those boots, which is `done=0`, and grey `(202,202,202)` on the boots that had a real departure; the sampler now checks the colour and reports such a boot as never having departed. This matters beyond the current cycle because `departure=$0000` is a legal-looking address and it was reported as a reading in entries 32 and 33 before it was caught, so the correction is recorded as TCL-018 and the habit it establishes is to read the band before the stripes. The second thing it exposed is that the instrument is not repeatable: two five-boot runs of the identical bitstream produced different results, one reporting a departure on all five boots and the other reporting two boots with no departure at all, and across the runs the departure address ranged over `$0070`, `$1035`, `$0DBE`, `$3209`, `$320D` and `$4215` with `SP` between `$01F8` and `$0132`. Cycle 33's `$1035` with `SP=$01FD` did reappear, once, so that reading is reachable rather than wrong, but it is a sample rather than the constant entry 33 called it. The shadow table also returns two mutually exclusive patterns that each recur exactly, `$01FB`=`$00` with `$01FC`=`$04` on the boots whose stack-write count is below saturation and `$01FA`=`$80` with `$01FD`=`$04` on the boots where it has saturated at 255, which is a signature of the counter saturating before the departure rather than of the stack. What the stack held at the moment of the return is therefore still unknown, and the offset question of entry 33 is untouched: the bytes it would take to resolve it are exactly the bytes this instrument cannot show reliably. Production synthesis was re-run and completed cleanly and all nine benches in `tools/tests/probe_tb.sh` pass. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 33 were not rewritten, added TCL-018 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-four-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Stop measuring the departure and start measuring the instruction, because three cycles of watching the program counter leave the cartridge have produced a stable event and an unstable instrument, and the question that matters -- whether a `JSR` returned through an `RTL` -- is a property of the instruction pair rather than of the address. The instrument for that already exists in the tree: `P65C816.v` exposes `IR` and `STATE` internally and `DBG_REG` `0x15` already packs `WAIExec` and `STPExec`, which are set at `STATE == 0` on a specific opcode, so a sticky bit for `IR == 8'h6B` at `STATE == 0` beside a sticky bit for `IR == 8'h20` at the same point would say directly whether the machine executed both a `JSR` and an `RTL` in this boot, and a third bit for `IR == 8'h6B` with the pulled bank not equal to the pushing bank would answer the exact question without touching the stack at all. That is a few lines in `cpu.v` behind a define and reuses a pattern this project has already validated twice, rather than building a fourth variation on a bus monitor that has now failed to be repeatable. Do not build another stack-memory instrument, and do not treat a single boot as a result: fifteen boots this cycle produced six distinct departure addresses and two distinct shadow patterns, and the only readings worth carrying forward are the ones with a band that says they fired.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
