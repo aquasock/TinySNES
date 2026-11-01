@@ -882,3 +882,36 @@ Instrument the interrupt inputs, because the CPU is waiting rather than lost and
 - User Test: NOT RUN
 
 ---
+
+## 28 COMMIT Unreleased 2026-10-31T22:16:35-07:00
+
+#### Coming From:
+
+Unreleased 360f232
+
+#### Purpose:
+
+Find which interrupt is missing, since entry 27 established that the 65816 halts on `WAI` after millions of correct ROM fetches and is therefore waiting rather than lost.
+
+#### Outcome:
+
+`TINYSNES_IRQ_PROBE` reads three sticky interrupt-history bits plus the core's status byte and halt program counter in one latched snapshot. The bits latch from reset and are never cleared, for the reason TCL-013 records, and they are implemented in `cpu.v` rather than in the 65816 core because that is where `VBLANK`, `NMI_EN` and `NMI_FLAG` all live. They are exposed through debug register `0x16`, which the core does not use: `cpu.v` now intercepts that one register and passes every other value through, so no upstream port list changed. Two defects of this cycle's own are recorded because both were caught before they could produce a reading. The first repeats a fault this project has already shipped: `always @(*) dbg_sel = 8'h01` has no sensitivity and never drives, which is exactly TCL-008, and it was moved into the clocked block. The second was in the decode tool, which assumed the fields were in the order the RTL comment lists rather than the order the concatenation produces, and reported a five-digit program counter -- a value impossible on a 16-bit bus, which is what exposed it; the formatter now reads sticky from the low byte of the first stripe, status from its high byte, and the PC from the second. Seed 7 built clean with zero hold/min violations and passed the timing gate at iosys.clk 30.481 against 21.505, giving `tinysnes.fs` SHA-256 `50d89d8c07b8f992caf81d6190d50ac3c494ac74546cbe0c38df23048aeacfa2`, and it was loaded one-wire with the bench's image streamed after it. The readout, identical in 178 of 180 captured frames, is `sticky = 0x05` and `status = 0x08` with the halt program counter at `$4C4D`. Read against the bits: `VBLANK` has been high, so the PPU does generate vertical blank; `NMI_FLAG` has been set, so the `VBLANK && ~VBLANK_OLD2 && DOT_CLK_CE` edge detector in `cpu.v` does fire; and `NMI_EN` has never been set, so the game never wrote bit 7 of `$4200`. The `EN` bit reads low, but that is not a fault and the record says why: `assign EN = RDY_IN & CE & (~WAIExec) & (~STPExec)` and `CE` is `INT_CLKF_CE`, a one-mclk pulse per instruction, so a random sample almost always catches it low. The halt program counter at `$4C4D` is below `$8000` and therefore not in ROM at the sampled instant, which is consistent with a CPU caught between instructions rather than one parked on a fetch. The result is a clean pair of negatives that narrow the search: the two hypotheses entry 27 ranked first -- that the PPU might not generate vblank, and that the edge detector might not fire -- are both refuted, and what remains is that the 65816 stops before it enables NMI rather than after, so the fault is in the code path between reset and the `$4200` write rather than in the interrupt machinery. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 27 were not rewritten, revised TCL-008 and added EXT-008, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the twenty-eight-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Follow the 65816 from reset to the stop, because the interrupt machinery is now exonerated and the question is what the code did between entering the ROM and reaching the instruction that halts it: the trace ring is the instrument and holds the last four `ROM_ADDR` values, but entry 26 showed a ROM-address ring cannot tell an opcode fetch from a vector fetch, so pair it with the sticky `st_brk` idea that already has a signal in the core -- `assign IsBRKInterrupt = (IR == 8'h00)`, which no probe yet reads -- by adding it to the `cpu.v` sticky byte in register `0x16`, where there are five spare bits. Then sample the trace ring and the sticky byte in the same build across five boots: a boot with `IsBRKInterrupt` set and the ring ending at `$FFFE` is a software break, and the four addresses before it name the instruction that issued it; a boot without it puts the halt on ordinary code and the ring names the last good fetches before it. Also worth one cheap check that needs no build: read the image's `$4200` write sites with a disassembler, since a game that never enables NMI is doing something else first and the earliest such write in the reset path bounds how far the CPU should have got. Do not change the clock plane, do not build another memory test, and do not sweep seeds. Keep `TINYSNES_FORCE_SLOW_ROM` in `cpu.v` as a recorded negative, use `tools/sample_boot_states.py --layout irq` for this instrument, and remember that `EN` will always read low on a random sample because its clock enable is a one-cycle pulse.
+
+#### Files Modified:
+
+- fpga/snes/src/cpu.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

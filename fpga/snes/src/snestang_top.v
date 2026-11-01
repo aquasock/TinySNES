@@ -578,6 +578,67 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_IRQ_PROBE
+// Diagnostic build: why the 65816 has halted.  Entry 27 found the CPU stopping
+// on WAI after millions of successful ROM fetches, which means it is waiting for
+// an interrupt that never arrives, so this build reads the interrupt history
+// rather than the current state.
+//
+// The three bits come from cpu.v's sticky registers, read through debug register
+// 0x16 which cpu.v intercepts; the status byte and the program counter come from
+// the 65816 core's own registers 0x15 and 0x06/0x07.  Every sticky bit latches
+// from reset and is never cleared, for the reason TCL-013 records.
+//
+// probe_bus fields, low to high:
+//   [7:0]   sticky byte: [2] NMI_FLAG ever set, [1] NMI_EN ever set,
+//           [0] VBLANK ever high
+//   [15:8]  the core's status byte from 0x15, whose bit 1 is WAIExec and bit 0
+//           STPExec, so the halt and the history are read in the same frame
+//   [31:16] the 65816's program counter where it halted
+//   [47:32] the high byte above zero, unused
+//   [79:48] zero
+reg [2:0] irq_ph = 3'd0;
+reg [7:0] sticky_r = 8'd0;
+reg [7:0] status_r = 8'd0;
+reg [7:0] pc_lo_r = 8'd0, pc_hi_r = 8'd0;
+reg [18:0] irq_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// dbg_sel is set in the clocked block below, not here: a constant on the right of
+// `always @(*)` has no sensitivity and never drives, which is a defect this
+// project has already shipped once (core-reference TCL-008).
+always @(*) begin
+    case (irq_ph)
+    3'd0:    dbg_reg = 8'h16;        // sticky interrupt history
+    3'd1:    dbg_reg = 8'h15;        // status byte, WAI/STP
+    3'd2:    dbg_reg = 8'h06;        // PC low
+    3'd3:    dbg_reg = 8'h07;        // PC high
+    3'd4:    dbg_reg = 8'h06;        // PC low again, so a torn pair is visible
+    default: dbg_reg = 8'h07;        // PC high again
+    endcase
+end
+
+always @(posedge mclk) begin
+    dbg_sel    <= 8'h01;             // the 65816, for every phase
+    dbg_reg_wr <= 1'b0;
+    irq_ph     <= (irq_ph == 3'd5) ? 3'd0 : irq_ph + 3'd1;
+    case (irq_ph)
+    3'd0: sticky_r <= dbg_dat_out;
+    3'd1: status_r <= dbg_dat_out;
+    3'd2: pc_lo_r  <= dbg_dat_out;
+    3'd3: pc_hi_r  <= dbg_dat_out;
+    endcase
+
+    if (irq_ph == 3'd5) begin
+        irq_wrap <= irq_wrap + 19'd1;
+        if (irq_wrap == 19'd0)
+            fp_bus <= {48'd0, pc_hi_r, pc_lo_r, status_r, sticky_r};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_LINK_PROBE
 // Diagnostic build: both directions of the APU link and both CPUs' state in one
 // snapshot, because every probe before this one carried only half of it.  The
@@ -1555,7 +1616,14 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_LINK_PROBE
+`ifdef TINYSNES_IRQ_PROBE
+    // Diagnostic build: R = a ROM access in the last sample window, G = loaded,
+    // B = enable; probe_bus carries the sticky interrupt bits, the status byte
+    // and the halt PC per the field order in the TINYSNES_IRQ_PROBE block.
+    .dbg({header_finished, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_LINK_PROBE
     // Diagnostic build: R = header_finished, G = loaded, B = enable -- the three
     // machine gates, which are declared unconditionally, so this probe does not
     // drag in the trace probe's own signals.  Yellow means the header parsed and

@@ -85,6 +85,7 @@ rules:
 | The 65816 is stuck in `CMP $2140`: which side of the APU link failed? | EXT | EXT-005 |
 | What does the IPL actually do, instruction by instruction? | EXT | EXT-006 |
 | Why does the 65816 stop: is it waiting, or lost? | EXT | EXT-007 |
+| Which interrupt is missing, and is the PPU generating vblank? | EXT | EXT-008 |
 | Why did an ODDR SDRAM clock kill the picture? | TCL | TCL-009 |
 | How long does a CPU-port ROM read take, and when does the CPU latch it? | TCL | TCL-010 |
 | Why did a probe readout carry a different value in every row? | TCL | TCL-011 |
@@ -112,7 +113,7 @@ TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with t
 TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
-EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte
+EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt
 
 ---
 
@@ -495,6 +496,20 @@ EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the statu
     - "SNESTang commit 5f0ef19, src/65C816/P65C816.v: the WAIExec/STPExec set at STATE 0, `assign EN`, the GotInterrupt assignment at LAST_CYCLE, `assign IsBRKInterrupt`, and the DBG_REG 0x15 packing"
     - "This repository, fpga/snes/src/snestang_top.v: the TINYSNES_CPU_PROBE sampler"
   verification: "Read from the RTL and then measured on the board on 2026-10-31 (core-log entry 27): five boots, four on WAI and one on STP, with ROM access counts between 1.1 and 12.6 million.  The sticky nature of WAIExec and STPExec is what makes the reading sound; the transience of GotInterrupt is what makes the earlier BRK inference in the same cycle unsound, and that inference was withdrawn."
+
+- record_id: EXT-008
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The SNES interrupt chain from the PPU to the 65816, and the one signal that separates a software BRK from a hardware interrupt"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "The PPU drives `INT_VBLANK` out of `SNES.v` into `cpu.v`'s `VBLANK` input.  In `cpu.v` the NMI flag sets on `if (VBLANK && ~VBLANK_OLD2 && DOT_CLK_CE)` inside a block gated by `ENABLE`, with `VBLANK_OLD2` updated on `DOT_CLK_CE`; `NMI_EN` is loaded from `P65_DO[7]`, the game's write to `$4200`; and `assign P65_NMI_N = ~(NMI_EN & NMI_FLAG)`.  `assign EN = RDY_IN & CE & (~WAIExec) & (~STPExec)` where `CE` is `INT_CLKF_CE`, a one-mclk pulse per instruction, so `EN` reads low on almost any random sample and is not a fault indicator.  Inside `P65C816.v`, `assign IsBRKInterrupt = (IR == 8'h00)` distinguishes a software `BRK` from a hardware interrupt, and no debug register exposes it: `DBG_REG` `0x15` packs GotInterrupt, IsResetInterrupt, IsNMIInterrupt, IsIRQInterrupt, RDY_IN, EN, WAIExec and STPExec but not this."
+  consequence: "Three separate faults produce the same symptom -- a CPU that stops with no code running -- and they are separable only by history, not by a snapshot: the PPU may not generate vblank, the edge detector may not fire, or the game may never write `$4200` bit 7.  Sticky bits read through a spare debug register settle that, and this project's `TINYSNES_IRQ_PROBE` reads them from register `0x16`, which `cpu.v` intercepts while passing every other register through untouched, so no upstream port list changes.  Measured on one boot (core-log entry 28): `VBLANK` has been high and `NMI_FLAG` has been set, so both the PPU and the edge detector work, while `NMI_EN` was never set -- the 65816 stops before enabling NMI, not after."
+  sources:
+    - "SNESTang commit 5f0ef19, src/cpu.v: the VBLANK/NMI_FLAG block, NMI_EN from P65_DO[7], `assign P65_NMI_N`, `assign EN`, and `INT_CLKF_CE`"
+    - "SNESTang commit 5f0ef19, src/65C816/P65C816.v: `assign IsBRKInterrupt`, the DBG_REG 0x15 packing, and the DBG_REG default case"
+    - "SNESTang commit 5f0ef19, src/SNES.v: SPPU `.VBLANK(INT_VBLANK)` and the CPU's VBLANK connection"
+  verification: "Read from the RTL and measured on the board on 2026-10-31 (core-log entry 28): sticky byte `0x05` and status `0x08` in 178 of 180 frames, so vblank and the NMI edge detector are both confirmed working and NMI was never enabled.  One boot only; the sticky bits are sound within a boot but say nothing across boots, and the failure is known to vary between them."
 
 - record_id: BRD-003
   kind: BOARD

@@ -68,6 +68,24 @@ def band_colour(path):
     return tuple(int(v) for v in cols[int(np.argmax(cnts))])
 
 
+def summary_irq(words):
+    """Describe a TINYSNES_IRQ_PROBE snapshot: interrupt history plus the halt.
+
+    The sampler's concat is {48'd0, pc_hi, pc_lo, status, sticky}, so stripe 1
+    carries status above sticky, stripe 2 the halt PC, and stripes 3-5 are zero.
+    The first version of this formatter assumed the fields were in the order the
+    RTL comment listed rather than the order the concat produces, and reported a
+    five-digit program counter -- a reading impossible on a 16-bit bus, which is
+    what exposed it.
+    """
+    sticky = words[0] & 0xFF
+    status = (words[0] >> 8) & 0xFF
+    pc     = words[1]
+    hist = (f"vblank={sticky>>0&1} nmien={sticky>>1&1} nmiflag={sticky>>2&1}")
+    st = (f"wai={status>>1&1} stp={status&1} en={status>>2&1}")
+    return f"PC={pc:04X} status={status:02X} | {st} | {hist}"
+
+
 def summary_cpu(words):
     """Describe a TINYSNES_CPU_PROBE snapshot: ROM accesses, PC, SP and status."""
     acc_hi, acc_lo, pc, sp, status = words
@@ -153,7 +171,7 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
-    ap.add_argument("--layout", choices=("link", "trace", "cpu"), default="link",
+    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq"), default="link",
                     help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
@@ -169,7 +187,8 @@ def main():
         if words is None:
             print(f"boot {i}: FAILED -- {note}")
             continue
-        desc = {"trace": summary_trace, "cpu": summary_cpu}.get(args.layout, summary_link)(words)
+        desc = {"trace": summary_trace, "cpu": summary_cpu,
+                "irq": summary_irq}.get(args.layout, summary_link)(words)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

@@ -74,6 +74,7 @@ wire [23:0] P65_A;
 wire [7:0] P65_DO;
 reg [7:0] P65_DI;
 wire P65_NMI_N, P65_IRQ_N;
+wire [7:0] p65_dbg_dat;   // TinySNES: the core's debug byte, before the 0x16 intercept
 wire P65_EN;
 wire P65_VPA, P65_VDA;
 wire P65_BRK;
@@ -332,8 +333,41 @@ P65C816 P65C816(
     .RDY_OUT(), .MLB(), .VPB(),
 
     .BRK_OUT(P65_BRK), .DBG_REG(DBG_REG), .DBG_DAT_IN(DBG_DAT_IN),
-    .DBG_DAT_OUT(DBG_CPU_DAT), .DBG_DAT_WR(DBG_CPU_WR)
+    .DBG_DAT_OUT(p65_dbg_dat), .DBG_DAT_WR(DBG_CPU_WR)
 );
+
+`ifdef TINYSNES_IRQ_PROBE
+// TinySNES: sticky interrupt history for the TINYSNES_IRQ_PROBE build, so a CPU
+// that has halted on WAI can be explained rather than guessed at.  Every bit
+// latches from reset and is never cleared, for the reason core-reference TCL-013
+// records: a sampled current value cannot separate "never happened" from
+// "happened and went away", and GotInterrupt in the core's register 0x15 is
+// exactly that trap, being held for one instruction sequence only.
+//
+// These signals all live here, in the SNES wrapper, rather than inside the
+// 65816 core: VBLANK comes from the PPU, NMI_EN is the $4200 bit 7 the game
+// writes, and NMI_FLAG is the vblank edge detector below.
+reg  st_vblank  = 1'b0;   // VBLANK has ever been high
+reg  st_nmien   = 1'b0;   // $4200 bit 7 has ever been set
+reg  st_nmiflag = 1'b0;   // the vblank NMI edge detector has ever fired
+always @(posedge CLK) begin
+    if (~RST_N) begin
+        st_vblank  <= 1'b0;
+        st_nmien   <= 1'b0;
+        st_nmiflag <= 1'b0;
+    end else begin
+        if (VBLANK)   st_vblank  <= 1'b1;
+        if (NMI_EN)   st_nmien   <= 1'b1;
+        if (NMI_FLAG) st_nmiflag <= 1'b1;
+    end
+end
+// Register 0x16 is not used by the core, so the sticky byte takes it and every
+// other register passes through untouched.
+assign DBG_CPU_DAT = (DBG_REG == 8'h16) ? {5'b0, st_nmiflag, st_nmien, st_vblank}
+                                        : p65_dbg_dat;
+`else
+assign DBG_CPU_DAT = p65_dbg_dat;
+`endif
 
 always @* begin
     SPEED = SLOW;
