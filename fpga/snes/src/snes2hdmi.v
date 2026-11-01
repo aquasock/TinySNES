@@ -30,6 +30,9 @@
 `ifdef TINYSNES_LINK_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_WHERE_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 `ifdef TINYSNES_IRQ_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
@@ -123,6 +126,12 @@ module snes2hdmi (
     //     [3] CPUI port 0 has ever held $CC, [2] CPUO has ever left $AA,
     //     [1] Y has ever been non-zero, [0] the SPC700's PC has ever been
     //     outside its IPL ROM
+    //   TINYSNES_WHERE_PROBE: the 65816's PC, its PBR, its SP and its P, then a
+    //     sticky byte ([0] STP has fired, [1] WAI has fired, [2] armed at a PC
+    //     of $8000 or above, [3] the CPU has left the cartridge at a PC below
+    //     $8000, [4] PBR has ever been non-zero, [5] RDY_IN has ever read low,
+    //     [7:6] zero), then the first PC below $8000 seen while armed above the
+    //     newest ROM address the mapper served
     input [79:0] probe_bus,
 `endif
 

@@ -126,6 +126,29 @@ def summary_link(words):
     return (f"CPUO={cpuo:04X} CPUI={cpui:04X} A={a:04X} PC={pc:04X} Y={ynow:02X} | {bits.strip()}")
 
 
+def summary_where(words):
+    """Describe a TINYSNES_WHERE_PROBE snapshot: where the 65816 is and how it
+    got there.
+
+    The interesting field is `left`, the first PC below $8000 seen after the CPU
+    had been above it.  Cartridge code in a LoROM is PC >= $8000 in every bank,
+    so `left=----` means the CPU never left the image, and any value there is the
+    address it departed from -- with `bank` naming the window it left through.
+    """
+    pc, banksp, psticky, left, rom = words
+    pbr = banksp & 0xFF
+    sp = (banksp >> 8) & 0xFF
+    p = psticky & 0xFF
+    st = (psticky >> 8) & 0xFF
+    bits = "".join(
+        f"{name}={val} " for name, val in
+        (("halt", st & 1), ("wai", (st >> 1) & 1), ("armed", (st >> 2) & 1),
+         ("left", (st >> 3) & 1), ("bank_nz", (st >> 4) & 1), ("rdy_low", (st >> 5) & 1))
+    )
+    return (f"PC={pc:04X} PBR={pbr:02X} SP={sp:02X} P={p:02X} "
+            f"departure={left:04X} rom={rom:04X} | {bits.strip()}")
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
@@ -172,7 +195,7 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
-    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq"), default="link",
+    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where"), default="link",
                     help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
@@ -188,8 +211,8 @@ def main():
         if words is None:
             print(f"boot {i}: FAILED -- {note}")
             continue
-        desc = {"trace": summary_trace, "cpu": summary_cpu,
-                "irq": summary_irq}.get(args.layout, summary_link)(words)
+        desc = {"trace": summary_trace, "cpu": summary_cpu, "irq": summary_irq,
+                "where": summary_where}.get(args.layout, summary_link)(words)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

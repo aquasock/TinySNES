@@ -865,6 +865,185 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_WHERE_PROBE
+// Diagnostic build: where the 65816 is, and how it got there, read in one
+// coherent snapshot.
+//
+// Two instruments disagreed and this build settles it.  TINYSNES_LINK_PROBE
+// read the PC as $6C6F while TINYSNES_TRACE_PROBE read the ring frozen at
+// $88EC-$88EF, the upload routine's echo-wait.  Both cannot be true, and a
+// reading cannot be arbitrated from the outside because a six-byte snapshot
+// leaves out the one field that says whether an address is cartridge code at
+// all: the program bank.  $6C6F with PBR $00 is WRAM and expansion space, while
+// $6C6F with PBR $80 would be a LoROM address whose offset is not even code.
+//
+// So this probe reads PC, PBR, SP and P together, guards every multi-byte read
+// against a tear the way the link probe does, and adds the memory that a
+// snapshot cannot carry: the first PC below $8000 the CPU was ever seen at
+// after it had been above it, which is the moment it left the cartridge, and
+// the newest ROM address the mapper served, which dates that moment against the
+// instruction stream.
+//
+// Cartridge code is PC >= $8000 in this and every other LoROM layout: banks
+// $00-$7D put the image at $8000-$FFFF and banks $80-$FF do the same, with
+// $0000-$7FFF below that window mapped to WRAM, the system area or open bus.  So
+// "left the cartridge" is exactly PC[15] == 0, and PBR only says which window it
+// departed through.  Arming is required and is not incidental: PC resets to
+// $0000, so an unarmed bit testing PC < $8000 would set on the first sample
+// after reset and read as a confident yes for ever -- the trap TCL-013 records
+// from the sticky interrupt bits.
+//
+// probe_bus fields, low to high:
+//   [15:0]  65816 PC, high byte read on both sides of the low byte
+//   [23:16] 65816 PBR, read twice and accepted only when both reads agree
+//   [31:24] 65816 SP
+//   [39:32] 65816 P
+//   [47:40] sticky history, one bit each:
+//             [40] STPExec has ever been set, so the CPU has halted
+//             [41] WAIExec has ever been set, so the CPU has ever waited
+//             [42] armed: an accepted sample has been at PC >= $8000
+//             [43] the CPU has left the cartridge: a PC below $8000 seen while
+//                  armed.  Clear means it never did, which is a result too
+//             [44] PBR has ever been non-zero
+//             [45] RDY_IN has ever read low, the CPU being stalled from outside
+//             [46], [47] zero
+//   [63:48] the first accepted PC below $8000 seen while armed -- where the CPU
+//           left the cartridge.  Held, not refreshed, so it survives the CPU
+//           wandering further.  Zero when bit [43] is clear
+//   [79:64] ROM_ADDR[15:0] of the newest ROM access, which is the fetch the
+//           departure was made from when the ring has stopped advancing
+//
+// P is worth reading for its own sake: bit 5 is M and bit 4 is X, and bit 3
+// clear is emulation mode.  A CPU that has left the cartridge in emulation mode
+// with X clear is doing something the reset path never asked of it, and a
+// departure in the other mode reads differently again.
+//
+// Sampling.  Ten phases sample PC every 10 mclk, which is one 65816 cycle at
+// about 6 mclk, and each byte is read once, so no field can change and change
+// back between two samples of it.  The PC and PBR are the only multi-byte fields
+// and both are tear-guarded: the PC's high byte is read before and after its low
+// byte and the pair is dropped unless the two agree, and the PBR is read twice
+// and dropped unless both reads agree.  A dropped PC sample skips the history
+// update as well as the capture, so a torn pair can never set a sticky bit.
+//
+// The display snapshot is latched once every 2^19 phase revolutions for the
+// reason TCL-011 records: a live bus is a different value in every raster row
+// and cannot be photographed.
+reg [3:0] where_ph = 4'd0;
+reg [7:0] pch1 = 8'd0, pcl = 8'd0;               // 65816 PC, high read twice
+reg [7:0] pbr1 = 8'd0, pbr2 = 8'd0;              // 65816 PBR, read twice
+reg [7:0] sp_r = 8'd0, p_r = 8'd0;               // 65816 SP and P
+reg [7:0] pc_hi = 8'd0, pc_lo = 8'd0;            // last accepted PC
+reg [7:0] bank = 8'd0;                           // last accepted PBR
+reg [18:0] where_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// Sticky history, cleared only by reset.
+reg       st_halt = 1'b0;    // STPExec has ever been set
+reg       st_wai  = 1'b0;    // WAIExec has ever been set
+reg       st_arm  = 1'b0;    // a sample has been at PC >= $8000
+reg       st_left = 1'b0;    // a PC below $8000 was seen while armed
+reg       st_bank = 1'b0;    // PBR has ever been non-zero
+reg       st_rdy  = 1'b0;    // RDY_IN has ever read low
+reg [15:0] left_pc = 16'd0;  // the first such PC, held
+
+// The newest ROM access, for the same reason the trace probe keeps one: the
+// mapper's address is the instruction stream, and when the CPU leaves the ROM
+// it stops advancing and dates the departure.
+reg [15:0] wr_rom = 16'd0;
+reg        wr_ce_d = 1'b1;
+wire       wr_sel = enable && ~ROM_CE_N && BSRAM_CE_N;
+wire [15:0] pc_now = {pch1, pcl};
+
+// Case statements, not chained ternaries, and where_ph on the right of both, so
+// this always block has sensitivity.  A constant on the right of `always @(*)`
+// never drives at all, which this project has shipped once already.
+always @(*) begin
+    case (where_ph)
+    4'd1:    dbg_reg = 8'h06;                    // PC low
+    4'd2, 4'd6: dbg_reg = 8'h0D;                 // PBR, read twice
+    4'd3:    dbg_reg = 8'h09;                    // SP
+    4'd4:    dbg_reg = 8'h08;                    // P
+    4'd5:    dbg_reg = 8'h15;                    // status byte, WAI/STP
+    default: dbg_reg = 8'h07;                    // PC high (phases 0 and 7)
+    endcase
+end
+
+// dbg_sel is driven from a clocked block for the reason the FIFO probe records:
+// a constant on the right of a combinational always has no sensitivity and
+// never drives.  Only the 65816 is read here, so it is the same value every
+// phase.
+always @(posedge mclk) begin
+    dbg_sel    <= 8'h01;
+    dbg_reg_wr <= 1'b0;
+    where_ph   <= (where_ph == 4'd9) ? 4'd0 : where_ph + 4'd1;
+
+    // The PBR is read on phases 2 and 6, with three other registers between
+    // them, so a bank change in the middle is caught rather than assumed away.
+    if (where_ph == 4'd0) pch1  <= dbg_dat_out;
+    if (where_ph == 4'd1) pcl   <= dbg_dat_out;
+    if (where_ph == 4'd2) pbr1  <= dbg_dat_out;
+    if (where_ph == 4'd3) sp_r  <= dbg_dat_out;
+    if (where_ph == 4'd4) p_r   <= dbg_dat_out;
+    if (where_ph == 4'd6) pbr2  <= dbg_dat_out;
+
+    if (~resetn) begin
+        st_halt <= 1'b0;
+        st_wai  <= 1'b0;
+        st_arm  <= 1'b0;
+        st_left <= 1'b0;
+        st_bank <= 1'b0;
+        st_rdy  <= 1'b0;
+        left_pc <= 16'd0;
+    end else begin
+        // Halt and wait are single-byte reads of a register that only latches,
+        // so no guard is needed; RDY_IN is live and is latched the same way.
+        if (where_ph == 4'd5) begin
+            if (dbg_dat_out[0]) st_halt <= 1'b1;
+            if (dbg_dat_out[1]) st_wai  <= 1'b1;
+            if (~dbg_dat_out[3]) st_rdy <= 1'b1;
+        end
+
+        // Phase 7 re-reads the PC high byte, so the accept and the history both
+        // happen there: pch1 was captured on phase 0 and pcl on phase 1, and
+        // the byte arriving on this edge is the third read of the same field.
+        if (where_ph == 4'd7 && pch1 == dbg_dat_out) begin
+            pc_hi <= pch1;
+            pc_lo <= pcl;
+            // The PBR accepted with this PC is the one whose two reads agreed,
+            // which is what makes the bank and the PC describe one moment.
+            if (pbr1 == pbr2) begin
+                bank   <= pbr1;
+                if (pbr1 != 8'h00) st_bank <= 1'b1;
+            end
+
+            if (pc_now >= 16'h8000) begin
+                st_arm <= 1'b1;
+            end else if (st_arm && ~st_left) begin
+                // The first departure only: later samples are further from the
+                // cartridge and would overwrite the address that dates it.
+                st_left <= 1'b1;
+                left_pc <= pc_now;
+            end
+        end
+    end
+
+    wr_ce_d <= wr_sel;    // start-of-access edge, not the held level
+    if (wr_sel && ~wr_ce_d)
+        wr_rom <= ROM_ADDR[15:0];
+
+    if (where_ph == 4'd9) begin
+        where_wrap <= where_wrap + 19'd1;
+        if (where_wrap == 19'd0)
+            fp_bus <= {wr_rom, left_pc,
+                       2'b00, st_rdy, st_bank, st_left, st_arm, st_wai, st_halt,
+                       p_r, sp_r, bank, pc_hi, pc_lo};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_IPL_PROBE
 // Diagnostic build: catch the address the IPL jumps to.  Decoded from the
 // IPLROM in smp.v, the path after the $CC handshake is
@@ -1620,6 +1799,17 @@ snes2hdmi s2h(
     // probe_bus carries both directions of the APU link and both CPUs' state per
     // the field order in the TINYSNES_LINK_PROBE block.
     .dbg({header_finished, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_WHERE_PROBE
+    // Diagnostic build: R = the CPU has left the cartridge, G = loaded, B =
+    // enable.  The band is a second, stripe-independent reading of the one
+    // question this build exists to answer: red means a PC below $8000 was seen
+    // after the CPU had been above it, so the departure is visible before any
+    // stripe is decoded.  probe_bus carries the PC, PBR, SP, P, the sticky
+    // history byte, the departure PC and the newest ROM address, per the field
+    // order in the TINYSNES_WHERE_PROBE block.
+    .dbg({st_left, loaded, enable}),
     .bist_mask(fp_bus[15:0]),
     .probe_bus(fp_bus),
 `elsif TINYSNES_IPL_PROBE

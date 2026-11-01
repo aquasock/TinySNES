@@ -113,7 +113,8 @@ TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with t
 TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
-EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt
+EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
+EXT-009 the LoROM cartridge window and the PC >= $8000 test
 
 ---
 
@@ -510,6 +511,19 @@ EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the statu
     - "SNESTang commit 5f0ef19, src/65C816/P65C816.v: `assign IsBRKInterrupt`, the DBG_REG 0x15 packing, and the DBG_REG default case"
     - "SNESTang commit 5f0ef19, src/SNES.v: SPPU `.VBLANK(INT_VBLANK)` and the CPU's VBLANK connection"
   verification: "Read from the RTL and measured on the board on 2026-10-31 (core-log entry 28): sticky byte `0x05` and status `0x08` in 178 of 180 frames, so vblank and the NMI edge detector are both confirmed working and NMI was never enabled.  Revised 2026-10-31 (core-log entry 30): this reading was taken on a build whose ROM read returned zero and is void; see the consequence field for the five-boot re-measurement on the restored baseline, which found `NMI_EN` set in one boot of five and that boot halted on `STP` anyway."
+
+- record_id: EXT-009
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "In a LoROM layout the cartridge is mapped only at $8000-$FFFF, so a program counter below $8000 is running outside the image"
+  status: VERIFIED
+  verified_date: 2026-10-31
+  statement: "A LoROM cartridge maps its image into the upper half of every bank: CPU `$8000-$FFFF` in banks `$00-$7D` is ROM, and banks `$80-$FF` repeat the same image through the fastrom window.  The lower half, `$0000-$7FFF`, is never cartridge in any bank: banks `$00-$3F` and `$80-$BF` put the 128 KiB WRAM mirror at `$0000-$1FFF`, the PPU and APU and CPU registers at `$2000-$5FFF` and `$4200-$43FF`, expansion and the SRAM window at `$6000-$7FFF`; the remaining banks have their own special-purpose mappings.  So for a LoROM image the test `PC >= $8000` is exactly the test `\"the CPU is executing cartridge code\"`, and it holds regardless of the program bank -- which is why the bank byte alone cannot answer the question.  This repository's test image is LoROM with the fastrom bit set: header map byte at `$7FD5` reads `$30`, reset vector `$FFFC` is `$8000`, and the reset code at `$8000` matches the file at offset 0 for bank 0."
+  consequence: "A program counter below `$8000` is not a code address and a CPU seen there has left the cartridge. That makes a single sticky bit -- armed at a PC of `$8000` or above, set by the first PC below it -- a complete and cheap test for the departure, where a snapshot of PC and PBR together still needs the map to be interpreted. The corresponding trap is that a `PC >= $8000` test must be armed against the reset value, because PC resets to `$0000` and an unarmed bit would set at reset and read yes for ever (TCL-013). The same reasoning does not transfer to a HiROM or ExHiROM image, where the cartridge also occupies the lower half of the upper banks, so a probe built on this test is specific to the loaded image's layout and should say so."
+  sources:
+    - "SNES LoROM memory map as used by this project's test image; cross-checked against the image itself rather than taken on trust"
+    - "This repository, /tmp/zelda.smc: header map byte `$7FD5` = `$30`, reset vector at file offset `$7FFC` = `$8000`, and the reset code at file offset 0 matching CPU `$8000`"
+  verification: "The mapping was confirmed against the image: decoding the candidate reset path at file offset `0x0800` as CPU `$8800` produced the sound-upload routine's echo-wait `CMP $2140 / BNE` at exactly the addresses the trace probe had frozen on (`$8894`, `$88EF`), while decoding the same bytes at file offset `0x8800` produced nonsense. That agreement between a static disassembly and a hardware trace is what establishes the offset relation for this image."
 
 - record_id: BRD-003
   kind: BOARD

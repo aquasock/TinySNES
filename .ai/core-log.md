@@ -981,3 +981,35 @@ None.
 - User Test: NOT RUN
 
 ---
+
+## 31 COMMIT Unreleased 2026-10-31T23:55:19-07:00
+
+#### Coming From:
+
+Unreleased e43e07a
+
+#### Purpose:
+
+Re-establish the sound-upload picture on the restored baseline, because the link readings of entries 8, 11 and 12 were taken across builds that included the broken cycle-25 one and could not be assumed correct.
+
+#### Outcome:
+
+`TINYSNES_FETCH_PROBE` and `TINYSNES_LINK_PROBE` were rebuilt from the clean `e43e07a` tree at seed 7 and the read path was checked before any CPU reading was trusted: `ROM_Q` reads `0x0000` at the first assertion, `0x0000` at +2 mclk and `0x8000` at +4 mclk, with `ROM_ADDR` `0x7FFC` and `0x007F`, so the machine fetches the real reset vector and every measurement below was taken on a tree where that holds. The link probe then gave a result that does not match entries 8 to 12 at all: the `cc` sticky bit -- whether CPUI port 0 has ever held `$CC`, the exact question entry 12 left open -- is set in all five boots, the 65816 really does send the handshake byte, and the SPC700's `Y` is non-zero in all five, so the SPC advanced past its first publish in every boot. In three boots `CPUO[0]` equals `CPUI[0]` with `Y` exactly one ahead (`18`/`17`, `18`/`17`, `08`/`07`), which is the block-copy loop's normal steady state rather than a deadlock; the equal `CPUO[0]` is weakened by the IPL's own self-echo at `$FFF5` and so is not proof on its own, but the `cc` bit is, and the earlier "ten indices apart, the SPC waits for an index the 65816 never sends" reading is withdrawn as an artefact of the builds it was taken on. The link probe's PC field read `$6C6F` in three of five boots while `TINYSNES_TRACE_PROBE` on the same tree read the ring frozen at `$8894` and `$88EF`, and those two cannot both be true, so a third instrument was built rather than a reading chosen: `TINYSNES_WHERE_PROBE` reads PC, PBR, SP and P together with every multi-byte field tear-guarded, and adds the memory a snapshot cannot carry -- a sticky bit armed at a PC of `$8000` or above and set by the first PC below it, that departing PC held, and the newest ROM address the mapper served. Because a LoROM maps cartridge only at `$8000-$FFFF` (record EXT-009), a PC below `$8000` is not code in any bank, so that bit is a complete test for the CPU leaving the image and it settles the contradiction in the CPU's favour: over five boots four left the cartridge and one did not, with departures at `$1035`, `$1036`, `$3D89` and `$1101`, while the fifth sat at `$88EF` in bank `$80` with `left` clear. The CPU is therefore running, executing the reset prologue, parsing the header, reaching the sound upload and -- on four boots of five -- jumping out of the cartridge into WRAM, expansion or open bus. The departure PC is a held value and describes the moment of leaving, but `PBR`, `SP` and `P` in the same snapshot are read at the latch and describe the machine after it has been out for some time, so they date the departure no more precisely than the bank it is sitting in: they read `$80`, `$00`, `$00` and `$8F` for the bank, `$FA`, `$08`, `$F7` and `$F2` for `SP` and `$05`, `$B0`, `$F0` and `$9C` for `P`, and the spread across those four boots -- including a stack pointer 247 bytes down in one and only thirteen in another -- is wide enough that no single mechanism is implied by them yet. `RDY_IN` reads low at some point in all five boots, which is the externally stalled CPU this core's `EN` gate produces and not a fault. Ten boots of three instruments produced ten distinct states and no boot repeated, so the nondeterminism remains the one invariant of the session and no single-boot reading is worth recording again. Production synthesis was re-run on the tree and completed cleanly, and all nine benches in `tools/tests/probe_tb.sh` pass. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 30 were not rewritten, added EXT-009 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-one-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out why the 65816 leaves the cartridge, because that is now the whole of the fault visible from outside: four boots of five depart at a PC between `$1035` and `$3D89` and end up executing open bus, while the fifth stays in the upload loop at `$88EF`; the bank and stack the CPU holds after the departure vary too widely across those boots to point at a single mechanism, so the departure itself is what has to be instrumented next. The cheapest discriminating instrument is an extension of `TINYSNES_WHERE_PROBE` that holds not just the departure PC but the four ROM addresses fetched immediately before it, which names the instruction that did the jumping rather than the address it landed on; a `JMP [$xxxx]`, an `RTS`, and a `RTI` are told apart by that in one boot and nothing else in the machine can separate them. If the departure proves to be an indirect jump through a pointer the upload routine wrote, the next place to look is the 65816's data reads of WRAM, which no instrument in this session has covered yet. Do not revisit the APU link, the interrupt chain, the SPC700 or the sound-upload deadlock: all four are settled, the link by the `cc` bit in five boots of five, and the deadlock reading of entries 8 to 12 is superseded. Do not trust a reading taken on a bitstream whose `ROM_Q` has not been checked in this session, and do not report a single boot as a result now that ten consecutive boots have produced ten distinct states.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
