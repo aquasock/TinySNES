@@ -114,7 +114,8 @@ TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL output
 TCL-016 a ROM-address ring names a hot address, not a fetch sequence ·
 TCL-017 the WRAM debug channel is selected but never driven ·
 TCL-018 the display band says whether a snapshot fired ·
-EXT-010 the opcode-commit point for instruction-level probes
+EXT-010 the opcode-commit point for instruction-level probes ·
+EXT-011 JSR/JSL/RTS/RTL microcode push and pull widths
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
@@ -580,6 +581,18 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "SNESTang commit 5f0ef19, src/65C816/P65C816.v: the WAIExec/STPExec set at STATE 0 with EN and ~GotInterrupt, and `assign EN = RDY_IN & CE & (~WAIExec) & (~STPExec)`"
     - "This repository, fpga/snes/src/65C816/P65C816.v: the TinySNES diagnostic counters and DBG_REG 0x17/0x18"
   verification: "Measured on 2026-11-01 (core-log entry 35): five boots of TINYSNES_INSN_PROBE reported the flag byte and balance, and three of the five had an `RTL` with no outstanding `JSL`.  The same five boots reproduced departure $1035 with SP=$01FD, the reading of core-log entry 33, in two of them."
+
+- record_id: EXT-011
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The 65816 core's JSR, JSL, RTS and RTL microcode push and pull the correct number of stack bytes, so a JSR/RTL mismatch is not a width defect in the microcode"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "Read from `mcode.txt`, which is the hand-written source of the generated `mcode.sv` table.  `JSR` at `$20` (`M_TAB[256]` to `M_TAB[260]`) fetches the absolute operand into `AA` and then pushes `PCH` and `PCL`, two bytes, before loading `AA` into `PC`.  `JSL` at `$22` (`M_TAB[272]` to `M_TAB[278]`) pushes `PBR`, then `PCH`, then `PCL` -- three bytes -- and then loads the operand byte into `PBR`.  `RTS` at `$60` (`M_TAB[768]` to `M_TAB[772]`) pre-increments `SP`, pulls the two stack bytes into `DR` and `PC`, and then increments `PC` once more.  `RTL` at `$6B` (`M_TAB[856]` to `M_TAB[860]`) pre-increments `SP`, pulls `PCL` and `PCH` into `PC`, then pulls one more byte into `PBR`.  Every one of the four matches the 65816's documented behaviour: short calls and returns move two bytes, long calls and returns move three."
+  consequence: "If the machine is observed executing an `RTL` after only a `JSR`, the mismatch is not that this core pushes or pulls the wrong number of bytes -- the microcode is correct and reading it took minutes and no hardware.  The mismatch has to come from what the CPU decided to execute, which points at the instruction stream, the stack pointer, or the flags that select the operand width rather than at the call/return microcode.  This is worth knowing before any more hardware is spent on the return path: the obvious suspect was cleared by inspection."
+  sources:
+    - "SNESTang commit 5f0ef19, src/65C816/mcode.txt: the 20 JSR, 22 JSR LONG, 60 RTS and 6B RTL sequences"
+  verification: "Read directly from mcode.txt on 2026-11-01 (core-log entry 36) after a hardware instrument reported an RTL with no outstanding JSL.  The push and pull counts were traced through the M_TAB entries by their annotation comments rather than inferred."
 
 - record_id: BRD-003
   kind: BOARD

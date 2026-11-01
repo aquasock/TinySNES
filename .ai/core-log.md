@@ -1142,3 +1142,35 @@ Separate the two things the unmatched flag currently confounds, which is now a s
 - User Test: NOT RUN
 
 ---
+
+## 36 COMMIT Unreleased 2026-11-01T01:37:26-07:00
+
+#### Coming From:
+
+Unreleased 6526dbd
+
+#### Purpose:
+
+Close the false-positive path in entry 35's unmatched-`RTL` flag, which was the one thing standing between that finding and a defect, and check the call/return microcode by reading it rather than by building another instrument.
+
+#### Outcome:
+
+Two pieces of work, one of which needed no hardware at all. The microcode was read first, from `mcode.txt`, which is the hand-written source of the generated table: `JSR` pushes `PCH` and `PCL`, `JSL` pushes `PBR`, `PCH` and `PCL`, `RTS` pre-increments `SP` and pulls two bytes, and `RTL` pre-increments `SP` and pulls three.  All four match the 65816's documented behaviour, so the obvious suspect -- a push or pull width defect in the microcode, which entry 35's Next Steps named as the place to look -- was cleared in minutes by inspection and is recorded as EXT-011 rather than by another cycle of hardware. What remains is therefore not a width bug but a question of what the CPU decided to execute. The instrument was then extended to test its own gate, which was entry 35's stated false-positive path: a `JSL` committed while `GotInterrupt` is set is skipped by the counting gate, so a legitimate `RTL` after one would latch the unmatched flag spuriously. Two flags were added for a `JSL` or an `RTL` seen in that window, and the same two opcodes were counted again with the gate removed, so one boot can say whether removing the gate changes anything. Building that exposed a defect in this cycle's own instrument before it produced a reading: the new counters were reset in both the gated block and the ungated one, so they had two drivers, synthesised as a constant, and returned `ungated_rtl=0` on a boot whose gated flags plainly showed an `RTL` had run -- a contradiction inside one frame that identified the fault immediately. With the duplicate driver removed the counters work, and the answer is unambiguous: in four boots of five the ungated counts are one `RTL` and zero `JSL`, identical to the gated reading, and no opcode was seen in the interrupt window on any boot. The gate therefore did not manufacture the flag, and `unmatched_rtl` is a real observation of this machine executing a long return with no long call behind it. The same five boots also departed to `$1035` with `SP=$01FD` in all five, which is the most repeatable signature recorded in this project, and three of them were fetching at `$8894`, the sound upload's echo-wait, when the departure was recorded. Production synthesis was re-run clean after the change to the shared core file and all nine benches pass. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 35 were not rewritten, added EXT-011 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-six-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Look at how few instructions the machine executes rather than at the return itself, because the counts now say something new and unexpected: a whole boot commits one `JSR`, one `RTL` and one `RTS`, with the balance at zero, while the departure is at `$1035` and three boots were still fetching at `$8894`. A machine executing a handful of call instructions and then leaving the cartridge is not the picture the sound-upload deadlock gave, and the count is the first reading in this session that can distinguish a CPU that ran a lot and then jumped from one that barely ran at all -- so the next instrument should read a total committed-instruction counter beside the call counts, which is one register and no new thinking. If the total is small the fault is early and the departure is a symptom of a machine that never really started; if the total is large the departure is the fault and the call counts are a side effect. That single number decides which of the two investigations to run, and it should be obtained before anything is concluded about the return path. Do not build another bus monitor, do not sample the stack again, and do not re-examine the microcode widths: all three are settled.
+
+#### Files Modified:
+
+- fpga/snes/src/65C816/P65C816.v
+- fpga/snes/src/snestang_top.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

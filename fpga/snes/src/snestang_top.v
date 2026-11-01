@@ -1427,7 +1427,6 @@ always @(posedge mclk) begin
             sb_done <= 1'b1;
             d_pc  <= {pch1, pcl};
             d_sp  <= sp_r;
-            d_pbr <= pbr_r;
             d_fa  <= sh_d2;             // $01FA
             d_fb  <= sh_d3;             // $01FB
             d_fc  <= sh_d4;             // $01FC
@@ -1474,10 +1473,17 @@ assign dbg_dat_in = 8'h00;
 //   [23:16] the 65816's SP at that sample
 //   [31:24] DBG_REG 0x17: bit 0 a JSR has run, bit 1 a JSL has run, bit 2 an
 //           RTL has run, bit 3 an RTS has run, bit 4 an RTL ran with no
-//           outstanding JSL -- the answer this build exists for, bits 7:5 zero
+//           outstanding JSL -- the answer this build exists for -- bit 5 a JSL
+//           was seen while an interrupt was being entered, bit 6 an RTL was, so
+//           the pair says whether the gate could have hidden a call, bit 7 zero
 //   [39:32] DBG_REG 0x18: the count of JSLs not yet returned from, saturating
-//           at 15
-//   [47:40] the 65816's PBR at the departure
+//           at 255
+//   [47:40] DBG_REG 0x19: the same two opcodes counted with the interrupt gate
+//           removed, saturating at 15 each, JSL in the low nibble and RTL in
+//           the high.  Comparing this against the balance is what separates a
+//           real unmatched return from one the gate manufactured: if the ungated
+//           counts differ from each other by the same amount the balance does,
+//           removing the gate changed nothing.
 //   [63:48] ROM_ADDR[15:0] of the newest ROM access
 //   [79:64] zero
 //
@@ -1486,11 +1492,11 @@ assign dbg_dat_in = 8'h00;
 // being clear across boots means the return pairing is sound and the fault is
 // somewhere else entirely -- either answer ends the investigation.
 reg [2:0] ins_ph = 3'd0;
-reg [7:0] pch1 = 8'd0, pcl = 8'd0, sp_r = 8'd0, pbr_r = 8'd0;
-reg [7:0] fl_r = 8'd0, bal_r = 8'd0;
+reg [7:0] pch1 = 8'd0, pcl = 8'd0, sp_r = 8'd0;
+reg [7:0] fl_r = 8'd0, bal_r = 8'd0, alt_r = 8'd0;
 reg        ins_arm = 1'b0, ins_done = 1'b0;
 reg [15:0] d_pc = 16'd0;
-reg [7:0]  d_sp = 8'd0, d_pbr = 8'd0;
+reg [7:0]  d_sp = 8'd0;
 reg [15:0] wr_rom = 16'd0;
 reg        ins_ce_d = 1'b1;
 wire       ins_sel = enable && ~ROM_CE_N && BSRAM_CE_N;
@@ -1504,9 +1510,9 @@ always @(*) begin
     3'd0, 3'd3: dbg_reg = 8'h07;        // PC high, first and accepting read
     3'd1:       dbg_reg = 8'h06;        // PC low
     3'd2:       dbg_reg = 8'h09;        // SP
-    3'd4:       dbg_reg = 8'h17;        // call/return flag byte
+    3'd4:       dbg_reg = 8'h17;        // call/return flags, incl. irq skips
     3'd5:       dbg_reg = 8'h18;        // outstanding long-call balance
-    default:    dbg_reg = 8'h0D;        // PBR
+    default:    dbg_reg = 8'h19;        // ungated JSL/RTL counts
     endcase
 end
 
@@ -1520,7 +1526,7 @@ always @(posedge mclk) begin
     if (ins_ph == 3'd2) sp_r  <= dbg_dat_out;
     if (ins_ph == 3'd4) fl_r  <= dbg_dat_out;
     if (ins_ph == 3'd5) bal_r <= dbg_dat_out;
-    if (ins_ph == 3'd6) pbr_r <= dbg_dat_out;
+    if (ins_ph == 3'd6) alt_r <= dbg_dat_out;   // 0x19: ungated RTL:RTL counts
 
     ins_ce_d <= ins_sel;                // start-of-access edge, not the level
     if (ins_sel && ~ins_ce_d)
@@ -1538,7 +1544,6 @@ always @(posedge mclk) begin
             ins_done <= 1'b1;
             d_pc  <= {pch1, pcl};
             d_sp  <= sp_r;
-            d_pbr <= pbr_r;
         end
     end
 
@@ -1548,7 +1553,7 @@ always @(posedge mclk) begin
     if (ins_ph == 3'd6) begin
         ins_wrap <= ins_wrap + 19'd1;
         if (ins_wrap == 19'd0)
-            fp_bus <= {16'd0, wr_rom, d_pbr, bal_r, fl_r, d_sp, d_pc};
+            fp_bus <= {16'd0, wr_rom, alt_r, bal_r, fl_r, d_sp, d_pc};
     end
 end
 

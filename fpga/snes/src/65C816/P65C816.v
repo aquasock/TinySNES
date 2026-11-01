@@ -81,9 +81,19 @@ module P65C816(
    // with, so this reuses a pattern already validated twice in this project, and
    // it says nothing about the stack -- which is what three earlier instruments
    // could not make repeatable.
-   reg [3:0]     jsl_bal;
+   reg [7:0]     jsl_bal;
    reg           seen_jsr, seen_jsl, seen_rtl, seen_rts;
    reg           unmatched_rtl;
+   // The gated counters above skip any opcode committed while an interrupt is
+   // being entered, which is correct -- the interrupt sequence commits no fetched
+   // opcode -- but it would also hide a real `JSL` if one ever coincided with
+   // that window, and a hidden `JSL` makes a later legitimate `RTL` look
+   // unmatched.  `irq_jsl` and `irq_rtl` record exactly that coincidence, and
+   // `u_jsl` and `u_rtl` count the same opcodes with the interrupt gate removed,
+   // so one boot can say whether the unmatched flag is a property of the machine
+   // or of the instrument.
+   reg           irq_jsl, irq_rtl;
+   reg [3:0]     u_jsl, u_rtl;
    reg           STPExec;
    reg           NMI_SYNC;
    reg           IRQ_SYNC;
@@ -599,12 +609,12 @@ module P65C816(
    // pushes three bytes and `RTL` pulls three, so a `JSL` not yet returned from
    // is exactly what an `RTL` is entitled to consume, and an `RTL` with none
    // outstanding is a long return through a stack a short call built.  `bal`
-   // saturates at 15 so a boot that nests deeply cannot wrap it and hide an
+   // is eight bits so a deep boot cannot wrap it so a boot that nests deeply cannot wrap it and hide an
    // unmatched return behind a borrow.
    always @(posedge CLK)
       if (RST_N == 1'b0)
       begin
-         jsl_bal <= 4'd0;
+         jsl_bal <= 8'd0;
          seen_jsr <= 1'b0;
          seen_jsl <= 1'b0;
          seen_rtl <= 1'b0;
@@ -617,21 +627,42 @@ module P65C816(
          8'h20: seen_jsr <= 1'b1;
          8'h22: begin
                    seen_jsl <= 1'b1;
-                   if (jsl_bal != 4'hF)
-                      jsl_bal <= jsl_bal + 4'd1;
+                   if (jsl_bal != 8'hFF)
+                      jsl_bal <= jsl_bal + 8'd1;
                 end
          8'h60: seen_rts <= 1'b1;
          8'h6B: begin
                    seen_rtl <= 1'b1;
-                   if (jsl_bal == 4'd0)
+                   if (jsl_bal == 8'd0)
                       unmatched_rtl <= 1'b1;
                    else
-                      jsl_bal <= jsl_bal - 4'd1;
+                      jsl_bal <= jsl_bal - 8'd1;
                 end
          default: ;
          endcase
       end
 
+   // The same opcodes with the interrupt gate removed, plus a record of any that
+   // coincided with it.  Counts saturate at 15 because only their difference is
+   // read and a wrap would be misleading.
+   always @(posedge CLK)
+      if (RST_N == 1'b0)
+      begin
+         irq_jsl <= 1'b0;
+         irq_rtl <= 1'b0;
+         u_jsl   <= 4'd0;
+         u_rtl   <= 4'd0;
+      end
+      else if (EN == 1'b1 & STATE == 4'b0000)
+      begin
+         if (GotInterrupt == 1'b1) begin
+            if (D_IN == 8'h22) irq_jsl <= 1'b1;
+            if (D_IN == 8'h6B) irq_rtl <= 1'b1;
+         end else begin
+            if (D_IN == 8'h22 & u_jsl != 4'hF) u_jsl <= u_jsl + 4'd1;
+            if (D_IN == 8'h6B & u_rtl != 4'hF) u_rtl <= u_rtl + 4'd1;
+         end
+      end
 
    always @(posedge CLK)
       if (RST_N == 1'b0)
@@ -780,8 +811,10 @@ module P65C816(
       // never cleared except by reset, so one frame describes everything the
       // CPU has done rather than the instant it was sampled.  0x17 is the flag
       // byte and 0x18 the outstanding-long-call balance.
-      8'h17: DBG_DAT_OUT = {3'b000, unmatched_rtl, seen_rts, seen_rtl, seen_jsl, seen_jsr};
-      8'h18: DBG_DAT_OUT = {4'b0000, jsl_bal};
+      8'h17: DBG_DAT_OUT = {1'b0, irq_rtl, irq_jsl, unmatched_rtl,
+                            seen_rts, seen_rtl, seen_jsl, seen_jsr};
+      8'h18: DBG_DAT_OUT = jsl_bal;
+      8'h19: DBG_DAT_OUT = {u_rtl, u_jsl};
       default: DBG_DAT_OUT = 8'h0;      
       endcase
    end
