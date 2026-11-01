@@ -213,12 +213,49 @@ module snes_tb;
 
   reg [15:0] last_pc = 16'hFFFF;
 
+  // The SPC700 side of the link.  The 65816's upload waits for the SPC to echo
+  // each byte, so when the upload stalls the question is what the SPC is doing
+  // and what the two port banks hold -- the same question entries 8 to 12 asked
+  // with a probe, here answered from inside the machine.
+  wire [15:0] spc_pc  = dut.smp.SPC700.PC;
+  wire [15:0] cpui    = {dut.smp.CPUI[1], dut.smp.CPUI[0]};
+  wire [15:0] cpuo    = {dut.smp.CPUO[1], dut.smp.CPUO[0]};
+  integer sf;
+  initial sf = 0;
+  reg [15:0] last_spc = 16'hFFFF;
+  always @(posedge clk)
+    if (sf != 0 && enable && spc_pc !== last_spc) begin
+      last_spc <= spc_pc;
+      $fdisplay(sf, "%0d spc_pc=%04X cpui=%04X cpuo=%04X pc65816=%04X",
+                cyc, spc_pc, cpui, cpuo, pc);
+    end
+
   // Opcode log: every byte the 65816 commits to as an instruction, with the
   // address it came from.  The PC trace shows where the CPU went; this shows
   // what it read to get there, which is what separates a control-flow fault
   // from a fetch that returned the wrong byte.
   integer of;
   wire    insn_now = dut.CPU.P65C816.EN & ~dut.CPU.P65C816.GotInterrupt & (state == 4'd0);
+
+  // PPU programming: does the machine ever get as far as telling the PPU how to
+  // draw?  A CPU that boots but never writes $2100 leaves the PPU in its reset
+  // state, which is the fixed grid this project has been seeing.
+  integer pp;
+  reg [7:0] ppu_wr_count = 8'd0;
+  // Banks $00-$3F and $80-$BF both reach the PPU registers at $2100-$21FF, and
+  // the game runs in bank $80, so masking the top two bits is the test that
+  // catches it.  The first version of this filter compared the whole high byte
+  // to $00 and silently missed every write the game made.
+  wire ppu_sel = dut.CPU.P65C816.EN & ~dut.CPU.P65C816.WE_N
+                 & (dut.CPU.P65C816.A_OUT[23:22] == 2'b00)
+                 & (dut.CPU.P65C816.A_OUT[15:8] == 8'h21);
+  initial pp = 0;
+  always @(posedge clk)
+    if (pp != 0 && ppu_sel) begin
+      if (ppu_wr_count != 8'hFF) ppu_wr_count <= ppu_wr_count + 8'd1;
+      $fdisplay(pp, "%0d pc=%04X addr=%02X data=%02X",
+                cyc, pc, dut.CPU.P65C816.A_OUT[7:0], dut.CPU.P65C816.D_OUT);
+    end
   initial of = 0;
   always @(posedge clk)
     if (of != 0 && insn_now)
@@ -277,6 +314,20 @@ module snes_tb;
       if ($value$plusargs("oplog=%s", op_path)) begin
         of = $fopen(op_path, "w");
         if (of == 0) $display("warning: could not open %0s; no oplog", op_path);
+      end
+      begin
+        reg [1023:0] sp_path;
+        if ($value$plusargs("spclog=%s", sp_path)) begin
+          sf = $fopen(sp_path, "w");
+          if (sf == 0) $display("warning: could not open %0s; no spclog", sp_path);
+        end
+      end
+      begin
+        reg [1023:0] pp_path;
+        if ($value$plusargs("pplog=%s", pp_path)) begin
+          pp = $fopen(pp_path, "w");
+          if (pp == 0) $display("warning: could not open %0s; no pplog", pp_path);
+        end
       end
     end
 

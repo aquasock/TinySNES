@@ -126,7 +126,7 @@ def summary_link(words):
     return (f"CPUO={cpuo:04X} CPUI={cpui:04X} A={a:04X} PC={pc:04X} Y={ynow:02X} | {bits.strip()}")
 
 
-def summary_where(words):
+def summary_where(words, note=""):
     """Describe a TINYSNES_WHERE_PROBE snapshot: where the 65816 is and how it
     got there.
 
@@ -149,7 +149,7 @@ def summary_where(words):
             f"departure={left:04X} rom={rom:04X} | {bits.strip()}")
 
 
-def summary_jump(words):
+def summary_jump(words, note=""):
     """Describe a TINYSNES_JUMP_PROBE snapshot: the fetches before the departure.
 
     `rom` is the newest ROM address the mapper served before the CPU left, so
@@ -177,7 +177,7 @@ def summary_jump(words):
             f"prev={d_r1:04X} up2={d_r2:04X}")
 
 
-def summary_stack(words):
+def summary_stack(words, note=""):
     """Describe a TINYSNES_STACK_PROBE snapshot: what the RTL returned through.
 
     `RTL` pops three bytes -- PC low, PC high, then PBR -- starting at the stack
@@ -261,6 +261,18 @@ def summary_insn(words, note=""):
     # interrupt window; the ungated counts say whether removing it changed
     # anything at all.
     irq = "".join(n for n, b in (("jsl", 0x20), ("rtl", 0x40)) if fl & b) or "-"
+    # The band is the authority on whether the latched snapshot fired (TCL-018).
+    # The flags and the count are live so they stand on their own, but the
+    # departure fields are latched and read as a full set of zeros when they did
+    # not, which is not an address.  Cycle 34 made exactly this mistake once.
+    if "band (" in note:
+        try:
+            r, g, b = (int(x) for x in note.split("band (", 1)[1].rstrip(")").split(","))
+        except ValueError:
+            r = g = b = 0
+        if r < 100 and g > 150 and b > 100:
+            return (f"{verdict}: saw {seen}, bal={bal} | "
+                    f"ran={insn} instructions | NO DEPARTURE (band {r},{g},{b})")
     return (f"{verdict}: saw {seen}, bal={bal} | "
             f"ran={insn} instructions before leaving | "
             f"departure={dpc:04X} SP={sp:02X} rom={rom:04X} irqwin={irq}")
@@ -333,7 +345,8 @@ def main():
               "stack": summary_stack,
               "stackbytes": summary_stackbytes,
               "insn": summary_insn}.get(args.layout, summary_link)
-        desc = fn(words) if fn is not summary_stackbytes else fn(words, note)
+        desc = fn(words) if fn in (summary_trace, summary_cpu, summary_irq,
+                                         summary_link) else fn(words, note)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

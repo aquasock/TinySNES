@@ -1206,3 +1206,35 @@ Build the production core with `TINYSNES_FORCE_SLOW_ROM` and put it on the board
 - User Test: NOT RUN
 
 ---
+
+## 38 COMMIT Unreleased 2026-11-01T02:35:07-07:00
+
+#### Coming From:
+
+Unreleased f5cb40e
+
+#### Purpose:
+
+Deploy the `TINYSNES_FORCE_SLOW_ROM` build to the board and find out whether the cartridge-latency fault identified in simulation is the whole of the boot failure.
+
+#### Outcome:
+
+`TINYSNES_FORCE_SLOW_ROM` was built into the production configuration at seed 7, passed the timing and clock gates with no hold violations and was deployed, and the result is negative: the picture is unchanged, still the static 8x7 grid of white bars between grey borders, and an instrumented build of the same source shows the machine still leaving the cartridge on most boots.  That answers the cycle's question with a no.  The latency finding of entry 37 is sound in simulation -- the bench separates `+lat=3` from `+lat=4` by the `MEMSEL` store alone -- but forcing slowrom on the board does not rescue it, so either the hardware path is worse than the six master clocks the bench models or there is a second fault, and the second is what the rest of this cycle found.  Three builds of the identical source, all with the same defines and all free of hold violations, were compared over fifteen boots: seed 9 and seed 11 and seed 5 differ only in where the placer put the master clock, and the outcome differs with it.  The seed 9 build takes `hclk` through `SPINE24/CBRIDGEOUT_BOTTOM2` and `iosys.clk` through `SPINE16/CBRIDGEOUT_TOP0`, and it does not leave the cartridge on any boot -- ten boots across two sampling runs, every one reporting no departure, with a cyan band and an identical flag byte each time, which is the first deterministic result this project has ever recorded.  The seed 5 and seed 11 builds take the same clock through `SPINE27` and `SPINE25`, pass the same gates, and leave the cartridge on every boot sampled, at `$1035` or `$1036` with `SP` at `$01FD`.  So a hold-clean placement is necessary but not sufficient here and the outcome has to be confirmed by booting; that is recorded as BRD-005 and the practical consequence is that the seed should be chosen for the spine it produces, which `tools/clock_plane_report.py` prints before deployment.  The second fault is in the sound upload and reproduces in the bench at zero cartridge latency, so it is not the same defect: the 65816 sits in its echo-wait at `$88B3` to `$88B8` while the SPC700 loops inside its IPL block-copy between `$FFDC` and `$FFE2`, with CPUI holding `$A9`,`$30` and CPUO echoing one index behind -- the deadlock entries 8 to 12 spent five cycles on, now reproducible in seconds and with both CPUs visible at once.  The PPU receives exactly one write in a whole simulated boot, `$2100`=`$80`, which is the game's forced-blank at the start of its reset path, and the CPU never reaches the game's own initialisation, so the static grid is explained: the PPU is left in its reset state because the machine never gets past the upload.  Two defects in this cycle's own instruments were found and fixed.  The PPU write filter in the bench compared the full high byte of the address to `$00` when the game runs in bank `$80`, so it silently missed every write and reported one; masking the top two bits fixed it.  The `insn` layout of the boot sampler read latched stripes without consulting the status band, which is the exact mistake core-log entry 34 recorded as TCL-018, and it reported `departure=$0000` as an address on three cyan-band boots before it was caught; the guard is now applied to that layout as well.  The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 37 were not rewritten, added BRD-005 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-eight-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Work the sound-upload deadlock in the bench, because it is now the only fault standing between this machine and a boot and it reproduces at zero cartridge latency with both processors visible.  The specific question is what the 65816 expects at `$88EC` and what the SPC700 publishes at `$FFDC`: the IPL compares `Y` against the port and the 65816 compares the port against the byte it just sent, so the two are one index apart in a steady state that never advances, and the first thing to capture is the sequence of writes the 65816 makes to `$2140` beside the sequence the SPC publishes to `$F4`, both taken from inside the bench rather than from a probe.  If the 65816 is writing bytes the SPC never sees, the fault is the port write path; if the SPC is publishing and the 65816 is not reading, it is the read path; and if both are correct one index apart, the IPL's compare is what has to be re-read against the published first-byte handshake.  Keep the seed 9 placement as the reference build from now on, since it is the one that reaches the deadlock deterministically, and re-check the spine with `tools/clock_plane_report.py` on any new build before deploying it.  Do not spend another cycle on the departure: it is understood, it depends on placement, and the seed 9 build already avoids it.
+
+#### Files Modified:
+
+- tools/sim/snes_tb.sv
+- tools/sim/run_sim.sh
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

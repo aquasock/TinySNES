@@ -115,6 +115,7 @@ TCL-016 a ROM-address ring names a hot address, not a fetch sequence ·
 TCL-017 the WRAM debug channel is selected but never driven ·
 TCL-018 the display band says whether a snapshot fired ·
 TCL-019 the fastrom access window and the full-core bench ·
+BRD-005 placement, not timing, decides whether this netlist boots ·
 EXT-010 the opcode-commit point for instruction-level probes ·
 EXT-011 JSR/JSL/RTS/RTL microcode push and pull widths
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
@@ -607,6 +608,19 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "SNESTang commit 5f0ef19, src/cpu.v: the SPEED selection for banks $80-$FF and the TINYSNES_FORCE_SLOW_ROM override"
     - "This repository, tools/sim/snes_tb.sv and tools/sim/run_sim.sh: the full-core bench and its +lat cartridge model"
   verification: "Measured on 2026-11-01 (core-log entry 37) with the full-core bench: a two-by-two matrix over cartridge latency and rom-speed mode separated the fault cleanly, `+lat=3` passing and `+lat=4` failing with MEMSEL set on the same image, and the committed-opcode log located the desynchronisation at the instruction immediately after the MEMSEL store."
+
+- record_id: BRD-005
+  kind: BOARD
+  topic_id: BRD
+  title: "On this board the same netlist can boot or leave the cartridge depending only on which seed placed it, so a placement that routes clean is not the same as a placement that runs"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "Two builds of the identical source, both with `TINYSNES_FORCE_SLOW_ROM` and both free of hold violations, behave differently on hardware.  The seed 9 build places `hclk` through `SPINE24/CBRIDGEOUT_BOTTOM2` and `iosys.clk` through `SPINE16/CBRIDGEOUT_TOP0` and boots deterministically: ten boots of five, run twice, every one reporting no departure from the cartridge and the same flag byte.  The seed 5 and seed 11 builds route `hclk` through `SPINE27` and `SPINE25` respectively and both leave the cartridge on every boot sampled, at `$1035` or `$1036` with `SP` at `$01FD`.  All three pass the Fmax gate and none reports a hold violation, so the difference is not visible in either timing check."
+  consequence: "A hold-clean placement is necessary but not sufficient for this design to run, and the project's rule that a measurement build must route clean is weaker than it looks -- the outcome has to be confirmed by booting, not inferred from the timing report.  The variable that separates the passing build from the failing ones is which spine the master clock takes, which is the same quantity TCL-015 and the clock-plane work of core-log entries 22 to 24 were about, and it now has a binary observable attached to it: whether the machine departs the cartridge.  `tools/clock_plane_report.py` prints the spine assignment for every build, so a candidate placement can be judged before deployment and the seed chosen for the spine it produces rather than for the absence of hold violations."
+  sources:
+    - "This repository, build/is9.log, build/is5.log and build/is11.log: the clock-plane reports and Fmax for the three builds"
+    - "This repository, tools/clock_plane_report.py"
+  verification: "Measured on 2026-11-01 (core-log entry 38) over fifteen hardware boots of three hold-clean builds of the same source, with the seed 9 build sampled twice to confirm its result repeats."
 
 - record_id: BRD-003
   kind: BOARD
