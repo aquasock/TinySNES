@@ -2,6 +2,7 @@ module SCPU(
     input CLK,              // Master clock 21 Mhz
     input RST_N,
     input ENABLE,
+    input MEM_WAIT,         // TinySNES: the SDRAM CPU port has no data for this read yet
 
     output reg [23:0] CA,   // Addr Bus A: S-CPU to WRAM and Cart
     output reg CPURD_N,    
@@ -314,7 +315,22 @@ always @(posedge CLK) begin
 end
 
 assign EN = ENABLE & ~REFRESHED;
-assign P65_EN = ~DMA_ACTIVE & EN;
+// TinySNES: the cartridge and WRAM live in SDRAM and answer in a number of master
+// clocks that moves, because a refresh clock edge resets the controller's phase
+// rotation mid-sequence.  The CPU cannot absorb that by choosing a region speed:
+// it latches D_IN at a fixed phase of its own cycle, so an answer that is one
+// mclk late is read early, and the byte it latches is stale.  Measured on this
+// board, the reset vector fetch saw ROM_Q = $0000 at ROMSEL and two mclk later
+// and $8000 at four, and $0000 is BRK.
+//
+// So MEM_WAIT holds RDY low while the data for the outstanding read is still
+// moving, which is the same mechanism the WRAM refresh already uses: P65C816
+// advances its microcode, address generator and registers only on RDY_IN & CE,
+// so a low RDY freezes the machine with the access's address still on the bus
+// and the controller free to answer it.  Only reads are held -- writes complete
+// at the controller whether or not the CPU waits for them -- so the cost is one
+// handshake per read and nothing on the write path.
+assign P65_EN = ~DMA_ACTIVE & EN & ~MEM_WAIT;
 
 assign SYSCLK = INT_CLK; 
 assign SYSCLKF_CE = INT_CLKF_CE;

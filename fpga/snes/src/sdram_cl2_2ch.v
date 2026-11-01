@@ -93,6 +93,7 @@ module sdram_snes
 	input      [22:1] cpu_addr,     // 8MB SNES memory, with WRAM at end
     input             cpu_req,
     output reg        cpu_req_ack,
+	output reg        cpu_dout_tog, // TinySNES: toggles when a CPU-port read registers its data
 	input             cpu_we,
 	input       [1:0] cpu_ds,       // which bytes to enable
 
@@ -276,6 +277,7 @@ always @(posedge clk) begin
         SDRAM_DQM <= 2'b0;
         normal <= 0;
         setup <= 0;
+        cpu_dout_tog <= 1'b0;       // TinySNES: wait-state toggle, reset with the controller
     end else begin
         // defaults
         dq_oen <= 1'b1;
@@ -396,7 +398,10 @@ always @(posedge clk) begin
             // ROM, WRAM, BSRAM and RV
             if (cycle[5] && oe_latch[0]) begin
                 case (port[0])
-                PORT_CPU:   if (cpu_port) cpu_port1 <= dq_in; else cpu_port0 <= dq_in;
+                PORT_CPU:   begin
+                                if (cpu_port) cpu_port1 <= dq_in; else cpu_port0 <= dq_in;
+                                cpu_dout_tog <= ~cpu_dout_tog;
+                            end
                 PORT_BSRAM: bsram_dout_reg <= ds[0][0] ? dq_in[7:0] : dq_in[15:8];
                 PORT_RV:    rv_dout <= dq_in;
                 default: ;

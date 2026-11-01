@@ -185,6 +185,15 @@ CLKDIV #(.DIV_MODE("5")) div5 (
 
 wire [23:0] ROM_ADDR;
 wire ROM_CE_N, ROM_OE_N, ROM_WE_N, ROM_WORD;
+
+// TinySNES: the wait-state handshake between the SDRAM controller and the CPU.
+// cpu_dout_tog is the controller's "a CPU-port read registered its word"
+// toggle; mem_wait is what the CPU holds its ready line on while a read is
+// outstanding.  Declared here because the machine instance below connects it,
+// and driven in the CPU-port data wait block further down.
+wire cpu_dout_tog;
+wire cpu_ack;                 // the controller's acknowledge of the CPU-port request
+wire mem_wait;
 wire [15:0] ROM_D;
 wire [15:0] ROM_Q;
 assign      ROM_Q = (ROM_WORD || ~ROM_ADDR[0]) ? cpu_port0 : { cpu_port0[7:0], cpu_port0[15:8] };
@@ -279,7 +288,21 @@ always @(posedge mclk) begin        // wait until memory initialize to start SNE
     // finished its double-reads, so the machine must not start before then.
     if (~sdram_busy && ~pause_snes_for_frame_sync && loaded && stability_done)
 `else
+    // TinyNES wait-state build only: and only once the controller's CPU port has
+    // drained.  The request handshake is a toggle pair, so a machine that posts
+    // its first read while a request from the loader is still outstanding flips
+    // cpu_req back level with cpu_req_ack, and the controller then never sees
+    // the machine's read at all -- it answers the loader's and the machine reads
+    // the word the load left behind.  UNCONFIRMED: this was written as a
+    // candidate explanation for the wait-state build leaving the cartridge on
+    // its first fetch, and turning it on did not change the picture, so it is
+    // not established as that cause.  It is kept, gated, because the race it
+    // closes is real in the protocol whether or not it is the fault here.
+`ifdef TINYSNES_CART_WAIT
+    if (~sdram_busy && ~pause_snes_for_frame_sync && loaded && cpu_port_idle)
+`else
     if (~sdram_busy && ~pause_snes_for_frame_sync && loaded)
+`endif
 `endif
         enable <= 1;
     else 
@@ -1789,7 +1812,7 @@ parameter USE_GSU=0;
 
 `ifndef DISABLE_SNES
 main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
-    .MCLK(mclk), .RESET_N(resetn & ~loading), .ENABLE(enable), 
+    .MCLK(mclk), .RESET_N(resetn & ~loading), .ENABLE(enable), .MEM_WAIT(mem_wait),
     .SYSCLKF_CE(sysclkf_ce), .SYSCLKR_CE(sysclkr_ce), .REFRESH(refresh),
 
     .ROM_TYPE(rom_type), .ROM_MASK(rom_mask), .RAM_MASK(ram_mask),
@@ -1864,10 +1887,68 @@ reg         aram_req;
 wire        DOT_CLK_CE;
 assign      O_sdram_clk = fclk_p;
 
+// ------------------------------------------------------- CPU-port data wait
+// The cartridge and WRAM are SDRAM behind sdram_cl2_2ch, and that port does not
+// answer in a fixed number of master clocks.  A request is accepted at cycle[1]
+// of the controller's phase rotation and its word is registered at cycle[5],
+// but a refresh clock edge sets the rotation to the cycle[5] phase mid-sequence,
+// so the gap between a request and its data moves.  Measured on this board on
+// the reset vector fetch: ROM_Q was $0000 at the first ROMSEL and at +2 mclk,
+// and $8000 at +4.  $0000 is BRK.
+//
+// The CPU core cannot absorb that by picking a region speed.  It latches D_IN at
+// a fixed phase of its own cycle chosen from the region's speed class, so an
+// answer one mclk late is read early and the stale byte is executed -- which is
+// the desynchronisation the departure probes have been recording, and why
+// forcing the slow class (TINYSNES_FORCE_SLOW_ROM) only moves the fault instead
+// of removing it.
+//
+// So the machine waits for the word instead of assuming when it arrives.  A
+// read on this port raises sd_rd_pending when its request is posted and drops it
+// when the controller reports the word registered; while it is raised the CPU's
+// ready line is held low, which freezes the microcode, the address generator and
+// the registers (P65C816 advances only on RDY_IN & CE) and leaves the access's
+// address on the bus for the controller to answer.  Writes are not held: they
+// complete at the controller whether or not the CPU waits.
+//
+// cpu_dout_tog is a toggle in the controller's fclk domain, so it is
+// synchronised into mclk and its edges detected rather than sampled as a level.
+// A toggle per served read cannot be missed: one read is at least six mclk
+// apart from the next, and the CPU is held until the arrival in between.
+//
+// sd_wait_age bounds the wait.  A lost acknowledge is not something this design
+// expects, but a machine that hangs reports nothing at all while a machine that
+// proceeds on a stale byte still reports through the probes, so the bound keeps
+// the failure diagnosable.  At 63 mclk it never fires in the boot measured here.
+//
+// The hold is released one mclk after the arrival rather than on it.  A word
+// that appears on the same edge the CPU is released on has not been stable for
+// a setup time yet, and the bench shows that this is not a theoretical worry:
+// with the release on the arrival itself, a cartridge latency of four mclk
+// still desynchronised the machine (the CPU was released on exactly the edge
+// its stale sample would have been taken), while five and six were absorbed;
+// with one mclk of margin, four, five, six and eight are all absorbed.
+// cpu_req_ack is a register in the controller's fclk domain, so it is
+// synchronised before the toggle pair is compared.
+reg  [1:0] cpu_ack_sync  = 2'd0;
+wire       cpu_port_idle = (cpu_req == cpu_ack_sync[1]);
+reg        sd_rd_pending = 1'b0;
+reg        sd_dout_hold  = 1'b0;
+reg  [2:0] sd_tog_sr     = 3'd0;
+reg  [5:0] sd_wait_age   = 6'd0;
+wire       sd_dout_arrived = sd_tog_sr[2] ^ sd_tog_sr[1];
+
 // Generate SDRAM signals
 always @(posedge mclk) begin
     if (~resetn) begin
     end else begin
+        // The read this wait was for has been answered, or has waited long
+        // enough that something else is wrong and a hung CPU would report less
+        // than a stale one.  Placed before the request branches so that a
+        // request posted on the same mclk as an arrival wins.
+        if (sd_dout_arrived || sd_wait_age == 6'd63)
+            sd_rd_pending <= 1'b0;
+        sd_dout_hold <= sd_dout_arrived & sd_rd_pending;
         
         // ROM read and load
         if (loading && loader_do_valid && header_finished && loader_addr[0] 
@@ -1879,6 +1960,7 @@ always @(posedge mclk) begin
             cpu_din <= {loader_do, loader_do_r};    // write 16 bits on odd addresses
             cpu_ds <= 2'b11;
             cpu_port <= 0;
+            sd_rd_pending <= ~loading;              // a cartridge access is a read
         end
         
         // WRAM read/write
@@ -1891,6 +1973,7 @@ always @(posedge mclk) begin
             cpu_ds <= {WRAM_ADDR[0], ~WRAM_ADDR[0]};
             cpu_din <= {WRAM_D, WRAM_D};        
             cpu_port <= 1;
+            if (~wram_wr) sd_rd_pending <= 1'b1;    // reads wait for the data; writes do not
         end 
 
         // BSRAM read/write
@@ -1909,6 +1992,172 @@ always @(posedge mclk) begin
         end
     end
 end
+
+always @(posedge mclk) begin
+    if (~resetn) begin
+        sd_tog_sr    <= 3'd0;
+        sd_wait_age  <= 6'd0;
+        cpu_ack_sync <= 2'd0;
+    end else begin
+        sd_tog_sr     <= {sd_tog_sr[1:0], cpu_dout_tog};
+        cpu_ack_sync  <= {cpu_ack_sync[0], cpu_ack};
+        if (~sd_rd_pending)
+            sd_wait_age <= 6'd0;
+        else if (sd_wait_age != 6'd63)
+            sd_wait_age <= sd_wait_age + 6'd1;
+    end
+end
+
+`ifdef TINYSNES_CART_WAIT
+assign mem_wait = (sd_rd_pending | sd_dout_hold) & enable;
+`else
+// Off unless asked for.  The CPU side of the handshake is always present and
+// inert with this input low, so the default build behaves exactly as it did
+// before the wait state existed; -DTINYSNES_CART_WAIT turns the board's side on.
+// It is opt-in because the hardware result does not match the bench: with it
+// active the machine still draws the static grid, and the link probe puts the
+// 65816 at PC $0000 executing in WRAM rather than at $FFCx in its upload loop,
+// so the wait state moved the failure without fixing it.  The cause is open.
+assign mem_wait = 1'b0;
+`endif
+
+`ifdef TINYSNES_PIXEL_PROBE
+// Diagnostic build: is the machine producing pixels at all?
+//
+// Established by the solid-white and OSD-off experiments: the display path from
+// snes2hdmi's rgb assignment to the HDMI pins works, and the picture on screen is
+// the line buffer's own power-up content because nothing ever writes it.  The
+// buffer is written only on a SNES pixel -- dotclk rising with hblank and vblank
+// both low -- so the grid means that condition has never been true.  The question
+// is therefore not what the PPU draws, but whether the machine ticks.
+//
+// Band: R = dotclk has ticked, G = hblank has been low, B = vblank has been low.
+// White is a machine producing a raster; black is a machine that never started.
+//
+// probe_bus fields, low to high:
+//   [15:0]  dotclk ticks in the window, saturating
+//   [31:16] snes_refresh pulses in the window, saturating
+//   [47:32] cartridge reads (ROM_CE_N assertions) in the window, saturating
+//   [63:48] {refresh, enable, loaded, header_finished,
+//            vblank_seen, hblank_seen, dotclk_seen, 9'b0}
+//   [79:64] ROM_ADDR[15:0] at the snapshot
+reg [15:0] pp_dot_cnt = 16'd0;
+reg [15:0] pp_ref_cnt = 16'd0;
+reg [15:0] pp_rom_cnt = 16'd0;
+reg        pp_dot_seen = 1'b0, pp_hb_seen = 1'b0, pp_vb_seen = 1'b0;
+reg        pp_dot_r = 1'b0, pp_ref_r = 1'b0, pp_rom_r = 1'b0;
+reg [21:0] pp_refresh = 22'd0;
+reg [79:0] fp_bus     = 80'd0;
+reg  [2:0] pp_dbg     = 3'b000;
+
+wire pp_dot_edge = dotclk & ~pp_dot_r;
+wire pp_rom_rd   = ~ROM_CE_N;
+
+always @(posedge mclk) begin
+    pp_dot_r <= dotclk;
+    pp_ref_r <= refresh;
+    pp_rom_r <= pp_rom_rd;
+    if (~resetn) begin
+        pp_dot_cnt <= 16'd0;
+        pp_ref_cnt <= 16'd0;
+        pp_rom_cnt <= 16'd0;
+        pp_dot_seen <= 1'b0;
+        pp_hb_seen  <= 1'b0;
+        pp_vb_seen  <= 1'b0;
+    end else begin
+        if (pp_dot_edge) begin
+            pp_dot_seen <= 1'b1;
+            if (pp_dot_cnt != 16'hFFFF) pp_dot_cnt <= pp_dot_cnt + 16'd1;
+        end
+        if (refresh && ~pp_ref_r)
+            if (pp_ref_cnt != 16'hFFFF) pp_ref_cnt <= pp_ref_cnt + 16'd1;
+        if (pp_rom_rd && ~pp_rom_r)
+            if (pp_rom_cnt != 16'hFFFF) pp_rom_cnt <= pp_rom_cnt + 16'd1;
+        if (~hblankn) pp_hb_seen <= 1'b1;
+        if (~vblankn) pp_vb_seen <= 1'b1;
+
+        pp_refresh <= pp_refresh + 22'd1;
+        if (pp_refresh[15:0] == 16'd0) begin
+            fp_bus <= {ROM_ADDR[15:0],
+                       refresh, enable, loaded, header_finished,
+                       pp_vb_seen, pp_hb_seen, pp_dot_seen, 9'b0,
+                       pp_rom_cnt, pp_ref_cnt, pp_dot_cnt};
+            pp_dot_cnt <= 16'd0;
+            pp_ref_cnt <= 16'd0;
+            pp_rom_cnt <= 16'd0;
+        end
+    end
+end
+
+always @(*) pp_dbg = {pp_dot_seen, pp_hb_seen, pp_vb_seen};
+`endif
+
+`ifdef TINYSNES_WAIT_PROBE
+// Diagnostic build: what the wait state is doing, because "the machine stopped
+// advancing" is the same picture whether the CPU is waiting for a word that
+// never arrives or the hold never lifts, and the two need opposite fixes.
+//
+// probe_bus fields, low to high:
+//   [15:0]  master clocks with mem_wait high in the window, saturating at $FFFF
+//   [31:16] arrivals seen (edges of the controller's data toggle), saturating
+//   [47:32] requests posted, saturating
+//   [63:48] ROM_ADDR[15:0] at the snapshot: whether the bus is moving at all
+//   [79:64] the last 16 master clocks of mem_wait, newest in bit 0
+//
+// The window is 2^14 master clocks (about 0.76 ms), so "saturated" means the
+// event is continuous rather than merely frequent.
+//
+// Band: R = mem_wait, G = enable, B = sd_rd_pending.  Red with no green is a
+// machine held before it was enabled; red with green is a machine held while
+// running; black is a machine running with nothing outstanding.
+reg [15:0] wp_wait_cnt = 16'd0;
+reg [15:0] wp_arr_cnt  = 16'd0;
+reg [15:0] wp_tmo_cnt  = 16'd0;
+reg [15:0] wp_post_cnt = 16'd0;
+reg [15:0] wp_hist     = 16'd0;
+reg        wp_pend_r   = 1'b0;
+reg [21:0] wp_refresh  = 22'd0;
+reg [79:0] fp_bus      = 80'd0;
+reg  [2:0] wp_dbg      = 3'b000;
+wire       wp_timeout  = sd_rd_pending && (sd_wait_age == 6'd63);
+
+always @(posedge mclk) begin
+    if (~resetn) begin
+        wp_wait_cnt <= 16'd0;
+        wp_arr_cnt  <= 16'd0;
+        wp_tmo_cnt  <= 16'd0;
+        wp_post_cnt <= 16'd0;
+        wp_hist     <= 16'd0;
+        wp_pend_r   <= 1'b0;
+    end else begin
+        wp_hist <= {wp_hist[14:0], mem_wait};
+        wp_pend_r <= sd_rd_pending;
+        if (mem_wait && wp_wait_cnt != 16'hFFFF) wp_wait_cnt <= wp_wait_cnt + 16'd1;
+        if (sd_dout_arrived && wp_arr_cnt != 16'hFFFF) wp_arr_cnt <= wp_arr_cnt + 16'd1;
+        if (wp_timeout && wp_tmo_cnt != 16'hFFFF) wp_tmo_cnt <= wp_tmo_cnt + 16'd1;
+        if (sd_rd_pending && ~wp_pend_r && wp_post_cnt != 16'hFFFF)
+            wp_post_cnt <= wp_post_cnt + 16'd1;
+
+        // Latched snapshot: a live bus is a different value in every raster row
+        // and cannot be photographed (TCL-011).  The counters are cleared at the
+        // same edge, so each snapshot is one window rather than a lifetime total
+        // -- a saturated counter says only that something happened a lot.
+        // A short window: the counters are cleared at every refresh, so a
+        // saturated count would mean "more than can be counted", not "a lot".
+        wp_refresh <= wp_refresh + 22'd1;
+        if (wp_refresh[13:0] == 14'd0) begin
+            fp_bus <= {wp_hist, ROM_ADDR[15:0],
+                       wp_post_cnt, wp_arr_cnt, wp_wait_cnt};
+            wp_wait_cnt <= 16'd0;
+            wp_arr_cnt  <= 16'd0;
+            wp_tmo_cnt  <= 16'd0;
+            wp_post_cnt <= 16'd0;
+        end
+    end
+end
+
+always @(*) wp_dbg = {mem_wait, enable, sd_rd_pending};
+`endif
 
 localparam RV_IDLE_REQ0 = 3'd0;
 localparam RV_WAIT0_REQ1 = 3'd1;
@@ -2025,7 +2274,7 @@ sdram_snes sdram(
     .cpu_port((loaded && ~rom_probe_done) ? 1'b0 : cpu_port),
     .cpu_port0(cpu_port0), .cpu_port1(cpu_port1),
     .cpu_req ((loaded && ~rom_probe_done) ? rom_probe_req : cpu_req),
-    .cpu_req_ack(rom_probe_ack),
+    .cpu_req_ack(rom_probe_ack), .cpu_dout_tog(cpu_dout_tog),
     .cpu_we  ((loaded && ~rom_probe_done) ? 1'b0 : cpu_we),
     .cpu_ds  ((loaded && ~rom_probe_done) ? 2'b11 : cpu_ds),
 `elsif TINYSNES_WRAM_TEST
@@ -2037,7 +2286,7 @@ sdram_snes sdram(
     .cpu_addr(wram_bist_cpu_addr[22:1]), .cpu_din({wram_bist_din, wram_bist_din}),
     .cpu_port(1'b1),
     .cpu_port0(cpu_port0), .cpu_port1(cpu_port1),
-    .cpu_req(wram_bist_req), .cpu_req_ack(wram_bist_ack),
+    .cpu_req(wram_bist_req), .cpu_req_ack(wram_bist_ack), .cpu_dout_tog(cpu_dout_tog),
     .cpu_we(wram_bist_we), .cpu_ds(wram_bist_ds),
 `elsif TINYSNES_READ_STABILITY
     // Diagnostic build: the stability test owns the CPU port from `loaded` until
@@ -2053,18 +2302,19 @@ sdram_snes sdram(
     .cpu_port((loaded && ~stability_done) ? 1'b0 : cpu_port),
     .cpu_port0(cpu_port0), .cpu_port1(cpu_port1),
     .cpu_req ((loaded && ~stability_done) ? stability_req : cpu_req),
-    .cpu_req_ack(stability_ack),
+    .cpu_req_ack(stability_ack), .cpu_dout_tog(cpu_dout_tog),
     .cpu_we  ((loaded && ~stability_done) ? 1'b0 : cpu_we),
     .cpu_ds  ((loaded && ~stability_done) ? 2'b11 : cpu_ds),
 `elsif TINYSNES_SDRAM_TEST
     // Diagnostic build: sdram_bist owns the CPU port; the machine's requests are
     // left unconnected because no ROM is loaded and the SNES is never enabled.
     .cpu_addr(bist_addr), .cpu_din(bist_din), .cpu_port(1'b0),
-    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(bist_req), .cpu_req_ack(bist_ack),
+    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(bist_req), .cpu_req_ack(bist_ack), .cpu_dout_tog(cpu_dout_tog),
     .cpu_we(bist_we), .cpu_ds(2'b11),
 `else
     .cpu_addr(cpu_addr[22:1]), .cpu_din(cpu_din), .cpu_port(cpu_port), 
-    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(cpu_req), .cpu_req_ack(),
+    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(cpu_req), .cpu_req_ack(cpu_ack),
+    .cpu_dout_tog(cpu_dout_tog),
     .cpu_we(cpu_we), .cpu_ds(cpu_ds),
 `endif
 
@@ -2316,7 +2566,19 @@ wire [7:0] dbg_dat_out_loader;
 
 snes2hdmi s2h(
     .clk(mclk), .resetn(resetn), .snes_refresh(refresh),
-`ifdef TINYSNES_IRQ_PROBE
+`ifdef TINYSNES_PIXEL_PROBE
+    // Diagnostic build: is the machine producing a raster?  See the
+    // TINYSNES_PIXEL_PROBE block for the field order.
+    .dbg(pp_dbg),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_WAIT_PROBE
+    // Diagnostic build: the wait state's own counters.  See the TINYSNES_WAIT_PROBE
+    // block for the field order.
+    .dbg(wp_dbg),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_IRQ_PROBE
     // Diagnostic build: R = a ROM access in the last sample window, G = loaded,
     // B = enable; probe_bus carries the sticky interrupt bits, the status byte
     // and the halt PC per the field order in the TINYSNES_IRQ_PROBE block.

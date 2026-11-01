@@ -48,6 +48,12 @@
 `ifdef TINYSNES_IRQ_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_WAIT_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
+`ifdef TINYSNES_PIXEL_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 
 // The two memory self-tests share one display, so they are folded into a single
 // define rather than tested in one `elsif` expression.  `elsif A || B does NOT
@@ -268,6 +274,39 @@ module snes2hdmi (
     // Data input
     //
     reg r_dotclk, r_vblank, r_hblank;
+`ifdef TINYSNES_LINEBUF_TEST
+    // Diagnostic build: write the line buffer from a free-running counter rather
+    // than from the PPU, so the buffer, its two clock domains (port A on mclk,
+    // port B on the pixel clock) and the read path are exercised with no
+    // dependence on the CPU, the PPU, the cartridge or SDRAM.
+    //
+    // This exists because the picture this project has been staring at for two
+    // days may not be the PPU's picture at all.  Core-log entry 40 concluded the
+    // static grid is uninitialised line-buffer content rather than PPU output,
+    // and nothing has ever tested that claim: every probe build draws its bars
+    // by assigning rgb directly and so bypasses the buffer entirely.  If this
+    // build shows a moving 16x16 field of colour cells, the buffer and the read
+    // path work and the fault is upstream of them.  If it still shows the grid,
+    // the buffer is where the picture dies and no CPU work could ever have been
+    // visible.
+    //
+    //   red   = a slow free-running counter, so the field shifts over time
+    //   green = xs[8:4], 16 vertical bands
+    //   blue  = ys[4:0], 16 horizontal bands
+    reg [19:0] lb_cnt = 20'd0;
+    always @(posedge clk) lb_cnt <= lb_cnt + 20'd1;
+
+    always @(posedge clk) begin
+        r_dotclk <= dotclk;
+        r_vblank <= vblank;
+        mem_portA_we <= 1'b0;
+        if (dotclk && ~r_dotclk && ~hblank && ~vblank && ys[7:0] < 224) begin
+            mem_portA_addr  <= {ys[BUF_WIDTH-1:0], xs[8:1]};
+            mem_portA_wdata <= {lb_cnt[19:15], xs[8:4], ys[4:0]};
+            mem_portA_we    <= 1'b1;
+        end
+    end
+`else
     always @(posedge clk) begin
         r_dotclk <= dotclk;
         r_vblank <= vblank;
@@ -278,6 +317,7 @@ module snes2hdmi (
             mem_portA_we <= 1'b1;
         end
     end
+`endif
 
     always @(posedge clk) begin
         r_hblank <= hblank;
@@ -499,10 +539,19 @@ module snes2hdmi (
             rgb <= (xx[4:0] > 5'd29) ? 24'h000000
                                      : (bist_mask[xx[7:5]] ? 24'hC00000 : 24'h00C000);
 `else
+`ifdef TINYSNES_SOLID_WHITE
+    // Diagnostic build: the active area is a constant white, whatever the buffer
+    // and the overlay hold.  This settles where the picture is made.  If the
+    // screen goes white, everything from this assignment to the HDMI pins works
+    // and the grid was data; if the grid survives a constant here, the picture is
+    // not being produced by this assignment at all and the fault is downstream.
+    rgb <= 24'hFFFFFF;
+`else
             if (overlay)
                 rgb <= {overlay_color[4:0],3'b0,overlay_color[9:5],3'b0,overlay_color[14:10],3'b0};       // BGR5 to RGB8
             else
                 rgb <= {mem_portB_rdata[4:0], 3'b0, mem_portB_rdata[9:5], 3'b0, mem_portB_rdata[14:10], 3'b0};                
+`endif
 `endif
         end else
 `ifdef TINYSNES_DBG_BORDER

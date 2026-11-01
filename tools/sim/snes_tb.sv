@@ -107,8 +107,12 @@ module snes_tb;
   wire [7:0]  DBG_DAT_OUT;
   wire        DBG_BREAK;
 
+  // Driven by the wait-state model below, which is this bench's stand-in for the
+  // SDRAM controller's "no data yet" level.
+  wire mem_wait;
+
   SNES dut (
-    .MCLK(clk), .RST_N(rst_n), .ENABLE(enable),
+    .MCLK(clk), .RST_N(rst_n), .ENABLE(enable), .MEM_WAIT(mem_wait),
     .PAL(1'b0), .BLEND(1'b0), .DIS_SHORTLINE(1'b0),
     .CA(CA), .CPURD_N(CPURD_N), .CPUWR_N(CPUWR_N),
     .CPURD_CYC_N(CPURD_CYC_N), .DOT_CLK_CE(DOT_CLK_CE),
@@ -181,6 +185,35 @@ module snes_tb;
     ARAM_Q <= aram[ARAM_ADDR];
   end
 
+  // -------------------------------------------------------- wait-state model
+  // The board's wait input is a level from the SDRAM controller that says the
+  // word the CPU asked for has not arrived yet.  Here the same fact is the
+  // pipeline above: rom_pipe is a shift register of exactly rom_lat stages off
+  // the clock edge that samples the current address, so an access is stale for
+  // rom_lat clocks from the moment the address it asks about appeared.  Ageing
+  // the access from that moment makes +lat mean the same thing to the CPU as it
+  // means to the memory, instead of leaving the core to guess a phase.
+  //
+  // `<=` and not `<`: the level stays up through the clock at which the word
+  // arrives, so the CPU is released on the edge after the data is stable rather
+  // than on the same edge.  That one clock is the whole difference between
+  // absorbing a latency and not: with the release on the arrival itself a
+  // latency of four still desynchronised the machine, because the CPU was let
+  // go on exactly the edge its stale sample would have been taken, while five
+  // and six were absorbed.  With the margin, four, five, six and eight are.
+  reg [23:0] cart_addr_q = 24'hFFFFFF;
+  integer    cart_age    = 0;
+  always @(posedge clk) begin
+    if (ROMSEL_N !== 1'b0 || CA !== cart_addr_q) begin
+      cart_addr_q <= CA;
+      cart_age    <= 0;
+    end else if (cart_age < 32) begin
+      cart_age <= cart_age + 1;
+    end
+  end
+
+  assign mem_wait = (ROMSEL_N === 1'b0) && (cart_age <= rom_lat);
+
   // ------------------------------------------------------------ cart DI mux
   // The core selects the cartridge only when ROMSEL is low and RAMSEL is high;
   // anywhere else it takes WRAM, the PPU, the APU or open bus.  Driving DI with
@@ -191,6 +224,7 @@ module snes_tb;
     else
       DI = 8'hFF;
   end
+
 
   // ---------------------------------------------------------------- tracing
   integer tf;

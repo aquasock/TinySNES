@@ -63,7 +63,20 @@ localparam CLK_FREQ = FREQ;
 localparam BAUD_RATE = 2_000_000;
 
 reg overlay_reg = 1;
+`ifdef TINYSNES_NO_OSD
+// Diagnostic build: hold the on-screen display off.
+//
+// overlay_reg powers up set, and snes2hdmi draws the menu BRAM in preference to
+// the picture while it is set, so a core whose OSD-off frame never arrives shows
+// the menu for ever.  The menu is a fixed grid of text cells, which is exactly
+// what this project has been calling "the static grid" and reading as a broken
+// PPU on every build since entry 25.  Tying it off turns the grid into the one
+// thing that settles the question: if the grid is the OSD, the picture behind it
+// appears; if it is not, the grid stays and the OSD is exonerated.
+assign overlay = 1'b0;
+`else
 assign overlay = overlay_reg;
+`endif
 
 reg [7:0] rom_loading_reg = LOADING_STATE;
 assign rom_loading = rom_loading_reg;

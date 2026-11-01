@@ -1299,3 +1299,41 @@ None.
 - User Test: N/A
 
 ---
+
+## 41 COMMIT Unreleased 2026-11-01T11:07:48-07:00
+
+#### Coming From:
+
+Unreleased c721d3c
+
+#### Purpose:
+
+Implement a cartridge wait-state input so the CPU waits for the SDRAM port's data instead of assuming when it arrives, and use a generated minimal test cartridge to find out whether the machine executes from the cartridge on the board at all.
+
+#### Outcome:
+
+The wait state is implemented and works in the bench but did not fix the board, and the cycle that set out to verify it instead found that the picture this project has been measuring for two days is not the PPU's output. The RTL side is `MEM_WAIT` threaded through `fpga/snes/src/cpu.v` into `P65_EN`, `SNES.v` and `main.v` as pass-throughs, and `snestang_top.v` driving it from a request/arrival handshake against a new `cpu_dout_tog` output on the SDRAM controller in `sdram_cl2_2ch.v` that toggles when a CPU-port read registers its word; `tools/sim/snes_tb.sv` models the same fact as the cartridge pipeline's age, so `+lat` now means to the CPU what it means to the memory. In the bench it works and it is the difference between booting and not: a latency of four master clocks produced 35589 departures from the cartridge without the wait and zero with it, six and eight produced 287857 without and zero with, and a full thirty-six-million-clock boot at latency four ran 2.27M instructions with no departure, 680 PPU register writes across 34 distinct registers and 4183 colour changes. One real finding came out of that matrix and is in both the RTL and the bench: releasing the CPU on the arrival itself still failed at latency four, because it was released on exactly the edge its stale sample would have been taken, and releasing one mclk after the arrival absorbs four, five, six and eight. On the board it does not fix anything. The wait handshake itself is real and one-for-one, measured by a new `TINYSNES_WAIT_PROBE` at 2048 request posts against 2047 arrivals in one 0.76 ms window with the CPU held 87 percent of that window, so the CPU is waiting per read rather than spinning on a lost acknowledge; the picture is still the grid, and the link probe puts the 65816 at PC `$0000` with `cpu_ent` zero rather than in its upload loop. I then stopped chasing it and changed method, because six deployments of commercial games had produced no answer to the first question. `tools/make_test_rom.py` now generates two 64 KiB LoROM test cartridges from ten hand-assembled instructions with a correct checksum, one that alternates the backdrop colour and one that alternates force-blank, with no APU handshake, DMA, interrupt, tilemap or sprite, and the bench confirms both run: the blink image reaches final RGB `7c1f` with the CPU in its delay loop and seven PPP writes. Neither produces any change on the board. Three builds then localised where the picture is made. A build forcing the active area to a constant white in `snes2hdmi.v`'s production branch turns the screen solid white, so everything from that assignment to the HDMI pins works. `iosys_bl616.v` powers up with `overlay_reg` set, and `snes2hdmi` prefers the menu BRAM while it is set, so tying it off was the obvious suspect and it is exonerated: the picture is byte-identical with the overlay off. A new `TINYSNES_PIXEL_PROBE` gives the answer. Over a 3.1 ms window repeated across six seconds the dot clock ticks 16384 times, which is one per four master clocks and a running dot clock, while `snes_refresh` never pulses and the cartridge is never read once, and the flags show enable, loaded and header_finished set with vertical blank asserted and horizontal blank never. The line buffer is written only on a `dotclk` rising edge with hblank and vblank both inactive, so with the PPU parked in vertical blank nothing ever writes it and the screen keeps its power-up content; `BUF_WIDTH` is five, so that buffer is 32 SNES lines deep and repeats seven times over 224 lines, which is exactly the seven rows of bars on screen. The grid recorded across entries 25 to 40 as a PPU artefact and used as the standing evidence that the core does not boot is therefore the line buffer's own uninitialised content, and every deployment verdict in that range is reading unwritten BRAM rather than a rendering. The wait state has been left opt-in behind `-DTINYSNES_CART_WAIT` and the default build is verified unchanged: hold-clean at seed 1, timing passing at 130.48 against 74.25, 29.54 against 21.51 and 344.71 against 64.52 MHz, bitstream sha256 `83c25da30e6397714cb5112689e9fad720f2b96b357ac372eafa06690c6a7e3e`, and pixel-identical to the HEAD capture at zero differing pixels. Two mistakes of this cycle are worth recording because both looked like measurements: a first line-buffer test wrote the buffer from a counter to test the buffer directly, but its writes were gated on the same vblank condition and so confirmed nothing was written rather than what the buffer does, and the OSD hypothesis was held long enough to build and deploy a bitstream before the byte-identical result refuted it. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 40 were not rewritten and recorded the superseding findings here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-one entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out why the raster never leaves vertical blank, because that single condition is upstream of every cartridge, CPU, APU and latency theory the project has pursued: `H_CNT` and `V_CNT` live in `fpga/snes/src/cpu.v` and `H_CNT` is gated on `~VBLANK`, so a `VBLANK` that never releases stops the horizontal counter, which stops `snes_refresh`, which stops the machine from fetching at all and leaves the line buffer unwritten. The measurement is to read `H_CNT`, `V_CNT`, `FIELD` and the PPU's `VBLANK` output directly in one gated snapshot and see whether the vertical counter ever reaches its terminal value or whether the frame it is counting is the wrong length for the pixel clock, and the first check is the cheapest: the PPU's line and frame lengths against 65,536 master clocks per frame at 21.48 MHz. Until that is answered, no result measured through the picture is evidence about the core, and `TINYSNES_PIXEL_PROBE` should be the first build of any future hardware cycle, because a machine with a dead raster reports every symptom a broken core does.
+
+#### Files Modified:
+
+- fpga/snes/src/SNES.v
+- fpga/snes/src/cpu.v
+- fpga/snes/src/iosys/iosys_bl616.v
+- fpga/snes/src/main.v
+- fpga/snes/src/sdram_cl2_2ch.v
+- fpga/snes/src/snes2hdmi.v
+- fpga/snes/src/snestang_top.v
+- tools/make_test_rom.py
+- tools/sim/snes_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---
