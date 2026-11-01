@@ -33,6 +33,9 @@
 `ifdef TINYSNES_WHERE_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_JUMP_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 `ifdef TINYSNES_IRQ_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
@@ -132,6 +135,9 @@ module snes2hdmi (
     //     $8000, [4] PBR has ever been non-zero, [5] RDY_IN has ever read low,
     //     [7:6] zero), then the first PC below $8000 seen while armed above the
     //     newest ROM address the mapper served
+    //   TINYSNES_JUMP_PROBE: the PC the CPU departed to, the ROM bank and the
+    //     newest ROM address fetched before it left, the two fetches before
+    //     that, and the 65816's PBR at the departure
     input [79:0] probe_bus,
 `endif
 

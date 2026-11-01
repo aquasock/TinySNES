@@ -1013,3 +1013,35 @@ Find out why the 65816 leaves the cartridge, because that is now the whole of th
 - User Test: NOT RUN
 
 ---
+
+## 32 COMMIT Unreleased 2026-11-01T00:11:30-07:00
+
+#### Coming From:
+
+Unreleased 3981bde
+
+#### Purpose:
+
+Identify the instruction that takes the 65816 out of the cartridge, since entry 31 established that four boots of five leave the image but held only the address they landed at.
+
+#### Outcome:
+
+`TINYSNES_JUMP_PROBE` was added: it keeps a three-deep ring of ROM addresses and, on the single edge that accepts the first PC below `$8000` after a sample at `$8000` or above, freezes that ring, the departure PC and the program bank into held registers, so the fetches and the departure describe one instant rather than two samples of a moving machine. Build and placement at seed 7 were clean and the read path was checked on this tree before any reading was taken, with `ROM_Q` `0x0000`, `0x0000`, `0x8000` and `ROM_ADDR` `0x7FFC`/`0x007F` from `TINYSNES_FETCH_PROBE`. The first sample was discarded because the display decoder unpacked the five 16-bit words as independent fields when the probe's fields cross word boundaries, which produced plausible but wrong addresses; the decoder now reassembles the whole 80-bit value and slices it at the register widths, and the numbers below are from the corrected build. The result is the first repeatable reading of the session: three boots of five depart to exactly `$1035`, a WRAM address, with the same pre-departure stream, and the two outliers departed to `$4958` and `$2400` from completely different regions, so the departure point varies but the common case is now stable enough to name. In those three boots the newest fetch before the departure is `$8887`, and the image disassembles coherently there: `$887E LDA $07`, `$8880 AND #$40`, `$8882 ASL A`, `$8883 ROL A`, `$8884 ROL A`, `$8885 ORA $06`, `$8887 RTL`, with the two conditional branches above at `$8876` and `$887A` both computing `$8887` as their target and confirming the boundary, so `$8887` is a genuine instruction and it is `RTL`. That rules out the indirect-jump hypothesis entry 31 proposed as the leading candidate: the CPU is not jumping through a bad pointer, it is returning through one. `RTL` pops a 24-bit address from the stack and lands at `$1035`, a WRAM address that holds no code from the image, so the stacked return address is wrong, and the reason it is wrong is not established here. A limit of the instrument has to be stated with the result and is recorded as TCL-016: the ring advances on the start of a bus access rather than on every byte, so it names a hot address and the region around it but is not an instruction-by-instruction trace, which is why the `RTL` is justified by disassembling the image rather than by the ring alone. The program bank read as unstable on the three departing boots and as `$80` on the two outliers, which is reported as the instrument seeing a change between its two reads rather than as a fact about the CPU. Five boots of this probe produced three distinct states, against ten distinct states over ten boots of the previous cycle's instruments, so the machine has become more repeatable and the `$8887 RTL` / `$1035` departure is the first failure signature in the session that reproduces. Production synthesis was re-run and completed cleanly and all nine benches in `tools/tests/probe_tb.sh` pass, and the cycle introduced no change to any core RTL path outside the probe blocks. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 31 were not rewritten, added TCL-016 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-two-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out why the stack holds a bad return address at the `$8887 RTL`, which is now the single mechanism standing between this machine and a boot. The routine the CPU is in is a helper that reads a byte, tests it against `#$10` and `#$1C` and returns; it is entered by a `JSL` or `JSR` from somewhere above it, and a correct return would leave the CPU above `$8000` in the same bank. The decisive instrument is one that captures the top three bytes of the stack, `$01FF` downward from the stack pointer, at the moment of the departure, because those three bytes are literally the address `RTL` is about to use: if they match a return address that no `JSL` in the image would have pushed, the caller pushed the wrong number of bytes or the stack pointer was wrong when it pushed, and if they are unrelated to any recent call the corruption is in the WRAM write path that this project's static byte-lane test passed in entry 20 and which nothing has yet exercised under a live `JSL`. Reading `SP` at the departure is the cheaper half of that question and is available by combining the fields already present in `TINYSNES_WHERE_PROBE` with this probe, which should be done before building a stack-content instrument. Do not revisit the APU link, the interrupt chain, the SPC700 or the sound-upload deadlock, all four of which entries 30 and 31 settled, and do not spend another cycle on the departure address: it is known, it reproduces, and the question has moved to the stack.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

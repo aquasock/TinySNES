@@ -110,7 +110,8 @@ TCL-003 net renaming · TCL-004 cell-name collisions · TCL-005 unsupported cons
 TCL-006 HDMI clock shape and placements · TCL-007 SDRAM capture and the fetch path
 TCL-008 diagnostic builds · TCL-009 ODDR costs the HDMI route · TCL-010 read latency and the CPU's latch ·
 TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with two macros selects nothing ·
-TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip
+TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip ·
+TCL-016 a ROM-address ring names a hot address, not a fetch sequence
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
@@ -524,6 +525,19 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "SNES LoROM memory map as used by this project's test image; cross-checked against the image itself rather than taken on trust"
     - "This repository, /tmp/zelda.smc: header map byte `$7FD5` = `$30`, reset vector at file offset `$7FFC` = `$8000`, and the reset code at file offset 0 matching CPU `$8000`"
   verification: "The mapping was confirmed against the image: decoding the candidate reset path at file offset `0x0800` as CPU `$8800` produced the sound-upload routine's echo-wait `CMP $2140 / BNE` at exactly the addresses the trace probe had frozen on (`$8894`, `$88EF`), while decoding the same bytes at file offset `0x8800` produced nonsense. That agreement between a static disassembly and a hardware trace is what establishes the offset relation for this image."
+
+- record_id: TCL-016
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "A ROM-address ring on the mapper's cycle-assert edge names a hot address, not a complete fetch sequence, so it cannot be read as an instruction-by-instruction trace"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "`TINYSNES_TRACE_PROBE` and `TINYSNES_JUMP_PROBE` both advance their ring on `ROMSEL && ~ROM_CE_N_d`, a start-of-access edge rather than the held level, which is the correct test for counting accesses but is not the same as counting bytes fetched.  `ROM_CE_N` is not released between every consecutive byte fetch, so a burst of fetches is recorded once, at its first address, and the ring holds burst starts rather than every address the CPU read.  Measured: on a boot frozen in the sound upload's `CMP $2140 / BNE` loop at `$8891` and `$8894`, whose fetches are `$8891` to `$8895` each iteration, the ring read `$8894`, `$8894`, `$8894`, `$8894`.  The 65816's instruction queue makes this worse rather than better, because the fetch stream runs ahead of execution and the ring therefore dates the bus rather than the program counter."
+  consequence: "The ring is sound for what it was built for -- naming the region the CPU was fetching from, and showing that fetching has stopped so that a jump can be located -- and it is not sound for reconstructing the exact instruction sequence that preceded an event. When an entry reports a ring value, it must say which of those two readings it is making, and a claim that names a specific instruction has to be justified by disassembling the image at that address and showing the bytes decode coherently from an established instruction boundary, as the `RTL` at `$8887` was. A probe that needs the exact bytes must instead capture the data the mapper returned (`ROM_Q`) alongside the address, or sample `DBG_REG` `0x06` and `0x07` per accepted PC, because the address ring alone cannot distinguish a fetch that was executed from one that was prefetched and discarded."
+  sources:
+    - "This repository, fpga/snes/src/snestang_top.v: the TINYSNES_TRACE_PROBE and TINYSNES_JUMP_PROBE rings and their `~ROM_CE_N && ROM_CE_N_d` edge test"
+    - "This repository, tools/sample_boot_states.py: the trace and jump layouts"
+  verification: "Measured on 2026-10-31 and 2026-11-01 (core-log entries 31 and 32): the trace ring read `$8894` four times on a boot whose loop fetches five distinct addresses, which cannot be a complete fetch sequence, while the same instrument in the same session also reported four distinct addresses on a boot that had left the cartridge, so the ring does track real changes and is not stuck."
 
 - record_id: BRD-003
   kind: BOARD

@@ -149,6 +149,34 @@ def summary_where(words):
             f"departure={left:04X} rom={rom:04X} | {bits.strip()}")
 
 
+def summary_jump(words):
+    """Describe a TINYSNES_JUMP_PROBE snapshot: the fetches before the departure.
+
+    `rom` is the newest ROM address the mapper served before the CPU left, so
+    the instruction that jumped ends there: a one-byte instruction such as RTS
+    leaves `rom` on its own opcode, while an indirect jump leaves it on its last
+    operand byte.  Disassembling backwards from `rom` in the image names the
+    instruction; `prev` and `prev2` give the bytes before it for context.  A
+    snapshot with every field zero and `departed=0` in the band means the CPU
+    never left the cartridge on that boot.
+    """
+    pc, bankaddr, rom, prev, prev2top = words
+    # The fields cross 16-bit word boundaries, so unpack from the whole 80-bit
+    # value with the register widths rather than field by field: slicing the
+    # words instead reads the high byte of one field as the low byte of the next
+    # and produces plausible, wrong addresses.
+    v = sum(w << (16 * i) for i, w in enumerate(words))
+    d_pc   = v & 0xFFFF
+    d_rbnk = (v >> 16) & 0xFF
+    d_r0   = (v >> 24) & 0xFFFF
+    d_r1   = (v >> 40) & 0xFFFF
+    d_r2   = (v >> 56) & 0xFFFF
+    d_pbr  = (v >> 72) & 0xFF
+    pb = "unstable" if d_pbr == 0xFF else f"{d_pbr:02X}"
+    return (f"departure={d_pc:04X} PBR={pb} rom={d_rbnk:02X}:{d_r0:04X} "
+            f"prev={d_r1:04X} up2={d_r2:04X}")
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
@@ -195,7 +223,7 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
-    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where"), default="link",
+    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where", "jump"), default="link",
                     help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
@@ -212,7 +240,7 @@ def main():
             print(f"boot {i}: FAILED -- {note}")
             continue
         desc = {"trace": summary_trace, "cpu": summary_cpu, "irq": summary_irq,
-                "where": summary_where}.get(args.layout, summary_link)(words)
+                "where": summary_where, "jump": summary_jump}.get(args.layout, summary_link)(words)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")
         print(f"         {note}")

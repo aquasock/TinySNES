@@ -1044,6 +1044,138 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_JUMP_PROBE
+// Diagnostic build: catch the fetches that precede the departure.
+//
+// TINYSNES_WHERE_PROBE established that the 65816 leaves the cartridge on most
+// boots, and held the address it departed from -- $1035, $1036, $3D89 and $1101
+// over four boots of five (core-log entry 31).  That address is where it
+// landed, not what sent it: an indirect jump through a bad pointer, a return
+// through a corrupted stack, and a vector fetched from open bus all produce a
+// departure and are indistinguishable from the landing address alone.  What
+// separates them is the instruction stream immediately before it, because a
+// jump fetches its opcode and its operand bytes from ROM while a return fetches
+// only the opcode -- the stacked bytes it reads are WRAM reads and never appear
+// in this ring.  So the number of consecutive fetches before the departure, and
+// the bytes at them, name the instruction.
+//
+// This probe therefore keeps a three-deep ring of ROM addresses and, at the
+// instant the CPU is first seen below $8000 after having been above it, freezes
+// the ring into held registers beside the departure PC and the program bank it
+// was reading through.  Everything is captured on the single edge that accepts
+// the PC, so the ring and the PC describe the same moment rather than two
+// samples of a machine that moves between them.
+//
+// probe_bus fields, low to high:
+//   [15:0]  the first PC below $8000 seen after arming -- where it landed
+//   [23:16] ROM_ADDR[23:16] of the newest fetch at the departure
+//   [39:24] ROM_ADDR[15:0] of the newest fetch at the departure
+//   [55:40] ROM_ADDR[15:0] of the fetch before that
+//   [71:56] ROM_ADDR[15:0] of the fetch before that one
+//   [79:72] the 65816's PBR at the departure, or $FF if its two reads disagreed
+//
+// The three ROM addresses share one bank byte because consecutive instruction
+// bytes cannot cross a bank boundary in a LoROM image except at $FFxx, and a
+// departure that did cross one would still be named by the newest address.
+//
+// The departure is detected exactly as TINYSNES_WHERE_PROBE detects it, and for
+// the reason EXT-009 records: cartridge is mapped only at $8000-$FFFF, so a PC
+// below $8000 is outside the image in every bank.  The test is armed at a PC of
+// $8000 or above before it may fire, because PC resets to $0000 and an unarmed
+// bit would fire at reset and read yes for ever (TCL-013).
+//
+// Sampling: seven phases sample the PC every 7 mclk against one 65816 cycle of
+// about 6, and every multi-byte field is tear-guarded.  The PC's high byte is
+// read on both sides of its low byte and the pair is dropped unless the two
+// reads agree; the PBR is read twice with two other registers between the reads
+// and is reported as $FF when they disagree.  A dropped PC pair cannot arm the
+// bit, so a torn sample can never fake a departure.
+reg [2:0] jp_ph = 3'd0;
+reg [7:0] pch1 = 8'd0, pcl = 8'd0;      // PC, high read on both sides of low
+reg [7:0] pbr1 = 8'd0, pbr2 = 8'd0;     // PBR, read twice, not adjacently
+reg [7:0] sp_r = 8'd0;                  // SP, sampled to keep the phase count up
+
+// The live ring, advanced on the start of every ROM access.  jp_ce_d holds the
+// previous level so this is a real start-of-access edge; testing the level
+// instead would overwrite the ring every cycle ROMSEL is held and leave three
+// copies of one address.
+reg [15:0] r0 = 16'd0, r1 = 16'd0, r2 = 16'd0;
+reg [7:0]  r_bank = 8'd0;
+reg        jp_ce_d = 1'b1;
+wire       jp_sel = enable && ~ROM_CE_N && BSRAM_CE_N;
+
+// The frozen copy: written once, on the departure edge, and then left alone, so
+// a CPU that wanders back into the cartridge cannot overwrite what took it out.
+reg        jp_arm  = 1'b0;   // a sample has been at PC >= $8000
+reg        jp_done = 1'b0;   // a departure has been recorded and frozen
+reg [15:0] d_pc = 16'd0;
+reg [15:0] d_r0 = 16'd0, d_r1 = 16'd0, d_r2 = 16'd0;
+reg [7:0]  d_rbank = 8'd0, d_pbr = 8'd0;
+reg [18:0] jp_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// Case, not chained ternaries, and jp_ph on the right-hand side, so the block
+// has sensitivity: a constant on the right of `always @(*)` never drives.
+always @(*) begin
+    case (jp_ph)
+    3'd0, 3'd5: dbg_reg = 8'h07;        // PC high, first read and second read
+    3'd1:       dbg_reg = 8'h06;        // PC low
+    3'd2, 3'd4: dbg_reg = 8'h0D;        // PBR, read twice
+    3'd3:       dbg_reg = 8'h09;        // SP
+    default:    dbg_reg = 8'h07;        // parked on PC high
+    endcase
+end
+
+always @(posedge mclk) begin
+    dbg_sel    <= 8'h01;                // the 65816, every phase
+    dbg_reg_wr <= 1'b0;
+    jp_ph      <= (jp_ph == 3'd6) ? 3'd0 : jp_ph + 3'd1;
+
+    if (jp_ph == 3'd0) pch1 <= dbg_dat_out;
+    if (jp_ph == 3'd1) pcl  <= dbg_dat_out;
+    if (jp_ph == 3'd2) pbr1 <= dbg_dat_out;
+    if (jp_ph == 3'd3) sp_r <= dbg_dat_out;
+    if (jp_ph == 3'd4) pbr2 <= dbg_dat_out;
+
+    jp_ce_d <= jp_sel;                  // start-of-access edge, not the level
+    if (jp_sel && ~jp_ce_d) begin
+        r2     <= r1;
+        r1     <= r0;
+        r0     <= ROM_ADDR[15:0];
+        r_bank <= ROM_ADDR[23:16];
+    end
+
+    if (~resetn) begin
+        jp_arm  <= 1'b0;
+        jp_done <= 1'b0;
+    end else if (jp_ph == 3'd5 && pch1 == dbg_dat_out) begin
+        // The accept point: pch1 arrived on phase 0, pcl on phase 1, and the
+        // byte arriving on this edge is the second read of PC high.
+        if ({pch1, pcl} >= 16'h8000) begin
+            jp_arm <= 1'b1;
+        end else if (jp_arm && ~jp_done) begin
+            jp_done <= 1'b1;
+            d_pc    <= {pch1, pcl};
+            // Read at this edge, so r0 is the newest fetch committed before the
+            // departure and the ring describes the same instant as the PC.
+            d_r0    <= r0;
+            d_r1    <= r1;
+            d_r2    <= r2;
+            d_rbank <= r_bank;
+            d_pbr   <= (pbr1 == pbr2) ? pbr1 : 8'hFF;
+        end
+    end
+
+    if (jp_ph == 3'd6) begin
+        jp_wrap <= jp_wrap + 19'd1;
+        if (jp_wrap == 19'd0)
+            fp_bus <= {d_pbr, d_r2, d_r1, d_r0, d_rbank, d_pc};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_IPL_PROBE
 // Diagnostic build: catch the address the IPL jumps to.  Decoded from the
 // IPLROM in smp.v, the path after the $CC handshake is
@@ -1799,6 +1931,16 @@ snes2hdmi s2h(
     // probe_bus carries both directions of the APU link and both CPUs' state per
     // the field order in the TINYSNES_LINK_PROBE block.
     .dbg({header_finished, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_JUMP_PROBE
+    // Diagnostic build: R = a departure from the cartridge has been recorded,
+    // G = loaded, B = enable.  The band reads the same event the stripes
+    // describe, so "no stripe data" and "no departure" are told apart before
+    // anything is decoded.  probe_bus carries the departure PC, the ROM bank and
+    // newest fetch before it, the two fetches before that, and the PBR, per the
+    // field order in the TINYSNES_JUMP_PROBE block.
+    .dbg({jp_done, loaded, enable}),
     .bist_mask(fp_bus[15:0]),
     .probe_bus(fp_bus),
 `elsif TINYSNES_WHERE_PROBE
