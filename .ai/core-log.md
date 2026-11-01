@@ -1174,3 +1174,35 @@ Look at how few instructions the machine executes rather than at the return itse
 - User Test: NOT RUN
 
 ---
+
+## 37 COMMIT Unreleased 2026-11-01T01:51:24-07:00
+
+#### Coming From:
+
+Unreleased ca4f59a
+
+#### Purpose:
+
+Build a full-core simulation so the boot failure can be debugged deterministically instead of through nondeterministic hardware probes, after thirty-six cycles of instantaneous instruments were unable to agree with each other.
+
+#### Outcome:
+
+A full-core bench now runs the real `SNES.v` with behavioural memories under Verilator, in `tools/sim/snes_tb.sv` and `tools/sim/run_sim.sh`, and it settled the fault on its first use. The bench instantiates `SNES.v` and everything under it -- the 65816, the SPC700, the PPU, the DSP, the whole CPU bus -- with models for the cartridge, WRAM, VRAM, ARAM and battery SRAM standing in for the SDRAM and its hand-tuned PHY, which is deliberate: removing the SDRAM capture from the experiment means a pass says the core and its bus are sound and a failure says they are not. Two obstacles had to be cleared first and both are worth recording: Icarus cannot parse the `localparam` arrays in `dsp.vh`, so Verilator is the engine, which is also what the sources were written for since they already carry `ifndef VERILATOR` behavioural models for CGRAM and OAM; and `spc700.v` contained a nested `/* */` inside a `/* */` block under `ifdef VERILATOR`, so the inner terminator closed the outer comment and the following lines were live code, which is a latent defect in the upstream source that only this build configuration reaches. With the bench running, the core boots correctly: the reset vector reads `$8000`, the prologue executes, the APU handshake completes and the CPU uploads sound data, and over twenty million master clocks -- 2.36 million committed instructions -- its program counter never once fell below `$8000`. So the departure this project has chased since entry 5 is not a logic fault in the core. It is the cartridge read time. The bench models that directly with a `+lat` knob, and a two-by-two matrix over latency and rom-speed mode separated the fault cleanly: with the image's own `STA $420D` in place, which is the store that sets `MEMSEL` and switches banks `$80-$FF` from slowrom to fastrom timing, the machine runs a million cycles without leaving the cartridge at latency 2 and 3 and departs within about 1400 cycles at latency 4 and 5; with that single store redirected to `$4200` so `MEMSEL` is never set, the same bench at the same latencies runs clean and only departs at 6. The captured hardware read path answers between the second and fourth master clock, which is on the failing side of the fastrom window and comfortably inside the slowrom one. The mechanism is not a jump: the per-instruction log of committed opcodes shows the decode desynchronising on the instruction immediately after the `STA $420D`, with operand bytes executed as opcodes. `TINYSNES_FORCE_SLOW_ROM`, a define already present in `cpu.v`, forces slowrom timing for those banks, and the bench shows it holding at latency 4 and 5 where the default fails -- worth noting because that define had previously been recorded as a negative result, and that attempt was made on the tree whose ROM read returned zero, so the negative was an artefact of the other fault. This is recorded as TCL-019. Production synthesis was re-run clean and all nine benches pass; the only source change to the core itself is the comment-nesting fix in `spc700.v`, which is inside `ifdef VERILATOR` and therefore cannot affect a synthesis build. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 36 were not rewritten, added TCL-019 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-seven-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Build the production core with `TINYSNES_FORCE_SLOW_ROM` and put it on the board, because the bench says that is the fault and the fix is a define that already exists: the machine should then run past the point where every previous build left the cartridge, and the first sign of success is the picture changing from the static grid rather than any probe readout. If it boots, the follow-on question is how much of the lost speed matters, since slowrom timing costs roughly two master clocks per cartridge access and the honest options are to accept it, to make the SDRAM read path answer within six master clocks, or to add a wait-state input so the core waits for the cartridge, the last being the only correct fix and the only one that keeps fastrom. Do not spend another cycle on departure instruments, on the stack, on the call/return counters or on the APU link: the bench shows the core executes all of those correctly when the cartridge answers in time, and every reading this project took that suggested otherwise was taken on a machine whose instruction stream had already desynchronised. Use `tools/sim/run_sim.sh` before any further hardware build, since it reproduces a boot in seconds and the compiler, not the capture card, now says whether a change helped.
+
+#### Files Modified:
+
+- tools/sim/snes_tb.sv
+- tools/sim/run_sim.sh
+- fpga/snes/src/spc700/spc700.v
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

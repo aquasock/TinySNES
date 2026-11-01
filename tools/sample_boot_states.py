@@ -252,9 +252,8 @@ def summary_insn(words, note=""):
     sp   = (v >> 16) & 0xFF
     fl   = (v >> 24) & 0xFF
     bal  = (v >> 32) & 0xFF
-    unpk = (v >> 40) & 0xFF
-    rom  = (v >> 48) & 0xFFFF
-    u_jsl, u_rtl = unpk & 0xF, (unpk >> 4) & 0xF
+    insn = (v >> 40) & 0xFFFFFF
+    rom  = (v >> 64) & 0xFFFF
     seen = "".join(n for n, b in (("JSR", 1), ("JSL", 2), ("RTL", 4), ("RTS", 8))
                    if fl & b) or "none"
     verdict = "UNMATCHED RTL" if fl & 0x10 else "paired"
@@ -262,9 +261,9 @@ def summary_insn(words, note=""):
     # interrupt window; the ungated counts say whether removing it changed
     # anything at all.
     irq = "".join(n for n, b in (("jsl", 0x20), ("rtl", 0x40)) if fl & b) or "-"
-    ungated = f"gated_out={irq} ungated_jsl={u_jsl} ungated_rtl={u_rtl}"
-    return (f"{verdict}: saw {seen}, bal={bal} | {ungated} | "
-            f"departure={dpc:04X} SP={sp:02X} rom={rom:04X}")
+    return (f"{verdict}: saw {seen}, bal={bal} | "
+            f"ran={insn} instructions before leaving | "
+            f"departure={dpc:04X} SP={sp:02X} rom={rom:04X} irqwin={irq}")
 
 
 def run(cmd, **kw):

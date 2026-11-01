@@ -466,7 +466,7 @@ reg [3:0] STATEr;
 always @(posedge CLK) begin
   STATEr <= STATE;
   if (STATE == 4'd0 && STATE != STATEr) begin
-    /* TinySNES: $fdisplay removed for synthesis */;
+    // TinySNES: $fdisplay removed for synthesis
   end
 end
 */

@@ -1478,25 +1478,27 @@ assign dbg_dat_in = 8'h00;
 //           the pair says whether the gate could have hidden a call, bit 7 zero
 //   [39:32] DBG_REG 0x18: the count of JSLs not yet returned from, saturating
 //           at 255
-//   [47:40] DBG_REG 0x19: the same two opcodes counted with the interrupt gate
-//           removed, saturating at 15 each, JSL in the low nibble and RTL in
-//           the high.  Comparing this against the balance is what separates a
-//           real unmatched return from one the gate manufactured: if the ungated
-//           counts differ from each other by the same amount the balance does,
-//           removing the gate changed nothing.
-//   [63:48] ROM_ADDR[15:0] of the newest ROM access
-//   [79:64] zero
+//   [63:40] the total instructions committed when the departure was recorded,
+//           24-bit saturating -- read while the CPU still had the cartridge and
+//           frozen at the departure, so it describes the machine when it left
+//           rather than after it had been spinning in open bus for a while.  A
+//           small number here means the boot barely began and the departure is a
+//           symptom; a large one means the machine ran and then left.
+//   [79:64] ROM_ADDR[15:0] of the newest ROM access
 //
 // `unmatched_rtl` set means the machine does execute a long return with no long
 // call behind it, which is the defect the last three cycles were circling.  It
 // being clear across boots means the return pairing is sound and the fault is
 // somewhere else entirely -- either answer ends the investigation.
-reg [2:0] ins_ph = 3'd0;
+reg [3:0] ins_ph = 4'd0;
 reg [7:0] pch1 = 8'd0, pcl = 8'd0, sp_r = 8'd0;
-reg [7:0] fl_r = 8'd0, bal_r = 8'd0, alt_r = 8'd0;
+reg [7:0] fl_r = 8'd0, bal_r = 8'd0;
+reg [7:0] il_r = 8'd0, im_r = 8'd0, ih_r = 8'd0;
+reg [23:0] insn_r = 24'd0;          // last complete reading of the counter
 reg        ins_arm = 1'b0, ins_done = 1'b0;
 reg [15:0] d_pc = 16'd0;
 reg [7:0]  d_sp = 8'd0;
+reg [23:0] d_insn = 24'd0;
 reg [15:0] wr_rom = 16'd0;
 reg        ins_ce_d = 1'b1;
 wire       ins_sel = enable && ~ROM_CE_N && BSRAM_CE_N;
@@ -1507,26 +1509,39 @@ reg [79:0] fp_bus = 80'd0;
 // sensitivity: a constant on the right of `always @(*)` never drives.
 always @(*) begin
     case (ins_ph)
-    3'd0, 3'd3: dbg_reg = 8'h07;        // PC high, first and accepting read
-    3'd1:       dbg_reg = 8'h06;        // PC low
-    3'd2:       dbg_reg = 8'h09;        // SP
-    3'd4:       dbg_reg = 8'h17;        // call/return flags, incl. irq skips
-    3'd5:       dbg_reg = 8'h18;        // outstanding long-call balance
-    default:    dbg_reg = 8'h19;        // ungated JSL/RTL counts
+    4'd0, 4'd3: dbg_reg = 8'h07;        // PC high, first and accepting read
+    4'd1:       dbg_reg = 8'h06;        // PC low
+    4'd2:       dbg_reg = 8'h09;        // SP
+    4'd4:       dbg_reg = 8'h17;        // call/return flags
+    4'd5:       dbg_reg = 8'h18;        // outstanding long-call balance
+    4'd6:       dbg_reg = 8'h1A;        // instruction count, low byte
+    4'd7:       dbg_reg = 8'h1B;        // instruction count, middle
+    4'd8:       dbg_reg = 8'h1C;        // instruction count, high
+    default:    dbg_reg = 8'h07;        // parked on PC high
     endcase
 end
 
 always @(posedge mclk) begin
     dbg_sel    <= 8'h01;                // the 65816, every phase
     dbg_reg_wr <= 1'b0;
-    ins_ph     <= (ins_ph == 3'd6) ? 3'd0 : ins_ph + 3'd1;
+    ins_ph     <= (ins_ph == 4'd9) ? 4'd0 : ins_ph + 4'd1;
 
-    if (ins_ph == 3'd0) pch1  <= dbg_dat_out;
-    if (ins_ph == 3'd1) pcl   <= dbg_dat_out;
-    if (ins_ph == 3'd2) sp_r  <= dbg_dat_out;
-    if (ins_ph == 3'd4) fl_r  <= dbg_dat_out;
-    if (ins_ph == 3'd5) bal_r <= dbg_dat_out;
-    if (ins_ph == 3'd6) alt_r <= dbg_dat_out;   // 0x19: ungated RTL:RTL counts
+    if (ins_ph == 4'd0) pch1  <= dbg_dat_out;
+    if (ins_ph == 4'd1) pcl   <= dbg_dat_out;
+    if (ins_ph == 4'd2) sp_r  <= dbg_dat_out;
+    if (ins_ph == 4'd4) fl_r  <= dbg_dat_out;
+    if (ins_ph == 4'd5) bal_r <= dbg_dat_out;
+    if (ins_ph == 4'd6) il_r  <= dbg_dat_out;
+    if (ins_ph == 4'd7) im_r  <= dbg_dat_out;
+    if (ins_ph == 4'd8) ih_r  <= dbg_dat_out;
+
+    // The three counter bytes are read one phase apart and are assembled from
+    // the bytes captured on the previous revolution, so insn_r is a coherent
+    // value that is at most one revolution stale -- one instruction at the
+    // core's rate.  Freezing that at the departure is what makes the count
+    // describe the machine when it left rather than an hour later while it
+    // spins in open bus.
+    if (ins_ph == 4'd9) insn_r <= {ih_r, im_r, il_r};
 
     ins_ce_d <= ins_sel;                // start-of-access edge, not the level
     if (ins_sel && ~ins_ce_d)
@@ -1535,25 +1550,26 @@ always @(posedge mclk) begin
     if (~resetn) begin
         ins_arm  <= 1'b0;
         ins_done <= 1'b0;
-    end else if (ins_ph == 3'd3 && pch1 == dbg_dat_out) begin
+    end else if (ins_ph == 4'd3 && pch1 == dbg_dat_out) begin
         // The accept point: pch1 arrived on phase 0, pcl on phase 1, and the
         // byte arriving on this edge is the second read of PC high.
         if ({pch1, pcl} >= 16'h8000)
             ins_arm <= 1'b1;
         else if (ins_arm && ~ins_done) begin
             ins_done <= 1'b1;
-            d_pc  <= {pch1, pcl};
-            d_sp  <= sp_r;
+            d_pc   <= {pch1, pcl};
+            d_sp   <= sp_r;
+            d_insn <= insn_r;
         end
     end
 
-    // The flags are live and cumulative, so they are refreshed every wrap
-    // whether or not a departure was recorded -- that is the whole point of a
-    // reading that does not have to catch an event.
-    if (ins_ph == 3'd6) begin
+    // The flags and the count are live and cumulative, so they are refreshed
+    // every wrap whether or not a departure was recorded -- that is the whole
+    // point of a reading that does not have to catch an event.
+    if (ins_ph == 4'd9) begin
         ins_wrap <= ins_wrap + 19'd1;
         if (ins_wrap == 19'd0)
-            fp_bus <= {16'd0, wr_rom, alt_r, bal_r, fl_r, d_sp, d_pc};
+            fp_bus <= {wr_rom, d_insn, bal_r, fl_r, d_sp, d_pc};
     end
 end
 

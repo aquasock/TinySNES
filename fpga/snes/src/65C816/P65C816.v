@@ -94,6 +94,12 @@ module P65C816(
    // or of the instrument.
    reg           irq_jsl, irq_rtl;
    reg [3:0]     u_jsl, u_rtl;
+   // Total instructions committed since reset, saturating at 24 bits.  This is
+   // the number that says whether a boot executed thousands of instructions and
+   // then left the cartridge, or barely began and never really ran -- a
+   // distinction the call counts alone cannot make, and the one thing worth
+   // knowing before any more of the return path is read.
+   reg [23:0]    insn_total;
    reg           STPExec;
    reg           NMI_SYNC;
    reg           IRQ_SYNC;
@@ -652,6 +658,7 @@ module P65C816(
          irq_rtl <= 1'b0;
          u_jsl   <= 4'd0;
          u_rtl   <= 4'd0;
+         insn_total <= 24'd0;
       end
       else if (EN == 1'b1 & STATE == 4'b0000)
       begin
@@ -662,6 +669,10 @@ module P65C816(
             if (D_IN == 8'h22 & u_jsl != 4'hF) u_jsl <= u_jsl + 4'd1;
             if (D_IN == 8'h6B & u_rtl != 4'hF) u_rtl <= u_rtl + 4'd1;
          end
+         // Counted under the same gate the flags use, so it counts instructions
+         // the core actually committed to.
+         if (insn_total != 24'hFF_FFFF)
+            insn_total <= insn_total + 24'd1;
       end
 
    always @(posedge CLK)
@@ -815,6 +826,9 @@ module P65C816(
                             seen_rts, seen_rtl, seen_jsl, seen_jsr};
       8'h18: DBG_DAT_OUT = jsl_bal;
       8'h19: DBG_DAT_OUT = {u_rtl, u_jsl};
+      8'h1A: DBG_DAT_OUT = insn_total[7:0];
+      8'h1B: DBG_DAT_OUT = insn_total[15:8];
+      8'h1C: DBG_DAT_OUT = insn_total[23:16];
       default: DBG_DAT_OUT = 8'h0;      
       endcase
    end

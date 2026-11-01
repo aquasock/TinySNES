@@ -114,6 +114,7 @@ TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL output
 TCL-016 a ROM-address ring names a hot address, not a fetch sequence ·
 TCL-017 the WRAM debug channel is selected but never driven ·
 TCL-018 the display band says whether a snapshot fired ·
+TCL-019 the fastrom access window and the full-core bench ·
 EXT-010 the opcode-commit point for instruction-level probes ·
 EXT-011 JSR/JSL/RTS/RTL microcode push and pull widths
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
@@ -593,6 +594,19 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
   sources:
     - "SNESTang commit 5f0ef19, src/65C816/mcode.txt: the 20 JSR, 22 JSR LONG, 60 RTS and 6B RTL sequences"
   verification: "Read directly from mcode.txt on 2026-11-01 (core-log entry 36) after a hardware instrument reported an RTL with no outstanding JSL.  The push and pull counts were traced through the M_TAB entries by their annotation comments rather than inferred."
+
+- record_id: TCL-019
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "The 65816 core's fastrom access window is three master clocks, and a cartridge that answers on the fourth desynchronises the instruction stream"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "In `cpu.v` the `SPEED` output selects the access length from the address: banks `$80-$FF` at `$8000-$FFFF` take `SLOWFAST` once `MEMSEL` (`$420D`) is set and `SLOW` before that, and `SLOW` is roughly two master clocks longer.  Measured in the bench in `tools/sim/snes_tb.sv`, which instantiates the real `SNES.v` against a behavioural cartridge whose answer can be delayed by `+lat` master clocks: with the image's own `STA $420D` left in place the machine runs a million cycles without leaving the cartridge at `+lat=2` and `+lat=3`, and departs within about 1400 cycles at `+lat=4` and `+lat=5`; with that one store redirected to `$4200` so `MEMSEL` is never set, the same bench runs clean at `+lat=4` and `+lat=5` and only departs at `+lat=6`.  The captured read path answers between the second and fourth master clock (`TINYSNES_FETCH_PROBE`: `ROM_Q` zero at assert and at +2, `$8000` at +4), which puts the hardware on the wrong side of the fastrom threshold and inside the slowrom one.  The failure is not a control-flow fault: the per-instruction log of committed opcodes shows the decode desynchronising immediately after the `STA $420D`, with operand bytes being executed as opcodes."
+  consequence: "A cartridge path slower than six master clocks cannot be run in fastrom mode, whatever the header says, and the symptom is not a slow machine but a machine that leaves the cartridge after a handful of instructions and executes open bus -- which presents as nondeterminism, a program counter seen in WRAM or expansion space, and ROM access counts in the millions while nothing progresses.  `TINYSNES_FORCE_SLOW_ROM` in `cpu.v` forces `SLOW` for those banks and restores about two master clocks of margin; the bench shows it holding at `+lat=4` and `+lat=5`.  Before this bench existed the same define had been tried and recorded as a negative result, but that attempt was made on a tree whose ROM read returned zero (core-log entries 25 to 28), so the negative was an artefact of a different fault.  Any future bring-up on a new board should measure the cartridge's answer time first and decide the rom-speed mode from it rather than from the header byte."
+  sources:
+    - "SNESTang commit 5f0ef19, src/cpu.v: the SPEED selection for banks $80-$FF and the TINYSNES_FORCE_SLOW_ROM override"
+    - "This repository, tools/sim/snes_tb.sv and tools/sim/run_sim.sh: the full-core bench and its +lat cartridge model"
+  verification: "Measured on 2026-11-01 (core-log entry 37) with the full-core bench: a two-by-two matrix over cartridge latency and rom-speed mode separated the fault cleanly, `+lat=3` passing and `+lat=4` failing with MEMSEL set on the same image, and the committed-opcode log located the desynchronisation at the instruction immediately after the MEMSEL store."
 
 - record_id: BRD-003
   kind: BOARD
