@@ -1493,3 +1493,33 @@ Find a formulation of the line-buffer write gate that `synth_gowin` cannot fold,
 - User Test: NOT RUN
 
 ---
+
+## 47 COMMIT Unreleased 2026-11-01T13:32:31-07:00
+
+#### Coming From:
+
+Unreleased 738f1d6
+
+#### Purpose:
+
+Retract entry 46's claim that the raw line-fill build produced a live picture, and locate what the board actually does with an ungated write, because a retail cartridge on that build still shows the grid.
+
+#### Outcome:
+
+Entry 46 called a captured frame "the first live picture this project has ever shown" and that was wrong: the build in question was `TINYSNES_LINEFILL_RAW` combined with `TINYSNES_LINEFILL_PROBE`, and the probe define sets `TINYSNES_PROBE_BARS` in `snes2hdmi.v`, so the screen was drawing the probe's own five stripes of sixteen red and green bars and never the line buffer at all. The bars in that frame are the probe layout exactly, which is the tell that should have been checked before the claim was written; the frame changed between captures because the probe's latched counters change, not because pixels moved. With that retracted, the actual experiment was run. The raw build alone, which has no probe define and therefore displays the buffer, was built, deployed and loaded with a retail cartridge, and the screen is the unchanged grid, byte-identical across twelve captures. Adding `TINYSNES_NO_OSD` to rule out the menu overlay masking the buffer leaves the grid unchanged, so the overlay is not responsible. A new `TINYSNES_LINEFILL_COUNTER` build then wrote a free-running counter through the same ungated path and displayed the buffer normally, and this is the measurement that located the fault: its frames do change, so port B does read what port A writes, but a pixel diff against the grid shows only 138 differing pixels across the whole frame, all of them confined to capture columns 160 to 165, which is the leftmost six capture pixels of the active area and less than two SNES pixels. In other words the buffer is being written at a single x address per line rather than across the line, so the write address's horizontal component is effectively stuck at zero. That points away from the buffer and at `OUT_X` inside `ppu.v`, which is loaded from `WINDOW_X` only while `BG_MATH` is high, and `BG_MATH` requires the PPU to be out of force blank over a visible line; so the most likely chain is that the CPU's `$2100` write is not reaching the PPU, the PPU stays in force blank, `BG_MATH` never asserts, `OUT_X` never advances, and every write lands on the same column. That is a rung of the ladder this project has never climbed, because the probe builds all drew their bars by assigning `rgb` directly and so never depended on a PPU register write landing. The three findings that survive from entry 46 are unaffected and are restated here so they are not lost with the retraction: the write enable folds to constant zero between `map_gates` and `map_ffs`, the HDE flop is well formed with `D` tied high and a synchronous reset at `H_CNT==274`, and the write conjunction fires 645673 times in simulation, so the tool is proving a falsehood. The default build is unaffected, with synthesis clean, all nine probe benches passing and both new benches passing, and every addition behind an `ifdef`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 46 were not rewritten and recorded this correction here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the forty-seven entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Verify that a PPU register write from cartridge code actually reaches the PPU, which is the rung this project skipped and the one the last measurement points at: the counter build shows the buffer written at one x address per line, which is what a stuck `OUT_X` produces, and `OUT_X` only advances while `BG_MATH` is high, which force blank suppresses. The measurement is a small gated snapshot of `FORCE_BLANK`, `BG_MATH`, `OUT_X` and `H_CNT` taken from the top level, and the cheapest way to take it is the existing self-test cartridge pattern: a CPU program that writes `$2100` to leave force blank and then reads `$213F` back, which returns the PPU's own status byte and includes the field the PPU sets for itself. If `FORCE_BLANK` is still set after the write, the fault is in the CPU-to-PPU register path rather than in the PPU, and the next rung is the peripheral bus; if it is clear, `OUT_X` is stuck for another reason and the same snapshot will say which term is missing. Only after `OUT_X` advances across a line is the write-gate question worth returning to, because a correct gate over a single-column write would still show nothing.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

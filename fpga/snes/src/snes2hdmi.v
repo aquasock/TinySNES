@@ -355,7 +355,35 @@ assign linefill_bus = lf_bus;
 assign linefill_dbg = lf_dbg;
 `endif
 
-`ifdef TINYSNES_LINEFILL_RAW
+`ifdef TINYSNES_LINEFILL_COUNTER
+// Diagnostic build: write a free-running counter into the line buffer through the
+// same ungated path the RAW build uses, and display the buffer normally.
+//
+// The RAW build proves the write port survives synthesis and that mem_portA_we
+// asserts 4096 times per window -- once per dot clock -- yet the screen it
+// produces is still the power-up grid, unchanged across every frame.  Writes that
+// happen and a picture that does not move means the read side is not seeing them.
+//
+// So this build makes the written data impossible to miss: a counter in the top
+// bits, a fixed coordinate pattern in the rest.  If the screen shows moving
+// blocks, port B reads what port A wrote and only the PPU data path is at fault.
+// If the screen stays put, the two ports are not the same memory as far as this
+// device is concerned, and that is a placement or BRAM-mode problem rather than
+// anything in the SNES core.
+    reg [19:0] lb_cnt = 20'd0;
+    always @(posedge clk) lb_cnt <= lb_cnt + 20'd1;
+
+    always @(posedge clk) begin
+        r_dotclk <= dotclk;
+        r_vblank <= vblank;
+        mem_portA_we <= 1'b0;
+        if (dotclk && ~r_dotclk && ys[7:0] < 8'd224) begin
+            mem_portA_addr  <= {ys[BUF_WIDTH-1:0], xs[8:1]};
+            mem_portA_wdata <= {lb_cnt[19:15], xs[8:4], ys[4:0]};
+            mem_portA_we    <= 1'b1;
+        end
+    end
+`elsif TINYSNES_LINEFILL_RAW
 // Diagnostic build: write every SNES pixel into the line buffer, with no display
 // gating at all.
 //
