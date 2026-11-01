@@ -70,6 +70,20 @@ module P65C816(
    wire          w16;
    wire          DLNoZero;
    reg           WAIExec;
+   // TinySNES diagnostic: did a JSR return through an RTL?  `RTL` pulls three
+   // bytes -- PC low, PC high, program bank -- while `JSR` pushes only two, so a
+   // routine entered by `JSR` and left by `RTL` pops a bank byte that nothing
+   // ever pushed and returns into whatever was on the stack.  The counters here
+   // answer that directly instead of inferring it from bus traffic: `bal` holds
+   // the number of `JSL`s not yet returned from by an `RTL`, and an `RTL` that
+   // finds it already zero has no matching long call and sets `unmatched_rtl`.
+   // The opcode and the STATE==0 window are the same ones WAI/STP are detected
+   // with, so this reuses a pattern already validated twice in this project, and
+   // it says nothing about the stack -- which is what three earlier instruments
+   // could not make repeatable.
+   reg [3:0]     jsl_bal;
+   reg           seen_jsr, seen_jsl, seen_rtl, seen_rts;
+   reg           unmatched_rtl;
    reg           STPExec;
    reg           NMI_SYNC;
    reg           IRQ_SYNC;
@@ -572,6 +586,52 @@ module P65C816(
                            1'b0;
    assign IsABORTInterrupt = 1'b0;
 
+   // TinySNES diagnostic: count call/return pairs so a `JSR` that returns through
+   // an `RTL` is visible without looking at memory.  The gate is the one the
+   // WAI/STP detection below uses -- an executed instruction is one accepted at
+   // STATE == 0 with EN high and no interrupt being taken -- so this counts what
+   // the CPU ran rather than what the bus offered, and it is unaffected by the
+   // instruction queue because `D_IN` at STATE == 0 with EN is the opcode the
+   // core is committing to.
+   //
+   // The opcodes are the 16-bit `JSR` ($20), the long `JSL` ($22), the `RTS`
+   // ($60) and the long `RTL` ($6B).  Only the long pair is balanced: `JSL`
+   // pushes three bytes and `RTL` pulls three, so a `JSL` not yet returned from
+   // is exactly what an `RTL` is entitled to consume, and an `RTL` with none
+   // outstanding is a long return through a stack a short call built.  `bal`
+   // saturates at 15 so a boot that nests deeply cannot wrap it and hide an
+   // unmatched return behind a borrow.
+   always @(posedge CLK)
+      if (RST_N == 1'b0)
+      begin
+         jsl_bal <= 4'd0;
+         seen_jsr <= 1'b0;
+         seen_jsl <= 1'b0;
+         seen_rtl <= 1'b0;
+         seen_rts <= 1'b0;
+         unmatched_rtl <= 1'b0;
+      end
+      else if (EN == 1'b1 & GotInterrupt == 1'b0 & STATE == 4'b0000)
+      begin
+         case (D_IN)
+         8'h20: seen_jsr <= 1'b1;
+         8'h22: begin
+                   seen_jsl <= 1'b1;
+                   if (jsl_bal != 4'hF)
+                      jsl_bal <= jsl_bal + 4'd1;
+                end
+         8'h60: seen_rts <= 1'b1;
+         8'h6B: begin
+                   seen_rtl <= 1'b1;
+                   if (jsl_bal == 4'd0)
+                      unmatched_rtl <= 1'b1;
+                   else
+                      jsl_bal <= jsl_bal - 4'd1;
+                end
+         default: ;
+         endcase
+      end
+
 
    always @(posedge CLK)
       if (RST_N == 1'b0)
@@ -716,6 +776,12 @@ module P65C816(
       8'h13: DBG_DAT_OUT = DX[7:0];
       8'h14: DBG_DAT_OUT = DX[15:8];
       8'h15: DBG_DAT_OUT = {GotInterrupt, IsResetInterrupt, IsNMIInterrupt, IsIRQInterrupt, RDY_IN, EN, WAIExec, STPExec};
+      // TinySNES diagnostic registers.  Both are cumulative over the boot and
+      // never cleared except by reset, so one frame describes everything the
+      // CPU has done rather than the instant it was sampled.  0x17 is the flag
+      // byte and 0x18 the outstanding-long-call balance.
+      8'h17: DBG_DAT_OUT = {3'b000, unmatched_rtl, seen_rts, seen_rtl, seen_jsl, seen_jsr};
+      8'h18: DBG_DAT_OUT = {4'b0000, jsl_bal};
       default: DBG_DAT_OUT = 8'h0;      
       endcase
    end

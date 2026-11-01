@@ -1109,3 +1109,36 @@ Stop measuring the departure and start measuring the instruction, because three 
 - User Test: NOT RUN
 
 ---
+
+## 35 COMMIT Unreleased 2026-11-01T01:15:55-07:00
+
+#### Coming From:
+
+Unreleased e8041de
+
+#### Purpose:
+
+Answer whether a `JSR` returns through an `RTL` by measuring the instruction pair directly instead of watching where the program counter goes.
+
+#### Outcome:
+
+The 65816 core now counts executed call and return opcodes at the point `P65C816.v` already uses to detect `WAI` and `STP` -- `STATE == 0` with `EN` high and no interrupt being taken -- which is once per instruction actually executed rather than once per bus cycle, and this is recorded as EXT-010 because it is the detection point an instruction-level probe belongs at. Four cumulative flags record that a `JSR`, a `JSL`, an `RTL` and an `RTS` have each run, a four-bit balance counts `JSL`s not yet returned from and saturates at fifteen, and an `RTL` that finds the balance already zero latches a flag, which is a long return through a stack that no long call built. `DBG_REG` `0x17` and `0x18` carry them out through the existing debug port, and `TINYSNES_INSN_PROBE` reads them beside the departure PC, the stack pointer and the newest ROM address. Because the flags are cumulative over the boot and cleared only by reset, this reading does not depend on catching an instant, which is the property every instrument of cycles 32 to 34 lacked. Build and placement at seed 7 were clean, production synthesis with no probe defines was re-run cleanly after the change to the shared core file, the read path was checked on this tree before any reading was taken with `ROM_Q` `0x0000`, `0x0000`, `0x8000`, and all nine benches pass. The answer is that the machine does execute a long return with no long call behind it: three boots of five had the unmatched flag set, and the other two were paired. The reading is also internally consistent with the earlier cycles in a way none of them managed -- two of these five boots departed to `$1035` with `SP=$01FD`, exactly the reading core-log entry 33 called a constant and entry 34 could not reproduce -- so the sampling problem of the last two cycles does not touch a cumulative flag, and the departure that entry 33 saw is real. The conclusion comes with its own limit stated plainly rather than buried: the gate skips any `JSL` executed while `GotInterrupt` is set, so an `RTL` legitimately following such a call would also latch the unmatched flag, and one boot of the five shows two `JSL`s still outstanding beside the flag, which is consistent with normal nesting after an early unmatched return rather than with a single broken pair. The flag therefore establishes that an unmatched long return happens on most boots but does not yet establish whether it is the return that lands the CPU at `$1035`, because one boot departed with no `RTL` in it at all and its departure was still below the cartridge. What is settled is the mechanism class: this is a return-pairing fault in the 65816 core rather than a data-corruption fault in WRAM or a fault in the cartridge, and the three cycles that looked for it in memory were looking in the wrong place. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 34 were not rewritten, added EXT-010 to the reference library with its fast-lookup index entry, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the thirty-five-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Separate the two things the unmatched flag currently confounds, which is now a small and well-defined piece of work rather than an open-ended hunt. The gate skips a `JSL` executed while `GotInterrupt` is set, so the next version should count `JSL`s at a point that an interrupt cannot suppress, or latch a separate flag for a `JSL` seen while `GotInterrupt` was set and report it beside the unmatched flag; if every unmatched boot turns out to have such a skipped `JSL`, the flag is an instrument artefact and the pairing is sound, and if none does the defect is real. The second half is to date the unmatched `RTL` against the departure, by latching the `SP` and the program counter at the moment the unmatched flag sets rather than only at the departure, so the two events can be compared within one boot instead of across five. Only when those two line up should the return path itself be read -- `RTL` pulls three bytes and `JSR` pushes two, so the suspects are the push width in the `JSR` microcode and the pull width in the `RTL` one, both of which are in `mcode.sv` and have never been examined in this project. Do not build another bus monitor and do not sample the stack again: three cycles of that produced nothing repeatable, and this cycle shows the instruction-level instrument answering in one build what the memory instruments could not answer in three.
+
+#### Files Modified:
+
+- fpga/snes/src/65C816/P65C816.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+- tools/sample_boot_states.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

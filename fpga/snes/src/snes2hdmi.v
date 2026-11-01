@@ -42,6 +42,9 @@
 `ifdef TINYSNES_STACKBYTES_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_INSN_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 `ifdef TINYSNES_IRQ_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
@@ -150,6 +153,10 @@ module snes2hdmi (
     //   TINYSNES_STACKBYTES_PROBE: the departure PC, the SP at that sample, then
     //     the last byte written to each of $01FA, $01FB, $01FC and $01FD, a byte
     //     of valid bits for those four, the PBR, and a count of stack-page writes
+    //   TINYSNES_INSN_PROBE: the departure PC, the SP beside it, the CPU's
+    //     call/return flag byte (bit 0 JSR, 1 JSL, 2 RTL, 3 RTS, 4 an RTL with
+    //     no outstanding JSL), the outstanding long-call balance, the PBR at the
+    //     departure, and the newest ROM address
     input [79:0] probe_bus,
 `endif
 

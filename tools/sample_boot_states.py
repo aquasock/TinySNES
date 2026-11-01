@@ -238,6 +238,29 @@ def summary_stackbytes(words, note=""):
             f"valid={val:04b} PBR={pbr:02X} wrote={cnt}")
 
 
+def summary_insn(words, note=""):
+    """Describe a TINYSNES_INSN_PROBE snapshot: did a JSR return through an RTL.
+
+    The flag byte and the balance are cumulative over the boot, so unlike the
+    snapshots of cycles 32 to 34 this reading does not depend on catching an
+    event and does not need the band to validate it.  `unmatched` set means the
+    CPU executed an `RTL` with no outstanding `JSL`, so the bank byte it pulled
+    was never pushed by a long call -- the defect three cycles were circling.
+    """
+    v = sum(w << (16 * i) for i, w in enumerate(words))
+    dpc = v & 0xFFFF
+    sp  = (v >> 16) & 0xFF
+    fl  = (v >> 24) & 0xFF
+    bal = (v >> 32) & 0xFF
+    pbr = (v >> 40) & 0xFF
+    rom = (v >> 48) & 0xFFFF
+    seen = "".join(n for n, b in (("JSR", 1), ("JSL", 2), ("RTL", 4), ("RTS", 8))
+                   if fl & b) or "none"
+    verdict = ("UNMATCHED RTL" if fl & 0x10 else "paired")
+    return (f"{verdict}: saw {seen}, bal={bal & 0xF} | "
+            f"departure={dpc:04X} SP={sp:02X} PBR={pbr:02X} rom={rom:04X}")
+
+
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
@@ -284,7 +307,7 @@ def main():
     ap.add_argument("--video", default="/dev/video0")
     ap.add_argument("--board", default="tangconsole")
     ap.add_argument("--boots", type=int, default=5)
-    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where", "jump", "stack", "stackbytes"), default="link",
+    ap.add_argument("--layout", choices=("link", "trace", "cpu", "irq", "where", "jump", "stack", "stackbytes", "insn"), default="link",
                     help="which diagnostic display the build draws")
     ap.add_argument("--settle", type=float, default=3.0)
     ap.add_argument("--loader", default=os.path.expanduser("~/oss-cad-suite/bin/openFPGALoader"))
@@ -303,7 +326,8 @@ def main():
         fn = {"trace": summary_trace, "cpu": summary_cpu, "irq": summary_irq,
               "where": summary_where, "jump": summary_jump,
               "stack": summary_stack,
-              "stackbytes": summary_stackbytes}.get(args.layout, summary_link)
+              "stackbytes": summary_stackbytes,
+              "insn": summary_insn}.get(args.layout, summary_link)
         desc = fn(words) if fn is not summary_stackbytes else fn(words, note)
         states[desc] = states.get(desc, 0) + 1
         print(f"boot {i}: {desc}")

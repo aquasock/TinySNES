@@ -1446,6 +1446,115 @@ end
 assign dbg_dat_in = 8'h00;
 `endif
 
+`ifdef TINYSNES_INSN_PROBE
+// Diagnostic build: did a `JSR` return through an `RTL`?
+//
+// Three cycles of watching where the program counter leaves the cartridge
+// produced a stable-looking event and three instruments that were not
+// repeatable (core-log entries 32, 33 and 34).  The question behind them is not
+// about an address at all: it is whether this machine executes a long return
+// through a stack that a short call built, because `RTL` pulls three bytes and
+// `JSR` pushes two, so the bank byte it uses was never written by that call.
+//
+// `P65C816.v` now carries that answer as cumulative state -- a balance of long
+// calls not yet returned from, and a flag for a long return that found none --
+// read through `DBG_REG` `0x17` (flags) and `0x18` (balance).  Those registers
+// are cumulative over the boot and cleared only by reset, so unlike every
+// snapshot in cycles 32 to 34 this reading cannot depend on which instant it was
+// taken at, and the sampler does not have to catch an event to see it.
+//
+// The departure PC and stack pointer are kept beside the flags because a boot
+// that never leaves the cartridge is a different result from one that leaves
+// with a matched return, and the flags alone cannot tell those apart.  The
+// newest ROM address dates the departure against the instruction stream.
+//
+// probe_bus fields, low to high:
+//   [15:0]  the first PC below $8000 seen after arming, or $0000 if none -- the
+//           departure, and the companion to the flags
+//   [23:16] the 65816's SP at that sample
+//   [31:24] DBG_REG 0x17: bit 0 a JSR has run, bit 1 a JSL has run, bit 2 an
+//           RTL has run, bit 3 an RTS has run, bit 4 an RTL ran with no
+//           outstanding JSL -- the answer this build exists for, bits 7:5 zero
+//   [39:32] DBG_REG 0x18: the count of JSLs not yet returned from, saturating
+//           at 15
+//   [47:40] the 65816's PBR at the departure
+//   [63:48] ROM_ADDR[15:0] of the newest ROM access
+//   [79:64] zero
+//
+// `unmatched_rtl` set means the machine does execute a long return with no long
+// call behind it, which is the defect the last three cycles were circling.  It
+// being clear across boots means the return pairing is sound and the fault is
+// somewhere else entirely -- either answer ends the investigation.
+reg [2:0] ins_ph = 3'd0;
+reg [7:0] pch1 = 8'd0, pcl = 8'd0, sp_r = 8'd0, pbr_r = 8'd0;
+reg [7:0] fl_r = 8'd0, bal_r = 8'd0;
+reg        ins_arm = 1'b0, ins_done = 1'b0;
+reg [15:0] d_pc = 16'd0;
+reg [7:0]  d_sp = 8'd0, d_pbr = 8'd0;
+reg [15:0] wr_rom = 16'd0;
+reg        ins_ce_d = 1'b1;
+wire       ins_sel = enable && ~ROM_CE_N && BSRAM_CE_N;
+reg [18:0] ins_wrap = 19'd0;
+reg [79:0] fp_bus = 80'd0;
+
+// Case, not chained ternaries, with ins_ph on the right, so the block has
+// sensitivity: a constant on the right of `always @(*)` never drives.
+always @(*) begin
+    case (ins_ph)
+    3'd0, 3'd3: dbg_reg = 8'h07;        // PC high, first and accepting read
+    3'd1:       dbg_reg = 8'h06;        // PC low
+    3'd2:       dbg_reg = 8'h09;        // SP
+    3'd4:       dbg_reg = 8'h17;        // call/return flag byte
+    3'd5:       dbg_reg = 8'h18;        // outstanding long-call balance
+    default:    dbg_reg = 8'h0D;        // PBR
+    endcase
+end
+
+always @(posedge mclk) begin
+    dbg_sel    <= 8'h01;                // the 65816, every phase
+    dbg_reg_wr <= 1'b0;
+    ins_ph     <= (ins_ph == 3'd6) ? 3'd0 : ins_ph + 3'd1;
+
+    if (ins_ph == 3'd0) pch1  <= dbg_dat_out;
+    if (ins_ph == 3'd1) pcl   <= dbg_dat_out;
+    if (ins_ph == 3'd2) sp_r  <= dbg_dat_out;
+    if (ins_ph == 3'd4) fl_r  <= dbg_dat_out;
+    if (ins_ph == 3'd5) bal_r <= dbg_dat_out;
+    if (ins_ph == 3'd6) pbr_r <= dbg_dat_out;
+
+    ins_ce_d <= ins_sel;                // start-of-access edge, not the level
+    if (ins_sel && ~ins_ce_d)
+        wr_rom <= ROM_ADDR[15:0];
+
+    if (~resetn) begin
+        ins_arm  <= 1'b0;
+        ins_done <= 1'b0;
+    end else if (ins_ph == 3'd3 && pch1 == dbg_dat_out) begin
+        // The accept point: pch1 arrived on phase 0, pcl on phase 1, and the
+        // byte arriving on this edge is the second read of PC high.
+        if ({pch1, pcl} >= 16'h8000)
+            ins_arm <= 1'b1;
+        else if (ins_arm && ~ins_done) begin
+            ins_done <= 1'b1;
+            d_pc  <= {pch1, pcl};
+            d_sp  <= sp_r;
+            d_pbr <= pbr_r;
+        end
+    end
+
+    // The flags are live and cumulative, so they are refreshed every wrap
+    // whether or not a departure was recorded -- that is the whole point of a
+    // reading that does not have to catch an event.
+    if (ins_ph == 3'd6) begin
+        ins_wrap <= ins_wrap + 19'd1;
+        if (ins_wrap == 19'd0)
+            fp_bus <= {16'd0, wr_rom, d_pbr, bal_r, fl_r, d_sp, d_pc};
+    end
+end
+
+assign dbg_dat_in = 8'h00;
+`endif
+
 `ifdef TINYSNES_IPL_PROBE
 // Diagnostic build: catch the address the IPL jumps to.  Decoded from the
 // IPLROM in smp.v, the path after the $CC handshake is
@@ -2201,6 +2310,17 @@ snes2hdmi s2h(
     // probe_bus carries both directions of the APU link and both CPUs' state per
     // the field order in the TINYSNES_LINK_PROBE block.
     .dbg({header_finished, loaded, enable}),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
+`elsif TINYSNES_INSN_PROBE
+    // Diagnostic build: R = an RTL has run with no outstanding JSL, G = loaded,
+    // B = enable.  The band is the whole answer for this build: cyan means the
+    // machine is loaded and enabled and every long return had a long call behind
+    // it, and anything with red set means a long return ran through a stack no
+    // long call built.  The stripes carry the same flag byte for the detail.
+    // probe_bus carries the departure PC, SP, the flag byte, the balance, the
+    // PBR and the newest ROM address, per the TINYSNES_INSN_PROBE block.
+    .dbg({fl_r[4], loaded, enable}),
     .bist_mask(fp_bus[15:0]),
     .probe_bus(fp_bus),
 `elsif TINYSNES_STACKBYTES_PROBE

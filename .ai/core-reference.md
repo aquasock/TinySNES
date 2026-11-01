@@ -113,7 +113,8 @@ TCL-011 a probe bus must be latched to be photographed · TCL-012 `elsif` with t
 TCL-013 a sticky bit must be armed against its reset value · TCL-015 PLL outputs with no clock-plane pip ·
 TCL-016 a ROM-address ring names a hot address, not a fetch sequence ·
 TCL-017 the WRAM debug channel is selected but never driven ·
-TCL-018 the display band says whether a snapshot fired
+TCL-018 the display band says whether a snapshot fired ·
+EXT-010 the opcode-commit point for instruction-level probes
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
@@ -566,6 +567,19 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "This repository, fpga/snes/src/snes2hdmi.v: the dbg band painted as one channel per bit, grey when all three are set and cyan when the first is clear"
     - "This repository, tools/sample_boot_states.py: the band-colour guard in the stack layout"
   verification: "Measured on 2026-11-01 (core-log entry 34): five boots of one bitstream reported departed addresses, and a second five-boot run of the same file reported two boots with a cyan band whose stripes decoded as all zeros.  Decoding that cyan band as `{done=0, loaded=1, enable=1}` is what identified the zeros as an unrefreshed snapshot instead of an address of $0000."
+
+- record_id: EXT-010
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The 65816 core's opcode-commit point is STATE==0 with EN and no interrupt, which is where an executed instruction can be observed rather than the bus traffic around it"
+  status: VERIFIED
+  verified_date: 2026-11-01
+  statement: "In `P65C816.v` the core latches its next instruction in an `always @(posedge CLK)` block that, when `EN == 1'b1` and `GotInterrupt == 1'b0` and `STATE == 4'b0000`, examines `D_IN` and acts on the opcode.  `EN` is `RDY_IN & CE & (~WAIExec) & (~STPExec)`, so this fires once per instruction actually executed rather than once per bus cycle, and `STATE == 0` marks the first cycle of an instruction so a multi-cycle opcode is seen once.  `WAIExec` and `STPExec` are set at exactly this point from `D_IN == $CB` and `D_IN == $DB`, which is what makes the condition the established detection point for opcodes in this core.  The 65816's opcodes of interest for call/return pairing are `JSR` `$20` and `RTS` `$60` for a 2-byte stack push and pull, and `JSL` `$22` and `RTL` `$6B` for a 3-byte push and pull."
+  consequence: "This is where an instruction-level instrument belongs.  Counting executed opcodes here gives cumulative, repeatable state -- a count, a flag, a balance -- which unlike a latched snapshot of a moving value does not depend on catching an instant and therefore cannot fail a repeatability test.  Three cycles of this project (core-log entries 32 to 34) built bus monitors that sampled the program counter and stack and could not be made repeatable; the reading that held was this one.  A balance of `JSL`s not yet returned from by an `RTL` follows directly, and an `RTL` finding the balance at zero is a long return through a stack that no long call built.  The one gap to know about: a `JSL` executed while `GotInterrupt` is set is skipped by the gate, so a legitimate `RTL` after it would be counted as unmatched -- the flag is sound when set on the first `RTL` of a boot but is worth confirming against the `seen_jsl` flag when `JSL`s are in play."
+  sources:
+    - "SNESTang commit 5f0ef19, src/65C816/P65C816.v: the WAIExec/STPExec set at STATE 0 with EN and ~GotInterrupt, and `assign EN = RDY_IN & CE & (~WAIExec) & (~STPExec)`"
+    - "This repository, fpga/snes/src/65C816/P65C816.v: the TinySNES diagnostic counters and DBG_REG 0x17/0x18"
+  verification: "Measured on 2026-11-01 (core-log entry 35): five boots of TINYSNES_INSN_PROBE reported the flag byte and balance, and three of the five had an `RTL` with no outstanding `JSL`.  The same five boots reproduced departure $1035 with SP=$01FD, the reading of core-log entry 33, in two of them."
 
 - record_id: BRD-003
   kind: BOARD
