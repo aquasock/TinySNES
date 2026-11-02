@@ -2013,3 +2013,33 @@ Find why the fetch leaves `FETCH` without reaching `FETCH_DONE`, because the cha
 - User Test: PASS
 
 ---
+
+## 63 COMMIT Unreleased 2026-11-02T13:40:18-07:00
+
+#### Coming From:
+
+Unreleased 8bfefde
+
+#### Purpose:
+
+Correct entry 62, whose readout was decoded with the probe's bit fields shifted by one position and therefore states the opposite of what the machine actually reported.
+
+#### Outcome:
+
+Entry 62 recorded `cache_mmio_seen` clear, `cache_fill_seen` set and `ROMST_SEEN` equal to IDLE, FETCH and CACHE_END; all three are wrong, and the correct reading of the same `0x0477` is the reverse on every one of them. The mistake is in the decode, not the machine. The probe concatenates, lowest field rightmost, `{5'b0, romst_seen, cache_fill_seen, cache_mmio_seen, go_seen, cache_seen}`, which puts `cache_seen` at bit 0, `go_seen` at bit 1, `cache_mmio_seen` at bit 2, `cache_fill_seen` at bit 3 and `romst_seen[0]` at bit 4. The throwaway script used to turn the captured stripes into a word assumed `cache_seen`, `go`, `mmio`, `fill` at bits 0 to 3 and then read `romst_seen` from bit 5, so every field above `go_seen` was reported one position low and the whole flag group was misattributed. Re-derived directly from the concatenation, `0x0477` has bits 0, 1, 2, 4, 5, 6 and 10 set, which reads as `cache_seen` set, `go_seen` set, `cache_mmio_seen` SET, `cache_fill_seen` CLEAR, and `ROMST_SEEN` equal to IDLE, FETCH, FETCH_DONE and LOAD. The corrected reading inverts entry 62's conclusion and is materially better news for the diagnosis. The 65816 does load the coprocessor's code itself through the `$3100-$32FF` window, which is what `cache_mmio_seen` set means and what upstream's MMIO path at GSU.v:441 exists for. The GSU never completes a fill of its own, which is `cache_fill_seen` clear. But the fetch path itself works: `ROMST_SEEN` contains both `FETCH` and `FETCH_DONE`, so a fetch starts and terminates normally. What is absent is `CACHE` and `CACHE_DONE`, meaning the cache-line fill at `ROMST_CACHE` is never entered at all -- and that is consistent with entry 61's independent finding that `ROM_CACHE_WAIT` never rose across a 150-frame burst. The two readings now agree, which they did not before this correction. The mechanism also follows: `ROMST_CACHE` is entered from `ROMST_IDLE` only when `IN_CACHE && VAL_CACHE == 0 && CODE_IN_ROM`, so a cartridge whose coprocessor code the CPU has already written into the cache will have `VAL_CACHE` set for those lines and will never request a fill. That makes the absence of CACHE states normal rather than faulty, and it moves the fault downstream of the cache entirely: the GSU is startable, its code is present, its fetch machinery runs, and Star Fox still draws nothing. One process failure is recorded because it is the fourth of its kind in this investigation and the previous three were each fixed the same way rather than structurally. Entries 60, 61 and 62 each shipped a probe whose displayed field order was wrong, and each was caught only because some field had a known expected value; this one was caught only after the readout had already been committed to the log. The elaboration-time width check added in entry 62 catches a wrong total but cannot catch a wrong order, and a throwaway decode script written per cycle is not a durable source of truth for field positions. The remedy is one declarative field list per probe, emitted into both the RTL concatenation and the host-side decoder, so the two cannot disagree; that is the next cycle's first task and it is worth doing before another readout is taken. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 61 were not rewritten and that entry 62 was left intact as settled history with this entry recording the correction rather than editing it, made no change to core-reference.md because this is a decode process failure rather than an externally defined fact, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-three-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Stop decoding probe frames by hand before taking another reading, because four consecutive cycles have now mis-stated a field position and each was caught by luck rather than by construction. Write one declarative field list per probe and generate both sides from it: the RTL concatenation and the host decoder must come from the same description, so that a wrong order is impossible rather than merely unlikely, in the way entry 62's width check made a wrong total impossible. Then take the reading entry 62 should have taken. With the corrected interpretation the GSU has its code, starts, and completes fetches, so the question is no longer about the cache at all and moves to execution: expose the GSU's `STATE`, its microcode `OP`/`MC.LAST_CYCLE` progression, `FLAG_R`, and the `SFR` bits the 65816 polls, because a coprocessor that runs, fetches and never signals completion to the CPU would explain both the black screen and the saturated `$3000-$32FF` access count. Read `SFR` first, since the 65816 reads it at `$3031` and a `FLAG_GO` that stays set with `FLAG_R` never clearing is the signature of a core that started and never stopped. Do not re-measure anything the corrected reading already settles: header decode, selection, enable, the start handshake, MMIO cache loading and the fetch path are all now measured, and the cache-fill path is shown not to run for this cartridge and not to need to.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
