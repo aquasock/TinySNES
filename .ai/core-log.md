@@ -2078,3 +2078,36 @@ Stop probing the board and build a GSU bench under Verilator, because the hardwa
 - User Test: PASS
 
 ---
+
+## 65 COMMIT Unreleased 2026-11-02T15:46:52-07:00
+
+#### Coming From:
+
+Unreleased 4b1b85d
+
+#### Purpose:
+
+Build a coprocessor bench that instantiates main.v with the GSU enabled, so the SuperFX can be watched inside simulation instead of inferred from one 16-bit stripe per hardware cycle.
+
+#### Outcome:
+
+Star Fox runs in simulation and its intro sequence renders correctly, confirmed by the user watching a live window on the desktop: black space, white stars and the logo banner flying in. That satisfies the thread's stated objective. The bench is `tools/sim/gsu_tb.sv` with `tools/sim/gsu_tb_top.sv` supplying the clock for the headless flow and `tools/sim/run_gsu_sim.sh` driving it; the live window is `tools/sim/sim_main.cpp`, a C++ harness modelled on TinyGBA's `tools/sim/sim_main.cpp`, which the user asked to be followed and which is the same projectf.io Verilator-plus-SDL recipe. It presents the picture at 3x in one window and the GSU's state in a second window's title bar -- `go_cnt`, `SFR`, microcode states visited, `stop_seen`, the CPU's `PBR:PC` and the mclk count -- because a picture alone cannot say what a coprocessor is doing. Why a new bench was needed at all: `tools/sim/snes_tb.sv` instantiates `SNES.v`, which has no cartridge mapper, while the GSU lives one level up in `main.v`, so the coprocessor had never been simulated in this project even once. Six hardware cycles (entries 59 to 64) had inferred its behaviour from stripes on a capture card. Measured in simulation: the GSU is started roughly 1700 times over a run compared with the sixteen to thirty the board showed, its microcode reaches states 0 to 3, all seven of its ROM states are visited, its cache fills from the cartridge rather than by MMIO, and roughly 980,000 non-black pixels are produced. So the coprocessor works and the earlier hardware conclusion -- that it starts and halts almost at once -- was an artefact of a machine that never got that far. Five defects in this cycle's own instrument are recorded because each produced a plausible wrong answer and two of them contradicted a conclusion stated earlier in the session. First, the bench applied the LoROM bank formula to `ROM_ADDR`, but both mappers in `main.v` already emit a linear cartridge offset, so `$1F:BDB1` was fetched from offset `$07BDB1` instead of `$0FBDB1` and the CPU ran garbage that drifted out of the cartridge. Second, the VRAM model let both byte ports write one array at the same index, so the low and high bytes destroyed each other and the picture was sparse garbage that never changed; `snes_tb` splits them into `vram_lo` and `vram_hi` for exactly this reason and that model should have been copied rather than rewritten. Third, `--out` was used unmodified, and because the script changes directory into it a relative path broke the generated hex path; `$readmemh` fails silently, so the ROM read back all zeros, the reset vector read `$0000` and the CPU looked dead. This one produced a control run that was reported to the user as a failed control before the cause was found, and the fix is to resolve the path to absolute before changing directory. Fourth, the pixel capture treated `X_OUT` as a coordinate when it is `{OUT_X, DOT_CLK}` with the dot clock in bit 0, so columns were doubled and half the frame was never written, which the user correctly described as missing scanlines. Fifth, `RGB_OUT` is BGR555 -- `snes2hdmi` builds its 24-bit pixel as `{rdata[4:0], rdata[9:5], rdata[14:10]}`, so the low five bits are red -- and both capture paths read it as RGB555, swapping red and blue. That was compounded by an SDL format error: `SDL_PIXELFORMAT_RGBA8888` packs alpha into bits 31:24, so a `{r,g,b,a}` struct on a little-endian host is read as `{a,b,g,r}` and every pixel took `r = alpha = 255`, painting the window solid red while the PPM written from the same buffer was correctly black. The general lesson, earned five times in one cycle: when the file and the window disagree, the instrument is lying and the machine is not. The last two defects were both found because the user reported what they saw rather than what the code implied, which is exactly why a live window was worth building. A control run was used to validate the bench itself before trusting a Star Fox result: Zelda, with `romtype=$20` for a plain LoROM cartridge, renders its Triforce and "Nintendo Presents" text, so the memory models and capture path are known good and the Star Fox result is a GSU finding rather than a modelling artefact. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 64 were not rewritten, made no change to core-reference.md because the bench's findings are project state and the toolchain behaviour it depends on is already recorded, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-five-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Continue the thread in simulation and do not touch the board until the pipeline is understood, as the user directed. The machine now runs, so the remaining work is to make the bench's picture trustworthy stage by stage and to use it to explain the hardware result. First, run Star Fox far enough to reach actual gameplay and confirm the Arwing renders: the intro is verified but the Mode 7 gameplay path is the real target, and the run should be taken to several hundred million clocks with the frame skipped forward rather than sampled once. Second, drive input from the harness so the intro can be advanced without a human: `sim_main.cpp` already has SDL keyboard handling, and synthesising START and the D-pad there is the same bit map entry 59 established for the BL616 link, so the harness can reach the gameplay and confirm it unattended. Third, explain the closed-loop difference between simulation and the board, because it is now the sharpest open question: the bench starts the GSU roughly 1700 times and the board sixteen to thirty, and the bench never has to answer the SDRAM read latency that TCL-019 measures at four master clocks. A `+lat` model like `snes_tb`'s, ageing the cartridge and WRAM responses, is the instrument, and the question is whether the GSU still completes at the latency the board actually has. Fourth, and only after those, carry the working configuration back to hardware: the board still runs the bitstream from entry 62 which never booted Star Fox, and a fresh build with the cycle-time fix and the seed sweep will be needed. The mirrored left column the user reported in Zelda's picture is still uninvestigated and belongs to `snes2hdmi`'s horizontal addressing; it is present in nand2mario's own Gowin build so it is not a regression, and it should get its own cycle once the GSU thread lands.
+
+#### Files Modified:
+
+- tools/sim/gsu_tb.sv
+- tools/sim/gsu_tb_top.sv
+- tools/sim/run_gsu_sim.sh
+- tools/sim/sim_main.cpp
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: PASS
+
+---
