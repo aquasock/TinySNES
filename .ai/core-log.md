@@ -1618,3 +1618,34 @@ Return to the write gate, now that every other part of the video path is establi
 - User Test: NOT RUN
 
 ---
+
+## 51 COMMIT Unreleased 2026-11-01T18:06:38-07:00
+
+#### Coming From:
+
+Unreleased 4c0013d
+
+#### Purpose:
+
+Answer the video question from the shipped netlist itself rather than from staged synthesis runs or hardware captures, both of which have produced wrong answers repeatedly.
+
+#### Outcome:
+
+The shipped netlist writes undefined data into its line buffer, and that is now read out of the artifact the bitstream is packed from rather than inferred. `tools/emit_gatelevel.sh` re-runs the same synthesis the build runs and then writes the result as Verilog, and `tools/report_linebuf_gate.py` inspects the eight line-buffer instances by name. All eight report a write enable connected to a real net, and all eight report the write data as constant don't-care and the write address as mostly don't-care. The distinction matters because it is not the failure the project had assumed: synthesis did not tie the enable off, it kept the enable and proved the data and address meaningless, so the buffer is written every clock with nothing, which is why every build shows either the power-up gradient or a wiped screen and never a picture. Reading one instance directly shows the shape: `DIA(16'bx)` and `ADA({13'bx, ...})` against a real `ADB({y[4:0], x})`, so the read port is fully wired and the write port is not. Two approaches were tried and abandoned en route, both recorded because both produced confident wrong answers. Isolated synthesis of `snes2hdmi` alone could not reproduce the behaviour it was supposed to explain -- it removed the memory even for the ungated variant, which is known to keep it -- so it was discarded rather than used. Tying the HDMI stub's `cx` and `cy` to zero collapsed the entire module to a handful of muxes, because the raster is what drives `xx` and `yy`, and reported a meaningless netlist; a real raster generator inside the module fixed that, but by then the isolated approach had already shown it was not trustworthy. The static read of the shipped netlist was then adopted instead, and being a read of the real artifact it settles the question without a simulation whose faithfulness would itself need proving. This also reconciles observations that had seemed contradictory: the counter build filled the screen because it supplied both address and data itself, the PPU-address build went black because its constant data was ANDed into an undefined cone, and the shipped build has shown the gradient since entry 25 because nothing ever overwrote it. The default build is unaffected, with synthesis clean and all nine probe benches passing. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 50 were not rewritten and recorded the findings here, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fifty-one entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find why the write address and data are proved undefined while the enable is not, because that is a narrower question than the one this cycle answered and it is now the only thing between this core and a picture: the enable cone survives, so the source is whatever feeds the address and data from the PPU pixel stream, and the candidates are `xs`, `ys` and `rgb5` reaching a cone that `opt` decides is dead. The instrument to use is the one this cycle built, since it reads the shipped netlist and cannot be contaminated by probe displays or stale bitstreams: `tools/emit_gatelevel.sh` then `tools/report_linebuf_gate.py`, with the accept condition being eight of eight instances reporting real data and address. Because the last four RTL formulations of the gate all failed, the next attempt should start from the address and data rather than the enable, and should be checked against that report before any deployment. Only once the report says the write port is intact is another hardware build worth making, and the expected result then is the blink cartridge showing a steady magenta field rather than a gradient.
+
+#### Files Modified:
+
+- tools/emit_gatelevel.sh
+- tools/report_linebuf_gate.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
