@@ -132,6 +132,9 @@ sources=(
     "$src"/src/chip/DSP/OBC1.v
     "$src"/src/chip/DSP/SRTC.v
     "$src"/src/chip/DSP/dsp_data_ram.v
+    "$src"/src/chip/GSU/GSU_PKG.v
+    "$src"/src/chip/GSU/GSU.v
+    "$src"/src/chip/GSU/GSUMap.v
     "$src"/src/main.v
     "$src/src/snestang_top.v"
     "$src"/src/snes2hdmi.v

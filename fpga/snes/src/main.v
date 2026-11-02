@@ -471,7 +471,16 @@ wire [7:0]  GSU_BSRAM_D;
 wire        GSU_BSRAM_CE_N;
 wire        GSU_BSRAM_OE_N;
 wire        GSU_BSRAM_WE_N;
-wire 		GSU_TURBO;
+// TinySNES: driven to 0 where upstream leaves it floating.  Upstream's port list
+// has `input GSU_TURBO` commented out (line 60) and nothing in the tree drives
+// this wire, so it reaches the GSU as an undriven net.  Gowin EDA resolves that
+// to 0 and the GSU clock enable toggles as intended; synth_gowin instead folds
+// `CLK_CE <= ~CLK_CE | SPEED | TURBO` to a constant 1, because an undefined term
+// in an OR takes the whole expression, which makes the GSU run at full rate
+// instead of half.  This is the same class as the undriven `PAL` reg that froze
+// the PPU's HV counters (core-log entry 53).  Fixing it did not by itself make
+// Star Fox boot, so it was a real defect and not the whole fault.
+wire		GSU_TURBO = 1'b0;
 
 generate
 if (USE_GSU == 1'b1) begin
