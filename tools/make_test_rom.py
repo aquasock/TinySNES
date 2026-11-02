@@ -766,7 +766,8 @@ def dmatest_program() -> bytes:
 
 
 def dmaflag_program(src_bank: int = 0x00, src_addr: int = 0x0100,
-                    marker: int = 0xE0, marker_hi: int = 0x03) -> bytes:
+                    marker: int = 0xE0, marker_hi: int = 0x03,
+                    dmap: int = 0x01) -> bytes:
     """Does a DMA channel execute at all?  Read the answer off the backdrop.
 
     `bgdraw` draws a blue field by poking VRAM and `dmatest` draws the same field
@@ -826,8 +827,8 @@ def dmaflag_program(src_bank: int = 0x00, src_addr: int = 0x0100,
 
     lda(0x00)
     sta(0x2121)                     # point CGRAM back at entry 0
-    lda(0x01)
-    sta(0x4300)                     # A->B, increment, mode 1: two bytes per unit
+    lda(dmap)
+    sta(0x4300)                     # A->B, increment, transfer pattern
     lda(0x22)
     sta(0x4301)                     # B-bus: $2122, CGRAM data
     lda(src_addr & 0xFF)
@@ -1333,6 +1334,20 @@ def build(mode: str = "blink") -> bytes:
         body = dmatest_program()
     elif mode == "dmaflag":
         body = dmaflag_program()
+    elif mode == "dmabad":
+        # A one-byte mode-0 transfer whose source is the open bus: $00:5FFF is in
+        # neither WRAM, cartridge, PPU, APU nor the CPU's own registers, so on
+        # this board nothing ever answers the read.  The DMA stall added to cpu.v
+        # waits on MEM_WAIT, and MEM_WAIT's own release is bounded by the SDRAM
+        # controller's wait-age timeout; this cartridge is how that bound gets
+        # tested rather than assumed.
+        body = dmaflag_program(src_addr=0x5FFF, dmap=0x00)
+    elif mode == "dmaflag0":
+        # Mode 0 -- one byte per unit, the pattern real cartridges use for CGRAM.
+        # Both bytes land on $2122, so a byte written late or a byte written stale
+        # shows up as a wrong colour rather than as a write to a register that
+        # ignores it.
+        body = dmaflag_program(dmap=0x00)
     elif mode == "highbank":
         body = highbank_program()
     elif mode == "wramrw":
@@ -1442,7 +1457,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", default="build/rom/tinysnes_blink.sfc")
-    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmarom", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear"),
+    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmaflag0", "dmabad", "dmarom", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear", "dmaflag0", "dmabad"),
                     help="blink: alternate the backdrop colour (tests the whole "
                          "video path).  flash: alternate force-blank (tests only "
                          "whether a PPP write reaches the PPU)")

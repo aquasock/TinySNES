@@ -163,16 +163,57 @@ module snes_tb;
   end
 
   // ------------------------------------------------------------ WRAM model
+  //
+  // With +wlat=N the answer is delayed by N clocks, the same way +lat delays the
+  // cartridge.  Without this the bench cannot express the thing that matters
+  // most about this board: on the board both WRAM and the cartridge live in
+  // SDRAM behind one controller, so a DMA whose source is WRAM is reading from a
+  // memory that answers late, and the DMA's write window closes on a fixed
+  // schedule.  A bench that answers WRAM instantly cannot fail that way, which is
+  // why the DMA bug reproduced only on hardware.
+  integer wlat = 0;
+  reg [7:0] wram_pipe [0:8];
+  integer wi;
+  reg [23:0] wram_addr_q = 24'hFFFFFF;
+  integer    wram_age    = 0;
+  reg [7:0]  wram_q_next;
+
+  always @(posedge clk) begin
+    wram_q_next <= wram[WRAM_ADDR];
+    wram_pipe[0] <= wram[WRAM_ADDR];
+    for (wi = 8; wi > 0; wi = wi - 1)
+      wram_pipe[wi] <= wram_pipe[wi-1];
+
+    if (RAMSEL_N !== 1'b0 || CA !== wram_addr_q) begin
+      wram_addr_q <= CA;
+      wram_age    <= 0;
+    end else if (wram_age < 32) begin
+      wram_age <= wram_age + 1;
+    end
+  end
+
   always @(posedge clk) begin
     if (!WRAM_CE_N && !WRAM_WE_N)
       wram[WRAM_ADDR] <= WRAM_D;
-    WRAM_Q <= wram[WRAM_ADDR];
+    WRAM_Q <= (wlat == 0) ? wram_q_next : wram_pipe[wlat];
   end
 
   // ------------------------------------------------------------ VRAM model
   // Dual port byte-addressable; the PPU drives both ports.
+  //
+  // Writes are counted and optionally logged, because "the picture is wrong" and
+  // "nothing ever wrote VRAM" are different faults and only the bus can tell them
+  // apart.  A DMA upload and a CPU-poked upload look identical from outside the
+  // core; here they leave the same trace or none.
+  integer vram_wr = 0;
+  integer vlog;
+  initial vlog = 0;
   always @(posedge clk) begin
-    if (!VRAM_WRA_N) vram[VRAM_ADDRA] <= VRAM_DAO;
+    if (!VRAM_WRA_N) begin
+      vram[VRAM_ADDRA] <= VRAM_DAO;
+      vram_wr <= vram_wr + 1;
+      if (vlog != 0) $fdisplay(vlog, "%0d vram %04X <- %02X", cyc, VRAM_ADDRA, VRAM_DAO);
+    end
     if (!VRAM_WRB_N) vram[VRAM_ADDRB] <= VRAM_DBO;
     VRAM_DAI <= vram[VRAM_ADDRA];
     VRAM_DBI <= vram[VRAM_ADDRB];
@@ -212,7 +253,8 @@ module snes_tb;
     end
   end
 
-  assign mem_wait = (ROMSEL_N === 1'b0) && (cart_age <= rom_lat);
+  assign mem_wait = ((ROMSEL_N === 1'b0) && (cart_age <= rom_lat))
+                 || ((RAMSEL_N === 1'b0) && (wram_age <= wlat));
 
   // ------------------------------------------------------------ cart DI mux
   // The core selects the cartridge only when ROMSEL is low and RAMSEL is high;
@@ -284,6 +326,21 @@ module snes_tb;
         rgb_changes <= rgb_changes + 1;
       end
     end
+  end
+
+  // B-bus writes, whoever made them.  The CPU-only filter above cannot see a DMA
+  // transfer, because during one the CPU is held off the bus entirely -- which is
+  // exactly the case these cartridges exist to test.  This logs the actual write
+  // strobe and address instead, so "the DMA wrote nothing" and "the DMA wrote
+  // somewhere else" are different lines in a file rather than an argument.
+  integer bl;
+  initial bl = 0;
+  reg pa_wr_p = 1'b1;
+  always @(posedge clk) begin
+    pa_wr_p <= PAWR_N;
+    if (bl != 0)
+      $fdisplay(bl, "%0d bbus_wr=%b pa=%02X do=%02X ca=%06X ramsel=%b romsel=%b rd=%b",
+                cyc, ~PAWR_N, PA, dut.CPU.DO, CA, RAMSEL_N, ROMSEL_N, CPURD_N);
   end
 
   // Every CPU write, by bank:offset, so the question "does the game touch the
@@ -461,6 +518,21 @@ module snes_tb;
           if (pp == 0) $display("warning: could not open %0s; no pplog", pp_path);
         end
       end
+      begin
+        reg [1023:0] vl_path;
+        if ($value$plusargs("vramlog=%s", vl_path)) begin
+          vlog = $fopen(vl_path, "w");
+          if (vlog == 0) $display("warning: could not open %0s; no vramlog", vl_path);
+        end
+      end
+      begin
+        reg [1023:0] bl_path;
+        if ($value$plusargs("buslog=%s", bl_path)) begin
+          bl = $fopen(bl_path, "w");
+          if (bl == 0) $display("warning: could not open %0s; no buslog", bl_path);
+        end
+      end
+      if ($value$plusargs("wlat=%d", wlat)) ;
     end
 
     repeat (16) @(posedge clk);
@@ -474,6 +546,7 @@ module snes_tb;
              cyc, pc, pbr, sp, p, ir);
     $display("video: HDE pixels=%0d, colour changes on HDE=%0d, final RGB=%04X",
              hde_count, rgb_changes, RGB_OUT);
+    $display("vram writes=%0d", vram_wr);
     if (tf != 0) $fclose(tf);
     $finish;
   end
