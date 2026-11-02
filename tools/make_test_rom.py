@@ -649,7 +649,7 @@ DMA_TILE_OFF = 0x1000          # ROM offset of the tile table, reached at $80:90
 DMA_MAP_OFF = 0x1100           # ROM offset of the tilemap, reached at $80:9100
 
 
-def dmatest_program() -> bytes:
+def dmatest_program(dmap: int = 0x01) -> bytes:
     """Draw the same field as `bgdraw`, but upload it with DMA.
 
     Why this exists.  `bgdraw` proves a cartridge can program the PPU and put a
@@ -692,8 +692,8 @@ def dmatest_program() -> bytes:
         emit(0x8F, addr & 0xFF, addr >> 8, bank & 0xFF)   # STA long
 
     def dma_setup(bus: int, src: int, bank: int, nbytes: int) -> None:
-        lda(0x01)
-        sta(0x4300)                 # A->B, increment A, mode 1: 2 bytes per unit
+        lda(dmap)
+        sta(0x4300)                 # A->B, increment A, transfer pattern
         lda(bus)
         sta(0x4301)                 # B-bus destination
         lda(src & 0xFF)
@@ -1332,6 +1332,12 @@ def build(mode: str = "blink") -> bytes:
         body, vectors = nmitest_program()
     elif mode == "dmatest":
         body = dmatest_program()
+    elif mode == "dmatest0":
+        # The same two uploads in mode 0: one byte per unit, B-bus incrementing.
+        # Mode 1 and mode 0 differ only in how the B-bus address advances, so a
+        # green field here and a black one from dmatest puts the fault on the
+        # transfer pattern rather than on VRAM, the cartridge or the engine.
+        body = dmatest_program(dmap=0x00)
     elif mode == "dmaflag":
         body = dmaflag_program()
     elif mode == "dmabad":
@@ -1381,6 +1387,13 @@ def build(mode: str = "blink") -> bytes:
         # Top bank of a 512 KiB image: bank $0F address $8000 is ROM offset
         # $78000, the furthest address from the code that this image can hold.
         body = highbank_program(bank=0x0F, marker=(0xE0, 0x03))
+    elif mode == "dmarom0":
+        # Mode 0 from the cartridge: the same transfer as dmaflag0 in every
+        # respect except where the two bytes come from.  dmaflag0 reads them from
+        # WRAM and paints green; this reads them from ROM at $80:9000 and paints
+        # magenta.  Green here and magenta there puts the fault on the cartridge
+        # read during a DMA; magenta from both clears the source.
+        body = dmaflag_program(src_bank=0x80, src_addr=0x9000, dmap=0x00)
     elif mode == "dmarom":
         body = dmaflag_program(src_bank=0x80, src_addr=0x9000)
     else:
@@ -1402,11 +1415,11 @@ def build(mode: str = "blink") -> bytes:
         # $00,$7C is blue $7C00.  It lives at bank $01 address $8000, which is
         # ROM offset 0x8000 -- outside the bank the program itself runs in.
         rom[HIGHBANK_OFF:HIGHBANK_OFF + 2] = bytes([0x00, 0x7C])
-    if mode == "dmarom":
+    if mode in ("dmarom", "dmarom0"):
         # Magenta $7C1F.  Distinct from the green in WRAM, so a correct read of
         # this table and an accidental read of WRAM cannot be confused.
         rom[DMA_TILE_OFF:DMA_TILE_OFF + 2] = bytes([0x1F, 0x7C])
-    if mode == "dmatest":
+    if mode in ("dmatest", "dmatest0"):
         # The two tables the DMA channels read.  They sit above the code and are
         # reached through bank $80, so the transfer's source bank is not the one
         # the program is executing in.  The tilemap is already all zero -- entry
@@ -1457,7 +1470,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", default="build/rom/tinysnes_blink.sfc")
-    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmaflag0", "dmabad", "dmarom", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear", "dmaflag0", "dmabad"),
+    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmaflag0", "dmabad", "dmarom", "dmarom0", "dmatest0", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear", "dmaflag0", "dmabad", "dmarom0", "dmatest0"),
                     help="blink: alternate the backdrop colour (tests the whole "
                          "video path).  flash: alternate force-blank (tests only "
                          "whether a PPP write reaches the PPU)")
