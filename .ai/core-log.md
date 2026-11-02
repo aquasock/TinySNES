@@ -1758,3 +1758,39 @@ Rebuild from the committed tree and confirm the picture survives a fresh synthes
 - User Test: pass, retail cartridge runs with correct video and correct audio
 
 ---
+## 55 COMMIT Unreleased 2026-11-02T00:23:06-07:00
+
+#### Coming From:
+
+Unreleased c2c0a99
+
+#### Purpose:
+
+Confirm the working configuration on a second cartridge, and leave the repository in a state another agent can pick up cold.
+
+#### Outcome:
+
+The Legend of Zelda: A Link to the Past runs on the board with correct video and audio, confirmed by the user on HDMI. It is 1 MiB, LoROM, header type `$02` -- ROM, RAM and battery -- so it exercises the mapper at twice the size of Space Invaders and touches the battery SRAM path, neither of which the first working cartridge did. Two retail titles now boot on the same bitstream (`e6ebba7a`), which is seed 9 of the upstream-faithful netlist from entry 54.
+
+Nothing in the RTL changed this cycle. The work was the repository state a successor needs: `README.md` was a single heading and documented neither the build, the deploy, the diagnostics, the bench's limits nor the known gaps, which for a handoff is the first thing missing. It now carries all of those, and records the one fact that has cost this project the most time in both ports: the bench models the cartridge and RAM as zero-latency arrays with no SDRAM, no physical clock domains and no HDMI, so it cannot fail for a reason that depends on how two clocks relate. Its correct role is checking logic; it was used for days as evidence about a board and told the truth about a different machine.
+
+Three gaps are stated rather than implied, because each will stop the next agent in a way that looks like something else. Yoshi's Island and Star Fox need the SuperFX coprocessor: the source is present in `fpga/snes/src/chip/GSU/` and wired into `main.v` behind `USE_GSU`, but `config.v` defines only `CHIP_DSPn` and the three GSU files are absent from the synthesis list in `build_tinysnes.sh`, so enabling it is two edits plus a placement seed and a margin check of its own. Controller input arrives over the BL616 link and has never been exercised; a game sitting at "press start" therefore looks exactly like a hang, and no retail title has been played past a title screen. And the OSD is tied off, because `overlay_reg` powers up asserted and its empty menu covers the picture -- the same trap exists in TinyGBA.
+
+One untested assumption was retired before it could mislead: an attempt to load Yoshi's Island was stopped after reading its header, which reports type `$15`, and the GSU is not built. Without that check the next observation would have been a black screen and a search for a fault in a machine that never had the coprocessor it needed.
+
+#### Next Steps:
+
+Play a retail title past its title screen, which requires controller input over the BL616 link -- that is the single largest untested part of the machine and the one most likely to be broken, since nothing has exercised it. Then enable the SuperFX by adding `-DCHIP_GSU` to `config.v` and the three `chip/GSU` files to the source list, expecting a new placement seed and a fresh margin check because the GSU is large. After that the OSD: TinyDesk is meant to replace it, and until then any game that draws with the overlay up shows black. Also worth doing: remove or re-derive the `TINYSNES_CART_WAIT` block in `snestang_top.v`, which now refers to wait-state machinery that the revert to upstream deleted, and investigate why a cartridge occasionally fails to boot on the first load and succeeds after a reflash -- that has been observed twice and never explained.
+
+#### Files Modified:
+
+- README.md
+- .ai/core-log.md
+
+#### Status:
+
+- Build: unchanged, seed 9, fclk 264.201/64.516, hclk 126.839/74.25, iosys.clk 31.377/21.505
+- Deployment: one-wire, tinysnes.fs e6ebba7ac2aa8af5f0c58be8742b84da7d336e88a88c2b171c4f2691d1a7814d
+- User Test: pass, Zelda: A Link to the Past runs with correct video and audio
+
+---
