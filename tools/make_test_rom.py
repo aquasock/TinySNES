@@ -130,6 +130,125 @@ def program(mode: str = "blink") -> tuple[bytes, dict[str, int]]:
     return bytes(code), marks
 
 
+def bgdraw_program() -> bytes:
+    """Draw a solid background field, without ever waiting on an interrupt.
+
+    Why this exists.  With the region bit driven, the blink cartridge reaches the
+    screen -- magenta in all 686,880 pixels of the active area -- while
+    tinysnes_selftest, F-Zero and ActRaiser all leave the active area black with
+    the pillarbox bars intact.  Both readings are consistent with two very
+    different faults, and the screen cannot tell them apart:
+
+      * the game never clears force blank, because its init loop waits for an
+        NMI or IRQ that never arrives, so the PPU faithfully draws nothing; or
+      * the game does clear it, and drawing into VRAM and CGRAM does not come
+        back out.
+
+    This cartridge separates them by drawing with no interrupt at all: no NMI
+    enable, no vector, no wait.  It fills one 2bpp tile with colour 3, points
+    every entry of a 32x32 tilemap at it, sets BG mode 0, enables BG1 on the
+    main screen and turns the display on.  The active area should become solid
+    blue, `$7C00` in BGR555.
+
+      solid blue   drawing works end to end, so a black retail screen means the
+                   machine is stuck before it clears force blank -- an interrupt
+                   or handshake, not the raster.
+      still black  the PPU is being programmed and the result is not reaching the
+                   screen, so the fault is in VRAM, CGRAM or how the PPU reads
+                   them, and no amount of CPU-side work would have shown it.
+
+    A marker byte is left in WRAM at $10 so a bus probe can tell "ran to the
+    end" from "drew a colour that happens to be blue".
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []          # (operand offset, label)
+    rel8: list[tuple[int, int, str]] = []      # (operand offset, opcode offset, label)
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)               # LDA #byte
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)     # STA abs, DBR = $00
+
+    def branch(opcode: int, name: str) -> None:
+        op_at = len(code)
+        emit(opcode, 0x00)
+        rel8.append((len(code) - 1, op_at, name))
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x10)                # REP #$10             16-bit X and Y
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank while the memories are set up
+
+    lda(0x00)
+    sta(0x2121)                     # CGRAM word address 0; writes auto-increment
+    for colour in (0x0000, 0x001F, 0x03E0, 0x7C00):
+        lda(colour & 0xFF)
+        sta(0x2122)
+        lda(colour >> 8)
+        sta(0x2122)                 # 0 black, 1 red, 2 green, 3 blue
+
+    lda(0x00)
+    sta(0x2116)                     # VMADD = $0000, tile data at word 0
+    lda(0x00)
+    sta(0x2117)
+    emit(0xA2, 0x08, 0x00)          # LDX #$0008            8 words = one 2bpp tile
+    label("tile")
+    lda(0xFF)
+    sta(0x2118)
+    sta(0x2119)                     # every pixel of tile 0 is colour 3
+    emit(0xCA)                      # DEX
+    branch(0xD0, "tile")            # BNE tile
+
+    lda(0x00)
+    sta(0x2116)                     # VMADD = $0400, tilemap words
+    lda(0x04)
+    sta(0x2117)
+    emit(0xA2, 0x00, 0x04)          # LDX #$0400            1024 entries: 32x32
+    label("map")
+    lda(0x00)
+    sta(0x2118)
+    sta(0x2119)                     # entry $0000: tile 0, palette 0, no flip
+    emit(0xCA)                      # DEX
+    branch(0xD0, "map")             # BNE map
+
+    lda(0x00)
+    sta(0x2105)                     # BG mode 0
+    lda(0x04)
+    sta(0x2107)                     # BG1SC: base word address $0400, 32x32
+    lda(0x00)
+    sta(0x210B)                     # BG12NBA: BG1 tile data at word 0
+    lda(0x01)
+    sta(0x212C)                     # main screen: BG1 only
+
+    lda(0xB6)
+    sta(0x0010)                     # WRAM marker: the program reached the end
+    lda(0x0F)
+    sta(0x2100)                     # display on, brightness 15
+
+    label("spin")
+    emit(0x4C)                      # JMP spin
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+    for off, op_at, name in rel8:
+        code[off] = (marks[name] - (op_at + 2)) & 0xFF
+
+    return bytes(code)
+
+
 def _colour(emit, colour: int) -> None:
     emit(0xA9, 0x00)                # LDA #$00
     emit(0x8D, 0x21, 0x21)          # STA $2121   CGRAM address 0
@@ -441,27 +560,750 @@ def hvtest_program() -> bytes:
     return a.resolve(ENTRY)
 
 
+def nmitest_program() -> tuple[bytes, dict[int, int]]:
+    """Does the PPU's vertical-blank NMI reach the CPU?
+
+    Why this exists.  `bgdraw` shows that a cartridge can program the PPU and put
+    a picture on the screen without any interrupt at all, and every retail
+    cartridge tried so far -- F-Zero and ActRaiser -- leaves the active area
+    black.  The difference between those two situations is not drawing: it is
+    that a game's init waits for an NMI before it clears force blank.  A core
+    whose NMI never fires therefore looks exactly like a core whose raster is
+    dead, and the screen cannot tell them apart.
+
+    This cartridge asks only that question.  It sets the backdrop to red, enables
+    NMI in `$4200`, turns the display on, and then spins.  The handler increments
+    a counter in WRAM `$12` and writes it to CGRAM entry 0, so every NMI repaints
+    the backdrop with the next value.
+
+      backdrop changing   NMI is delivered, so a black retail screen is a
+                          different fault and the raster is not the blocker.
+      backdrop stuck red  NMI is not delivered.  That is the whole retail
+                          failure for any game that waits on it.
+
+    The native NMI vector at `$7FEA` is pointed at the handler rather than at the
+    entry point, which `build()` now allows per mode.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x10)                # REP #$10
+
+    lda(0x00)
+    sta(0x0012)                     # WRAM counter starts at zero
+    lda(0x8F)
+    sta(0x2100)                     # force blank while setting up
+    lda(0x00)
+    sta(0x212C)                     # no layers: the backdrop is the picture
+    lda(0x00)
+    sta(0x2121)                     # CGRAM entry 0
+    lda(0x1F)
+    sta(0x2122)                     # red
+    lda(0x00)
+    sta(0x2122)
+    lda(0x80)
+    sta(0x4200)                     # NMI on
+    lda(0x0F)
+    sta(0x2100)                     # display on, brightness 15
+
+    label("spin")
+    emit(0x4C)                      # JMP spin
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    label("nmi")
+    emit(0x48)                      # PHA
+    lda(0x00)
+    sta(0x2121)                     # CGRAM entry 0
+    emit(0xAD, 0x12, 0x00)          # LDA $0012
+    emit(0xEE, 0x12, 0x00)          # INC $0012
+    sta(0x2122)                     # low byte = the counter
+    lda(0x00)
+    sta(0x2122)                     # high byte
+    emit(0x68)                      # PLA
+    emit(0x40)                      # RTI
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+
+    return bytes(code), {0x7FEA: ENTRY + marks["nmi"]}
+
+
+DMA_TILE_OFF = 0x1000          # ROM offset of the tile table, reached at $80:9000
+DMA_MAP_OFF = 0x1100           # ROM offset of the tilemap, reached at $80:9100
+
+
+def dmatest_program() -> bytes:
+    """Draw the same field as `bgdraw`, but upload it with DMA.
+
+    Why this exists.  `bgdraw` proves a cartridge can program the PPU and put a
+    picture on the screen when it writes VRAM through `$2118`/`$2119` one word at
+    a time, and `nmitest` proves the vertical-blank NMI is delivered.  Every
+    retail cartridge tried -- F-Zero, Mega Man X, ActRaiser, the RetroRegen diag
+    -- still leaves the active area black.  What retail does that no test
+    cartridge here has done is upload tiles and tilemaps with a DMA channel
+    rather than by poking the data port, so a broken DMA engine would leave every
+    game black while every hand-written cartridge drew perfectly.
+
+    This cartridge is `bgdraw` with the two upload loops replaced by two channel-0
+    transfers, so it differs from a known-good picture in exactly one mechanism.
+
+      solid blue   DMA works, and the retail fault is somewhere else.
+      still black  DMA is the fault, and it is the only mechanism in this project
+                   that every failing cartridge depends on and no working one
+                   has used.
+
+    The tables live in the cartridge, not in WRAM, which also exercises a DMA
+    source in a ROM bank other than the code's.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    def sta_long(addr: int, bank: int) -> None:
+        emit(0x8F, addr & 0xFF, addr >> 8, bank & 0xFF)   # STA long
+
+    def dma_setup(bus: int, src: int, bank: int, nbytes: int) -> None:
+        lda(0x01)
+        sta(0x4300)                 # A->B, increment A, mode 1: 2 bytes per unit
+        lda(bus)
+        sta(0x4301)                 # B-bus destination
+        lda(src & 0xFF)
+        sta(0x4302)
+        lda(src >> 8)
+        sta(0x4303)                 # A-bus address
+        lda(bank)
+        sta(0x4304)                 # A-bus bank
+        # $4305/$4306 is a byte counter, not a unit counter: in mode 1 the
+        # engine moves two bytes per unit and decrements this by two, so the
+        # value written here is the transfer's length in bytes.
+        lda(nbytes & 0xFF)
+        sta(0x4305)
+        lda(nbytes >> 8)
+        sta(0x4306)                 # transfer size in bytes
+        lda(0x01)
+        sta(0x420B)                 # start channel 0
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x10)                # REP #$10
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank while the memories are set up
+
+    lda(0x00)
+    sta(0x2121)                     # CGRAM entry 0
+    for colour in (0x0000, 0x001F, 0x03E0, 0x7C00):
+        lda(colour & 0xFF)
+        sta(0x2122)
+        lda(colour >> 8)
+        sta(0x2122)                 # 0 black, 1 red, 2 green, 3 blue
+
+    lda(0x00)
+    sta(0x2116)                     # VMADD = $0000, tile data at word 0
+    lda(0x00)
+    sta(0x2117)
+    dma_setup(0x18, 0x9000, 0x80, 16)         # 8 words = 16 bytes, one 2bpp tile
+
+    lda(0x00)
+    sta(0x2116)                     # VMADD = $0400, tilemap words
+    lda(0x04)
+    sta(0x2117)
+    dma_setup(0x18, 0x9100, 0x80, 2048)       # 1024 entries = 2048 bytes
+
+    lda(0x00)
+    sta(0x2105)                     # BG mode 0
+    lda(0x04)
+    sta(0x2107)                     # BG1SC: base word address $0400, 32x32
+    lda(0x00)
+    sta(0x210B)                     # BG12NBA: BG1 tile data at word 0
+    lda(0x01)
+    sta(0x212C)                     # main screen: BG1 only
+
+    lda(0xB7)
+    sta(0x0010)                     # WRAM marker: reached the end
+    lda(0x0F)
+    sta(0x2100)                     # display on, brightness 15
+
+    label("spin")
+    emit(0x4C)                      # JMP spin
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+
+    return bytes(code)
+
+
+def dmaflag_program(src_bank: int = 0x00, src_addr: int = 0x0100,
+                    marker: int = 0xE0, marker_hi: int = 0x03) -> bytes:
+    """Does a DMA channel execute at all?  Read the answer off the backdrop.
+
+    `bgdraw` draws a blue field by poking VRAM and `dmatest` draws the same field
+    with channel-0 transfers, and only the second is black.  That is consistent
+    with a broken DMA engine, with a broken A-bus read from the cartridge, and
+    with this project's own bug in the transfer setup, and one screenshot cannot
+    tell those apart.
+
+    So this cartridge makes DMA report itself.  It paints the backdrop blue
+    through CGRAM with plain CPU writes, turns the display on, and only then
+    starts a two-byte DMA of green into CGRAM entry 0.  The source is in WRAM,
+    which the CPU has just written and which involves no cartridge read, no ROM
+    mapper and no SDRAM -- so the only thing under test is the engine itself.
+
+      backdrop turns green   the engine runs, and `dmatest`'s black screen is
+                             the A-bus read from the cartridge instead.
+      backdrop stays blue    the engine does not run at all.
+
+    Blue is `$7C00` and green is `$03E0`, so the two outcomes cannot be confused
+    with each other or with the blank starting state.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x10)                # REP #$10
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank
+    lda(0x00)
+    sta(0x212C)                     # no layers, so the backdrop is the picture
+    sta(0x2121)                     # CGRAM entry 0
+    sta(0x2122)
+    lda(0x7C)
+    sta(0x2122)                     # entry 0 = blue ($7C00)
+
+    lda(marker)
+    sta(0x0100)                     # WRAM: green $03E0, not the DMA's source here
+    lda(marker_hi)
+    sta(0x0101)                     # little endian, low byte first
+
+    lda(0x0F)
+    sta(0x2100)                     # display on, brightness 15 -> BLUE
+
+    lda(0x00)
+    sta(0x2121)                     # point CGRAM back at entry 0
+    lda(0x01)
+    sta(0x4300)                     # A->B, increment, mode 1: two bytes per unit
+    lda(0x22)
+    sta(0x4301)                     # B-bus: $2122, CGRAM data
+    lda(src_addr & 0xFF)
+    sta(0x4302)
+    lda(src_addr >> 8)
+    sta(0x4303)                     # A-bus address
+    lda(src_bank)
+    sta(0x4304)                     # A-bus bank
+    lda(0x02)
+    sta(0x4305)
+    lda(0x00)
+    sta(0x4306)                     # two bytes
+    lda(0x01)
+    sta(0x420B)                     # start channel 0 -> GREEN if the engine runs
+
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+
+    return bytes(code)
+
+
+HIGHBANK_OFF = 0x8000          # bank $01 address $8000 in a LoROM image
+
+
+def highbank_program(bank: int = 0x01, marker: tuple[int, int] = (0x00, 0x7C)) -> bytes:
+    """Can the CPU read a ROM byte outside its own 32 KiB bank?
+
+    `bgdraw` draws a blue field and `bgdraw` padded to 512 KiB still draws it, so
+    cartridge size is not what separates the working test cartridges from the
+    retail cartridges that all come up black.  What does separate them is reach:
+    every cartridge in this project so far is 64 KiB or less of code and data and
+    runs entirely inside bank $00, addresses $8000-$FFFF, which is the first
+    32 KiB of the image.  A retail cartridge jumps and reads all over its address
+    space, and Speedy Gonzales aside, no retail title here runs from a single
+    bank.
+
+    So this cartridge asks for one byte from the next bank and paints it.  The
+    code itself still lives at $00:8000, so instruction fetch is unchanged and
+    proven; only the data read is new.  The byte pair at bank $01 address $8000 is
+    `$00,$7C`, which is blue `$7C00`.
+
+      backdrop blue    the CPU can read past bank $00, and the retail fault is
+                       somewhere else again.
+      backdrop black   every read outside bank $00 returns zero or garbage, which
+                       would make every retail cartridge fail exactly as seen
+                       while leaving these test cartridges working.
+
+    The read is a long `LDA $01:8000`, and both bytes are copied through WRAM so
+    the two halves of the colour are written to `$2122` explicitly rather than
+    relying on what a 16-bit store does to an 8-bit port.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x30)                # REP #$30             16-bit A, X and Y
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank (16-bit store, low byte used)
+    emit(0xE2, 0x20)                # SEP #$20             back to 8-bit A
+    lda(0x00)
+    sta(0x212C)                     # no layers: the backdrop is the picture
+    sta(0x2121)                     # CGRAM entry 0
+
+    emit(0xC2, 0x20)                # REP #$20             16-bit A for the read
+    emit(0xAF, 0x00, 0x80, bank)    # LDA long bank:$8000  the read under test
+    sta(0x0000)                     # park both halves in WRAM
+    emit(0xE2, 0x20)                # SEP #$20
+
+    emit(0xAD, 0x00, 0x00)          # LDA $0000            low byte
+    sta(0x2122)
+    emit(0xAD, 0x01, 0x00)          # LDA $0001            high byte
+    sta(0x2122)                     # -> BLUE if the read worked
+
+    lda(0x0F)
+    sta(0x2100)                     # display on, brightness 15
+
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+
+    return bytes(code)
+
+
+def aputest_program() -> bytes:
+    """Does the APU handshake that every retail cartridge blocks on complete?
+
+    Everything above this test says the picture path works: `bgdraw` draws a blue
+    field, a 512 KiB-padded copy of it still draws, and a cartridge that reads a
+    byte from the top bank of a 512 KiB image -- `$0F:8000`, the furthest address
+    the image can hold -- paints that byte's colour on screen too.  So neither
+    ROM size nor ROM reach separates the cartridges that work from the retail ones
+    that all come up black.
+
+    What separates them is the first thing retail boot code does and no test
+    cartridge here has ever done: talk to the APU.  The standard sequence is
+
+        LDA #$AA        ; ask the sound module whether it is alive
+        STA $2140
+      wait:
+        CMP $2140       ; the IPL ROM echoes $AA back when it is
+        BNE wait
+
+    and a machine whose SPC700 never runs -- never leaves its IPL ROM, or has no
+    IPL ROM to leave -- hangs in that loop forever with the display still in
+    force blank.  That is indistinguishable from a dead raster on screen, and it
+    would look exactly like what has been observed: every retail title black,
+    every hand-written cartridge fine.
+
+    The answer is painted as a backdrop colour, and the failure state is painted
+    before the handshake is attempted, so a timeout cannot be mistaken for a
+    machine that never started.
+
+      backdrop red      the handshake timed out.  The CPU reached this code and
+                        the picture path works, and the APU never answered.
+      backdrop green    the APU answered, and the retail fault is further on.
+      black, no bars    the machine never got here at all.
+
+    The wait is bounded by a 16-bit index, about 650,000 iterations, which at
+    three master clocks per iteration is around a quarter of a second -- far
+    longer than the IPL ROM needs to reach its echo.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+    rel8: list[tuple[int, int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    def branch(opcode: int, name: str) -> None:
+        op_at = len(code)
+        emit(opcode, 0x00)
+        rel8.append((len(code) - 1, op_at, name))
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x10)                # REP #$10             16-bit X and Y
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank
+    lda(0x00)
+    sta(0x212C)                     # no layers: the backdrop is the picture
+    sta(0x2121)                     # CGRAM entry 0
+    lda(0x1F)
+    sta(0x2122)
+    lda(0x00)
+    sta(0x2122)                     # entry 0 = red $001F -- the failure colour
+    lda(0x0F)
+    sta(0x2100)                     # display on, so RED means "timed out"
+
+    lda(0xAA)
+    sta(0x2140)                     # ask the APU whether it is alive
+
+    emit(0xA2, 0x00, 0x00)          # LDX #$0000
+    label("wait")
+    emit(0xAD, 0x40, 0x21)          # LDA $2140    the IPL's echo lands here
+    emit(0xC9, 0xAA)                # CMP #$AA
+    branch(0xF0, "ok")              # BEQ ok
+    emit(0xCA)                      # DEX
+    branch(0xD0, "wait")            # BNE wait
+    label("stuck")
+    emit(0x4C)                      # JMP stuck    leave the screen red
+    abs16.append((len(code), "stuck"))
+    emit(0x00, 0x00)
+
+    label("ok")
+    lda(0x00)
+    sta(0x2121)                     # CGRAM entry 0
+    lda(0xE0)
+    sta(0x2122)
+    lda(0x03)
+    sta(0x2122)                     # green $03E0 -- the APU answered
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+    for off, op_at, name in rel8:
+        code[off] = (marks[name] - (op_at + 2)) & 0xFF
+
+    return bytes(code)
+
+
+def wramexec_program(use_long: bool = False) -> bytes:
+    """Can the CPU execute code it has copied into WRAM?
+
+    The list of things this project has now cleared on hardware is getting long:
+    a cartridge draws, a 512 KiB image draws, a byte read from bank $01 and from
+    the top bank $0F of a 512 KiB image paints correctly, the mirror bank $8F
+    reads the same byte, the vertical-blank NMI is delivered every frame, and the
+    APU handshake `LDA #$AA / STA $2140 / CMP $2140` completes.  Every retail
+    cartridge here is still black.
+
+    What none of those tests has done is what a great many retail boot sequences
+    do within their first few hundred instructions: copy a routine into WRAM and
+    jump to it, because the routine patches itself or because it has to run with
+    RAM timing.  A core that can read and write WRAM but cannot fetch from it
+    would boot every hand-written cartridge in this project and no retail one.
+
+    The answer is painted before and after.  The backdrop is set red and the
+    display turned on; then sixteen bytes are stored into $7E:0200 one at a time
+    and the CPU does a long jump to them.  Those bytes set CGRAM entry 0 to
+    green and then spin.
+
+      backdrop green   the CPU executed from WRAM.
+      backdrop red     the CPU never executed from WRAM -- the long jump went
+                       somewhere else, or the fetch came back wrong.
+      black, no bars   the machine never got as far as the red backdrop.
+
+    The routine is unrolled as sixteen `LDA #imm / STA long` pairs rather than
+    copied with a loop, so a fault in the copy cannot be mistaken for a fault in
+    the jump.
+    """
+    if use_long:
+        # Absolute-long stores, so the hardware registers are named by their
+        # full bank and DBR plays no part.
+        ROUTINE = bytes([
+            0xA9, 0x00, 0x8F, 0x21, 0x21, 0x00,   # LDA #$00 / STA long $00:2121
+            0xA9, 0xE0, 0x8F, 0x22, 0x21, 0x00,   # LDA #$E0 / STA long $00:2122
+            0xA9, 0x03, 0x8F, 0x22, 0x21, 0x00,   # LDA #$03 / STA long $00:2122
+            0x80, 0xFE,                            # BRA -2
+        ])
+    else:
+        ROUTINE = bytes([
+            0xA9, 0x00, 0x8D, 0x21, 0x21,      # LDA #$00 / STA $2121   CGRAM entry 0
+            0xA9, 0xE0, 0x8D, 0x22, 0x21,      # LDA #$E0 / STA $2122   green low
+            0xA9, 0x03, 0x8D, 0x22, 0x21,      # LDA #$03 / STA $2122   green high
+            0x80, 0xFE,                        # BRA -2                 spin here
+        ])
+
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank
+    lda(0x00)
+    sta(0x212C)                     # no layers: the backdrop is the picture
+    sta(0x2121)                     # CGRAM entry 0
+    lda(0x1F)
+    sta(0x2122)
+    lda(0x00)
+    sta(0x2122)                     # entry 0 = red, the failure colour
+    lda(0x0F)
+    sta(0x2100)                     # display on: RED from here until the jump
+
+    for i, byte in enumerate(ROUTINE):
+        lda(byte)
+        emit(0x8F, (0x0200 + i) & 0xFF, (0x0200 + i) >> 8, 0x7E)  # STA long $7E:02xx
+
+    emit(0x5C, 0x00, 0x02, 0x7E)    # JML $7E:0200 -- the instruction under test
+
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+
+    return bytes(code)
+
+
+def wramrw_program() -> bytes:
+    """Can the CPU write a byte to WRAM and read it back?
+
+    This is the control for `wramexec`, which came back red: the CPU did not
+    execute the sixteen bytes it stored at $7E:0200.  Two different faults produce
+    that, and they have different consequences:
+
+      the store never landed   WRAM is not writable at that address, so the CPU
+                               jumped into stale bytes and the fault is the
+                               write.
+      the store landed and the read that follows it here works, but the fetch at
+                               $7E:0200 does not   the fault is instruction fetch
+                               from WRAM specifically, which is a much narrower
+                               and much more interesting thing.
+
+    So this cartridge writes `$E0,$03` to `$7E:0200` with `STA long`, reads it
+    back with `LDA long`, and paints the result.
+
+      backdrop green   WRAM stores and loads correctly, so `wramexec`'s red is a
+                       fetch fault.
+      backdrop red     the byte did not survive the round trip, and the write is
+                       the fault.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x30)                # REP #$30             16-bit A, X and Y
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank
+    emit(0xE2, 0x20)                # SEP #$20             8-bit A
+    lda(0x00)
+    sta(0x212C)                     # no layers
+    sta(0x2121)                     # CGRAM entry 0
+    lda(0x1F)
+    sta(0x2122)
+    lda(0x00)
+    sta(0x2122)                     # entry 0 = red, the failure colour
+    lda(0x0F)
+    sta(0x2100)                     # display on: RED from here
+
+    lda(0xE0)
+    emit(0x8F, 0x00, 0x02, 0x7E)    # STA long $7E:0200   low byte
+    lda(0x03)
+    emit(0x8F, 0x01, 0x02, 0x7E)    # STA long $7E:0201   high byte
+
+    emit(0xC2, 0x20)                # REP #$20             16-bit A
+    emit(0xAF, 0x00, 0x02, 0x7E)    # LDA long $7E:0200   the read under test
+    sta(0x0000)                     # both halves into WRAM low page
+    emit(0xE2, 0x20)                # SEP #$20
+
+    lda(0x00)
+    sta(0x2121)                     # CGRAM entry 0 again
+    emit(0xAD, 0x00, 0x00)          # LDA $0000
+    sta(0x2122)
+    emit(0xAD, 0x01, 0x00)          # LDA $0001
+    sta(0x2122)                     # -> GREEN if the round trip worked
+
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+
+    return bytes(code)
+
+
 def build(mode: str = "blink") -> bytes:
     rom = bytearray(ROM_SIZE)
+    vectors: dict[int, int] | None = None
     if mode == "selftest":
         body = selftest_program()
-        rom[0:len(body)] = body
     elif mode == "stacktest":
         body = stacktest_program()
-        rom[0:len(body)] = body
     elif mode == "hvtest":
         body = hvtest_program()
-        rom[0:len(body)] = body
+    elif mode == "bgdraw":
+        body = bgdraw_program()
+    elif mode == "nmitest":
+        body, vectors = nmitest_program()
+    elif mode == "dmatest":
+        body = dmatest_program()
+    elif mode == "dmaflag":
+        body = dmaflag_program()
+    elif mode == "highbank":
+        body = highbank_program()
+    elif mode == "wramrw":
+        body = wramrw_program()
+    elif mode == "wramexec_long":
+        # Same routine and same jump, but the routine names its target bank
+        # explicitly.  Green here and red in `wramexec` would mean fetch from WRAM
+        # works and absolute addressing used the wrong bank; red in both means the
+        # fetch itself is what fails.
+        body = wramexec_program(use_long=True)
+    elif mode == "wramexec":
+        body = wramexec_program()
+    elif mode == "aputest":
+        body = aputest_program()
+    elif mode == "highbank_mirror":
+        # Bank $8F is the mirror of bank $0F, and retail code runs from these
+        # mirrored banks.  Same offset, same expected byte as highbank512 -- the
+        # only difference is the bank number the CPU asks for.
+        body = highbank_program(bank=0x8F, marker=(0xE0, 0x03))
+    elif mode == "highbank512":
+        # Top bank of a 512 KiB image: bank $0F address $8000 is ROM offset
+        # $78000, the furthest address from the code that this image can hold.
+        body = highbank_program(bank=0x0F, marker=(0xE0, 0x03))
+    elif mode == "dmarom":
+        body = dmaflag_program(src_bank=0x80, src_addr=0x9000)
     else:
-        code, _ = program(mode)
-        rom[0:len(code)] = code
+        body, _ = program(mode)
+    rom[0:len(body)] = body
+    if mode in ("highbank512", "highbank_mirror"):
+        # Green $03E0 at the top of a 512 KiB image, reached as $0F:8000.
+        rom = bytearray(rom) + bytearray(512 * 1024 - len(rom))
+        rom[0x78000:0x78002] = bytes([0xE0, 0x03])
+    if mode == "highbank":
+        # $00,$7C is blue $7C00.  It lives at bank $01 address $8000, which is
+        # ROM offset 0x8000 -- outside the bank the program itself runs in.
+        rom[HIGHBANK_OFF:HIGHBANK_OFF + 2] = bytes([0x00, 0x7C])
+    if mode == "dmarom":
+        # Magenta $7C1F.  Distinct from the green in WRAM, so a correct read of
+        # this table and an accidental read of WRAM cannot be confused.
+        rom[DMA_TILE_OFF:DMA_TILE_OFF + 2] = bytes([0x1F, 0x7C])
+    if mode == "dmatest":
+        # The two tables the DMA channels read.  They sit above the code and are
+        # reached through bank $80, so the transfer's source bank is not the one
+        # the program is executing in.  The tilemap is already all zero -- entry
+        # $0000 is tile 0, palette 0, no flip -- so only the tile is written.
+        rom[DMA_TILE_OFF:DMA_TILE_OFF + 16] = b"\xFF" * 16
 
     # LoROM, slowrom, ROM only, 64 KiB, 8 KiB WRAM, USA.
     title = b"TINYSNES " + mode.upper().encode() + b" TEST"
     rom[HEADER:HEADER + 21] = title[:21].ljust(21, b" ")
     rom[0x7FD5] = 0x20              # map mode: LoROM, slowrom
     rom[0x7FD6] = 0x00              # ROM only
-    rom[0x7FD7] = 0x06              # 64 KiB (log2 64 = 6)
+    # Derived from the image rather than hard-coded: a padded cartridge has to
+    # declare its real size or the mapper's rom_mask clips the upper banks away
+    # and the test reads back the wrong bytes.
+    rom[0x7FD7] = len(rom).bit_length() - 11     # code size as log2(KiB)
     rom[0x7FD8] = 0x03              # 8 KiB WRAM (log2 8 = 3)
     rom[0x7FD9] = 0x01              # USA
     rom[0x7FDA] = 0x00
@@ -474,6 +1316,8 @@ def build(mode: str = "blink") -> bytes:
                 0x7FF4, 0x7FF6, 0x7FFE):
         rom[off:off + 2] = vec
     rom[0x7FFC:0x7FFE] = vec        # RESET
+    for off, target in (vectors or {}).items():
+        rom[off:off + 2] = target.to_bytes(2, "little")
 
     # Checksum: the two fields must complement to $FFFF and be non-zero, which is
     # what tools/load_snes_rom.py's header scoring tests.  Computed the standard
@@ -495,7 +1339,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", default="build/rom/tinysnes_blink.sfc")
-    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest"),
+    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmarom", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw"),
                     help="blink: alternate the backdrop colour (tests the whole "
                          "video path).  flash: alternate force-blank (tests only "
                          "whether a PPP write reaches the PPU)")
