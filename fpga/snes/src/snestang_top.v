@@ -235,7 +235,23 @@ wire  [7:0] ARAM_D;
 wire        aram_16 = 0;
 
 wire BLEND = 1'b0;
-reg        PAL;
+// Region select.  Upstream SNESTang drives this from its config menu; that menu
+// was not carried over, and the port left it declared as a bare `reg` that
+// nothing assigns, so synthesis made it the constant x.
+//
+// That is not a benign default.  The PPU picks its line and dot counts with
+// `if (~PAL)` inside a combinational block (ppu.v, "HV counters"), so LAST_DOT
+// became x; every `H_CNT == LAST_DOT` compare is then x, H_CNT never advances
+// past 0, HDE is never assigned and is left undriven, and snes2hdmi receives
+// `.hblank(~hblankn)` as x.  Its write gate
+// `dotclk rising && ~hblank && ~vblank && ys < 224` therefore cannot be true,
+// the memory's write port is folded away, and the line buffer holds nothing but
+// its power-up gradient: the grey grid that stayed on screen for two days.
+//
+// NTSC is the correct default here.  snes2hdmi's frame-sync pause is written for
+// 60.098 fps and the visible 224-line window is the NTSC one.  PAL cartridges
+// will run at NTSC timing until a region switch is actually wired up.
+wire       PAL = 1'b0;
 wire       dotclk  /*verilator public*/;
 wire [14:0] rgb_out  /*verilator public*/;
 wire [8:0] x_out /*verilator public*/, y_out /*verilator public*/;

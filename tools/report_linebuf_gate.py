@@ -1,72 +1,97 @@
 #!/usr/bin/env python3
-"""Report the line buffer's write port in a gate-level netlist.
+"""Report the line buffer's write port from a Yosys JSON netlist.
 
-The question this project has chased for days is narrow enough to answer by
-reading one instance out of the shipped netlist: does the line buffer's write
-port still have a real enable, a real address and real data, or did synthesis
-prove some of it constant and delete it?
+Why JSON and not the Verilog dump.  An earlier version of this tool read the
+`write_verilog` output and decided a net was "real" if it was a name rather than
+`1'bx`.  That was wrong twice over: synthesis keeps the *name* of a net whose
+logic it has deleted, so a dangling wire looks exactly like a driven one, and the
+Verilog dump was separately found to disagree with the JSON about how many PPU
+nets carry drivers -- 0 in the dump against 2255 of 2303 in the JSON.
 
-These fail in different ways and the difference matters:
+The JSON says, for every cell, which net every port connects to and in which
+direction.  So "is this net driven" is answerable exactly: does any cell list it
+on an output port.  That is the check this tool makes.
 
-  * WREA tied to 0        -- the buffer can never be written at all.
-  * DIA or ADA all `x`    -- the buffer is still written, but with nothing, so
-                             its contents become undefined rather than retained.
+Why the verdict is per memory, not per block.  `memory_libmap` splits one RTL
+memory across several BRAM primitives, and it pads every block's 16-bit data
+port whether or not that block uses the extra lanes.  A per-block test therefore
+reports a healthy memory as broken: with the PAL region bit driven, the write
+data reaches 15 distinct nets spread over 8 blocks and only two of them land on
+any single block's DIA port.  The question that matters is about the memory, so
+this tool takes the union of the blocks' port bits and asks whether every one of
+them is driven, and whether there are as many of them as the RTL memory is wide.
+`mem` in snes2hdmi.v is 15 bits; `--width` overrides that when it is not.
 
-    tools/report_linebuf_gate.py build/gatelevel/tinysnes_gate.v
+  tools/report_linebuf_gate.py build/x/tinysnes.json [--width 15]
 """
-import re
+import json
 import sys
 
-
-def port(body: str, name: str) -> str | None:
-    """Extract one .PORT(...) value, tolerating nested brackets."""
-    m = re.search(r"\.%s\(((?:[^()]|\([^()]*\))*)\)" % name, body, re.S)
-    return m.group(1).strip() if m else None
+# Memories are identified by their ports, not by their cell type or by a name
+# substring: a name match also catches the registers and adders that share the
+# memory's prefix (`s2h.mem_portA_wdata_DFFRE_Q_...`), which is how an earlier
+# version came to report 242 "line-buffer blocks".
+MEMORY_PORTS = ("ADA", "DOA")
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
+    args = sys.argv[1:]
+    width = 15
+    if "--width" in args:
+        i = args.index("--width")
+        width = int(args[i + 1])
+        del args[i:i + 2]
+    if not args:
         print(__doc__)
         return 2
-    text = open(sys.argv[1]).read()
 
-    # Instance names come from the RTL: the buffer is `mem` inside snes2hdmi, and
-    # Yosys names the cells after it.
-    blocks = re.findall(r"\)\s*\\?([\w.$]*s2h\.mem[\w.$]*)\s*\((.*?)\);", text, re.S)
+    d = json.load(open(args[0]))
+    mods = d["modules"]
+    top = mods.get("snestang_top") or mods[list(mods)[0]]
+    cells = top["cells"]
+
+    driven = set()
+    for cell in cells.values():
+        for port, direction in cell.get("port_directions", {}).items():
+            if direction == "output":
+                for b in cell["connections"].get(port, []):
+                    if isinstance(b, int):
+                        driven.add(b)
+
+    blocks = [c for c, info in cells.items()
+              if "s2h.mem" in c
+              and all(p in info.get("connections", {}) for p in MEMORY_PORTS)]
     if not blocks:
-        print("  no line-buffer instances found in this netlist")
+        print("  no line-buffer memory blocks found")
         return 2
+    print(f"  line-buffer memory blocks: {len(blocks)}")
 
-    print(f"  line-buffer instances: {len(blocks)}")
+    def union(port):
+        bits = set()
+        for cn in blocks:
+            for b in cells[cn]["connections"].get(port, []):
+                if isinstance(b, int):
+                    bits.add(b)
+        return bits
 
-    tied_enable = 0
-    dead_data = 0
-    dead_addr = 0
-    for name, body in blocks:
-        we = port(body, "WREA") or ""
-        di = port(body, "DIA") or ""
-        ad = port(body, "ADA") or ""
-        if we.replace(" ", "") in ("1'b0", "1'h0", "1'bx"):
-            tied_enable += 1
-        if di and "x" in di and "\\" not in di:
-            dead_data += 1
-        if ad and ad.count("x") > 6:
-            dead_addr += 1
+    report = {}
+    for port, need, label in (("WREA", 1, "write enable"),
+                              ("DIA", width, "write data"),
+                              ("ADA", width - 1, "write address")):
+        bits = union(port)
+        dead = bits - driven
+        report[label] = (bits, dead, need)
+        print(f"  {label:<14} {len(bits)} distinct bits reach the memory, "
+              f"{len(dead)} undriven, {need} expected")
 
-    n = len(blocks)
-    print(f"  WREA tied off:            {tied_enable}/{n}")
-    print(f"  write data all-don't-care: {dead_data}/{n}")
-    print(f"  write address mostly x:    {dead_addr}/{n}")
-
-    if tied_enable == n:
-        print("  VERDICT: the line buffer cannot be written; the write enable is constant.")
-        return 1
-    if dead_data == n:
-        print("  VERDICT: the line buffer is written with undefined data and address.")
+    bad = [label for label, (bits, dead, need)
+           in report.items() if dead or len(bits) < need]
+    if bad:
+        print(f"  VERDICT: the line buffer cannot be written ({', '.join(bad)}).")
         return 1
     print("  VERDICT: the line buffer's write port is intact.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

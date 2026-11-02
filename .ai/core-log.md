@@ -1679,3 +1679,35 @@ None.
 - User Test: N/A
 
 ---
+## 53 COMMIT Unreleased 2026-11-01T19:15:49-07:00
+
+#### Coming From:
+
+Unreleased 5fa3a7b
+
+#### Purpose:
+
+Settle whether ABC9 is what folds the line buffer's write port away, by hand-building the synthesis flow without it, and repair the write port.
+
+#### Outcome:
+
+ABC9 is not the cause. `synth_gowin` has no `-noabc`, so `TINYSNES_SYNTH_NO_ABC=1` runs the script in two halves around the `map_luts` stage that contains `abc9 -maxlut 8` -- `-run begin:map_luts`, then `sort; clean`, then `-run map_cells:` -- and the netlist it produces reports the same failure as the shipped one: `DIA` is constant `x`. That result was worth the cycle because it closes the toolchain hypothesis the previous three entries were built on, and the user's ruling that area is free on this device no longer has anything to buy. Reading the same netlist for the gate terms instead found the fault: `hblankn` is the constant `x`, and it is `x` because `main.SNES.PPU.H_CNT` is the constant 0, and `H_CNT` is 0 because `main.SNES.PPU.LAST_DOT` is the constant `x`, and `LAST_DOT` is `x` because the top level's region select `PAL` is the constant `x`. `PAL` is declared `reg PAL;` at `snestang_top.v:238`, passed to `main` at 1839, and assigned by nothing anywhere in the tree -- upstream SNESTang drives it from a config menu this port never carried over. The mechanism is a chain of don't-cares: `ppu.v`'s combinational HV-counter block selects line and dot counts with `if (~PAL)`, so an `x` there makes `LAST_DOT` x; every `H_CNT == LAST_DOT` compare is then x, so `H_CNT` never advances; `HDE` is assigned only by `H_CNT == 19-1` and `H_CNT == 275-1`, so its flop has no live enable and is left undriven; `snes2hdmi` receives `.hblank(~hblankn)` as x; and `opt -mux_undef` resolves the write condition's undef select to its false branch, which grounds `mem_portA_we` and leaves `mem_portA_wdata` as x. The write port was the last link in a chain that started at a register nobody wrote. The fix is `wire PAL = 1'b0;`, following the `wire BLEND = 1'b0;` immediately above it, with the whole chain recorded in the comment; NTSC is the right value because `snes2hdmi`'s frame-sync pause is written for 60.098 fps and the visible window is NTSC's 224 lines. Measured on the netlist: the memory's write data went from 0 distinct bits to 15 with 0 undriven, and its write address from 1 to 14 with 0 undriven. `tools/report_linebuf_gate.py` was wrong about this in a way that had to be fixed before it could confirm anything -- `memory_libmap` pads every one of the eight blocks' 16-bit data ports whether or not the block uses the lane, so a per-block test reports a healthy memory as broken, and a name-substring match for `s2h.mem` also swept up the surrounding registers and adders and reported 242 "line-buffer blocks". It now identifies blocks by their memory ports, takes the union per port, and requires every bit driven and as many bits as the RTL memory is wide; it fails the pre-fix netlist on data and address and passes the fixed one on all three ports. On the board, seed 9 passed the timing gate at fclk 269.397 against 64.516 MHz, hclk 120.598 against 74.25 and `iosys.clk` 31.904 against 21.505, with two clocks on pips not measured on this board, which `TINYSNES_ALLOW_UNMEASURED_CLOCKS=1` permits. The grey grid is gone from the screen for the first time: the picture area is now black with the grey pillarbox bars drawn beside it, which is what a line buffer filled from a PPU emitting colour 0 looks like. `tinysnes_blink` fills the same picture area with magenta, `238,0,251`, in `686,880` of 921,600 captured pixels, so fetch, execution, the PPU register writes at `$2100`/`$2121`/`$2122`, the line buffer's two clock domains and scan-out all work together on hardware. `tinysnes_selftest`, F-Zero and ActRaiser each produce the black-picture-with-bars frame, which places the remaining fault inside the machine's own programming of the display rather than in the path that carries it.
+
+#### Next Steps:
+
+Separate the two readings of that black frame: a cartridge that never clears force blank because it is waiting on an interrupt, or one that clears it and draws into a video path that cannot be read back. `TINYSNES_IRQ_PROBE` and the `$4210` sticky bits are already in the tree and should be read first because a game that waits for NMI in its init loop looks exactly like this. A cheaper discriminator is a cartridge written with `tools/make_test_rom.py` that writes a CGRAM entry, sets BG mode and a tilemap in VRAM, enables BG1 and clears force blank without ever waiting on NMI: if it draws, the fault is interrupt delivery; if it stays black, it is VRAM or CGRAM. The `PAL` value is deliberately not a menu yet, and two clocks are still on pips nobody has measured, so a placement sweep against `tools/clock_plane_report.py` remains the way to make the picture trustworthy before any further timing conclusion is drawn from it.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- tools/build_tinysnes.sh
+- tools/report_linebuf_gate.py
+- .ai/core-log.md
+
+#### Status:
+
+- Build: pass, fclk 269.397/64.516, hclk 120.598/74.25, iosys.clk 31.904/21.505
+- Deployment: tinysnes.fs 45b222328065dcb01810f6b16f232506a7412a371ac91d55ef377e8d36df2609, loaded on the Tang
+- User Test: pending, picture area black for retail ROMs, magenta for tinysnes_blink
+
+---

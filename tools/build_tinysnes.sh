@@ -50,6 +50,14 @@ defines="${TINYSNES_DEFINES:-}"
 # assuming; TinyNES's own record notes the knob silently matching nothing when
 # that alias changes.
 clk_first="${TINYSNES_CLK_FIRST:-iosys.clk}"
+# TINYSNES_SYNTH_NO_ABC=1 hand-builds the synthesis script with ABC9 left out.
+# synth_gowin has no -noabc flag, so the flow is run in two halves around the
+# map_luts stage that contains `abc9 -maxlut 8`:  `begin:map_luts` (everything
+# up to and excluding map_luts), then `sort; clean` (the rest of map_luts), then
+# `map_cells:` (LUT insertion and checks).  ABC9 proves the line buffer's write
+# data don't-care and folds it to a constant x; the user's ruling is that area
+# is free on this device and the design may waste it rather than accept that.
+no_abc="${TINYSNES_SYNTH_NO_ABC:-0}"
 # Refuse a build whose clocks land on spine/bridge pips nobody has measured on
 # this board.  TINYSNES_ALLOW_UNMEASURED_CLOCKS=1 downgrades that to a warning.
 allow_unmeasured="${TINYSNES_ALLOW_UNMEASURED_CLOCKS:-0}"
@@ -184,10 +192,22 @@ dnames=$(grep -rhoE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' "$src" \
 bb=$(comm -12 <(echo "$libmods") <(echo "$dnames")) || true
 bbflags=$(echo "$bb" | sed 's/^/--blackboxed-module /' | paste -sd' ')
 
+if [[ "$no_abc" == 1 ]]; then
+    echo "synthesis: hand-built script, ABC9 omitted"
+    synth_cmds="
+    synth_gowin -family gw5a -top snestang_top -run begin:map_luts
+    sort
+    clean
+    synth_gowin -family gw5a -top snestang_top -run map_cells:"
+else
+    synth_cmds="
+    synth_gowin -family gw5a -top snestang_top"
+fi
+
 yosys -Q -T -q -l "$out/synth.log" -p "
     read_verilog -lib $shim/cells_xtra_gw5a.v
     read_slang --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 ${hdmi_slang[*]} ${sources[*]}
-    synth_gowin -family gw5a -top snestang_top
+    $synth_cmds
     write_json $out/tinysnes.json
 " || { echo "synthesis failed; see $out/synth.log" >&2; exit 1; }
 echo "netlist: $out/tinysnes.json ($(du -h "$out/tinysnes.json" | cut -f1))"
