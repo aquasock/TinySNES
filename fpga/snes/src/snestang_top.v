@@ -1869,7 +1869,13 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
 
     // GSU debug state, read by TINYSNES_GSU_PROBE.  Zero when USE_GSU is 0.
     .GSU_DBG_GO_CNT(gsu_dbg_go_cnt), .GSU_DBG_FLAG_GO(gsu_dbg_flag_go),
-    .GSU_DBG_CACHE_ANY(gsu_dbg_cache_any), .GSU_DBG_EN(gsu_dbg_en)
+    .GSU_DBG_CACHE_ANY(gsu_dbg_cache_any), .GSU_DBG_EN(gsu_dbg_en),
+    .GSU_DBG_ROMST(gsu_dbg_romst), .GSU_DBG_IN_CACHE(gsu_dbg_in_cache),
+    .GSU_DBG_ROM_CACHE_WAIT(gsu_dbg_rom_cache_wait),
+    .GSU_DBG_ROM_LOAD_WAIT(gsu_dbg_rom_load_wait),
+    .GSU_DBG_CACHE_FILL_SEEN(gsu_dbg_cache_fill_seen),
+    .GSU_DBG_CACHE_MMIO_SEEN(gsu_dbg_cache_mmio_seen),
+    .GSU_DBG_ROMST_SEEN(gsu_dbg_romst_seen)
 );
 `endif
 
@@ -2115,95 +2121,102 @@ always @(*) pp_dbg = {pp_dot_seen, pp_hb_seen, pp_vb_seen};
 // GSU debug state, always declared because main always drives it.
 wire [15:0] gsu_dbg_go_cnt;
 wire        gsu_dbg_flag_go, gsu_dbg_cache_any, gsu_dbg_en;
+wire [2:0]  gsu_dbg_romst;
+wire        gsu_dbg_in_cache, gsu_dbg_rom_cache_wait, gsu_dbg_rom_load_wait;
+wire        gsu_dbg_cache_fill_seen, gsu_dbg_cache_mmio_seen;
+wire [6:0]  gsu_dbg_romst_seen;
 
 `ifdef TINYSNES_GSU_PROBE
-// Diagnostic build: is the GSU started, and does it ever load a program?
+// Diagnostic build: which source loaded the GSU's cache, and which ROM states
+// has the machine ever reached?
 //
-// The first version of this probe answered the outer question: rom_type decodes
-// as GSU ($70), the cartridge is read continuously, and the 65816 makes tens of
-// thousands of accesses in the GSU's $3000-$32FF window, so the coprocessor is
-// selected, out of reset and being polled.  What it could not say is whether
-// the GSU ever *starts*.  The chain inside GSU.v is:
+// Three cycles have narrowed this.  Entry 60: the GSU is selected, out of reset
+// and polled.  Entry 61: it is started 16 times and no cache line becomes valid.
+// Entry 62: CACHE_VALID does eventually set, but ROMST sits at IDLE and a
+// 150-frame burst caught LOAD in 3 frames and nothing else -- ROM_CACHE_WAIT
+// never raised at all.
 //
-//   $301F write -> GO -> (ENABLE && CLK_CE) -> FLAG_GO -> EN -> executes
+// So "some cache line is valid" is not the question.  CACHE_VALID has two
+// sources in GSU.v and they mean opposite things:
 //
-// and the cache is filled afterwards from ROM_BUF only when the core runs.  So
-// the two bits that separate the remaining faults are whether FLAG_GO ever set
-// (the start landed) and whether any CACHE_VALID line ever set (the core loaded
-// its own program).  GO_CNT counts starts and is upstream's own instrument, kept
-// commented out in that file until now.
+//   ROM_CACHE_EN  -- the GSU fetched a line itself from the cartridge
+//   MMIO_CACHE_WR -- the 65816 pushed code in through $3100-$32FF
 //
-// Both history bits are sticky, latched from reset and cleared only by reset,
-// because a start and a cache fill are single events that a periodic snapshot
-// would otherwise miss -- the reasoning TCL-013 records.
+// Only the first means the coprocessor can run its own program.  A single
+// "any valid" bit conflates them, which is why the last readout was ambiguous.
 //
-// probe_bus fields, low to high:
-//   [15:0]  rom_type                       (expect $70: map $20, type $13)
-//   [31:16] accesses in the GSU window $3000-$32FF, saturating
-//   [47:32] cartridge read edges since reset, saturating
-//   [63:48] GO_CNT, the GSU's own count of starts
-//   [79:64] {8'b0, cache_any_seen, flag_go_seen, mmio_seen, rom_seen,
-//            enable, loaded, header_finished, dotclk_seen}
+// The state history exists because sampling cannot be trusted for rare events:
+// a 12-frame sample missed a 2%-duty-cycle state entirely, and a 150-frame
+// burst still had to be histogrammed by hand to see it.  Latching "ever visited"
+// per state means one photograph answers the question at any moment.
 //
-// Band: R = the GSU ever loaded a cache line, G = the GSU was ever started,
-// B = enable.  Green without red is a coprocessor that starts and never loads
-// its program, which is the ROM-cache-fill path; no green at all is a start
-// write that never lands, which is the $301F handshake.
+// The field widths are summed at elaboration and compared against 80, so a
+// mismatch is a build error.  That check exists because this probe shipped the
+// wrong total three times and each time produced a plausible readout.
+//
+// probe_bus fields, low to high (widths must total 80):
+//   [15:0]  {5'b0, ROMST_SEEN[6:0], cache_fill_seen, cache_mmio_seen, go_seen,
+//            cache_seen}
+//   [31:16] GO_CNT
+//   [47:32] accesses in the GSU window $3000-$32FF, saturating
+//   [63:48] cartridge read edges since reset, saturating
+//   [79:64] rom_type                        (expect $70: map $20, type $13)
+//
+// Band: R = the GSU ever filled a cache line from the cartridge, G = the GSU
+// was ever started, B = enable.  Green with R clear means the 65816 pushed code
+// in but the coprocessor never fetched its own -- the fill path never runs.
+localparam integer GS_W_ROMTYPE = 16;
+localparam integer GS_W_ROM_CNT = 16;
+localparam integer GS_W_MMIO_CNT = 16;
+localparam integer GS_W_GO_CNT  = 16;
+localparam integer GS_W_STATE   = 16;
+localparam integer GS_W_TOTAL   = GS_W_ROMTYPE + GS_W_ROM_CNT + GS_W_MMIO_CNT
+                                + GS_W_GO_CNT + GS_W_STATE;
+generate
+  if (GS_W_TOTAL != 80) begin : gs_width_bad
+    GSU_PROBE_BUS_WIDTH_MUST_BE_80 u_width_error();
+  end
+endgenerate
+
 reg [15:0] gs_rom_cnt  = 16'd0;
 reg [15:0] gs_mmio_cnt = 16'd0;
-reg        gs_rom_seen = 1'b0, gs_mmio_seen = 1'b0;
-reg        gs_dot_seen = 1'b0;
 reg        gs_go_seen  = 1'b0, gs_cache_seen = 1'b0;
-reg        gs_dot_r = 1'b0;
-reg [21:0] gs_refresh = 22'd0;
-reg [79:0] fp_bus     = 80'd0;
-reg  [2:0] gs_dbg     = 3'b000;
+reg [21:0] gs_refresh  = 22'd0;
+reg [79:0] fp_bus      = 80'd0;
+reg  [2:0] gs_dbg      = 3'b000;
 
-wire gs_rom_rd   = ~ROM_CE_N;
-wire gs_dot_edge = dotclk & ~gs_dot_r;
-// GSUMap drives ROM_ADDR from the CPU address while the GSU is not fetching, so
-// a register write to $3000-$32FF appears here as 0x30xx.
-wire gs_in_mmio  = gs_rom_rd && (ROM_ADDR[15:12] == 4'h3) &&
-                   (ROM_ADDR[11:8] <= 8'h2);
+wire gs_rom_rd  = ~ROM_CE_N;
+wire gs_in_mmio = gs_rom_rd && (ROM_ADDR[15:12] == 4'h3) &&
+                  (ROM_ADDR[11:8] <= 8'h2);
 
 always @(posedge mclk) begin
-    gs_dot_r <= dotclk;
     if (~resetn) begin
         gs_rom_cnt    <= 16'd0;
         gs_mmio_cnt   <= 16'd0;
-        gs_rom_seen   <= 1'b0;
-        gs_mmio_seen  <= 1'b0;
-        gs_dot_seen   <= 1'b0;
         gs_go_seen    <= 1'b0;
         gs_cache_seen <= 1'b0;
     end else begin
-        if (gs_rom_rd) begin
-            gs_rom_seen <= 1'b1;
+        if (gs_rom_rd)
             if (gs_rom_cnt != 16'hFFFF) gs_rom_cnt <= gs_rom_cnt + 16'd1;
-        end
-        if (gs_in_mmio) begin
-            gs_mmio_seen <= 1'b1;
+        if (gs_in_mmio)
             if (gs_mmio_cnt != 16'hFFFF) gs_mmio_cnt <= gs_mmio_cnt + 16'd1;
-        end
-        if (gs_dot_edge) gs_dot_seen <= 1'b1;
-
-        // Sticky: these are single events, not levels.
         if (gsu_dbg_flag_go)   gs_go_seen    <= 1'b1;
         if (gsu_dbg_cache_any) gs_cache_seen <= 1'b1;
 
         gs_refresh <= gs_refresh + 22'd1;
         if (gs_refresh[15:0] == 16'd0) begin
-            fp_bus <= {8'b0, gs_cache_seen, gs_go_seen, gs_mmio_seen, gs_rom_seen,
-                       enable, loaded, header_finished, gs_dot_seen,
-                       gsu_dbg_go_cnt,
+            fp_bus <= {rom_type,
                        gs_rom_cnt,
                        gs_mmio_cnt,
-                       rom_type};
+                       gsu_dbg_go_cnt,
+                       5'b0, gsu_dbg_romst_seen,
+                       gsu_dbg_cache_fill_seen, gsu_dbg_cache_mmio_seen,
+                       gs_go_seen, gs_cache_seen};
         end
     end
 end
 
-always @(*) gs_dbg = {gs_cache_seen, gs_go_seen, enable};
+always @(*) gs_dbg = {gsu_dbg_cache_fill_seen, gs_go_seen, enable};
 `endif
 
 `ifdef TINYSNES_TIMING_PROBE

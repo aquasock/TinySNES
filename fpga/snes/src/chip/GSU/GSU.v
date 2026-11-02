@@ -30,7 +30,21 @@ module GSU(
     output [15:0] DBG_GO_CNT,
     output        DBG_FLAG_GO,
     output        DBG_CACHE_ANY,
-    output        DBG_EN
+    output        DBG_EN,
+    // Second round: what the cache fill is waiting on.
+    output [2:0]  DBG_ROMST,
+    output        DBG_IN_CACHE,
+    output        DBG_ROM_CACHE_WAIT,
+    output        DBG_ROM_LOAD_WAIT,
+    // Third round: separate the two sources that set CACHE_VALID, and report
+    // every ROMST state that has ever been visited.  CACHE_VALID is set both by
+    // the GSU's own line fill (ROM_CACHE_EN) and by the 65816 writing code
+    // through the $3100-$32FF window (MMIO_CACHE_WR), so a single "any valid"
+    // bit cannot say which happened.  The state history exists because a
+    // snapshot missed a 2%-duty-cycle ROMST_LOAD in 12 of 12 frames.
+    output        DBG_CACHE_FILL_SEEN,
+    output        DBG_CACHE_MMIO_SEEN,
+    output [6:0]  DBG_ROMST_SEEN
 );
 
 // CPU Registers
@@ -1513,5 +1527,27 @@ assign DBG_GO_CNT    = GO_CNT;
 assign DBG_FLAG_GO   = FLAG_GO;
 assign DBG_CACHE_ANY = |CACHE_VALID;
 assign DBG_EN        = EN;
+assign DBG_ROMST         = ROMST;
+assign DBG_IN_CACHE      = IN_CACHE;
+assign DBG_ROM_CACHE_WAIT = ROM_CACHE_WAIT;
+assign DBG_ROM_LOAD_WAIT  = ROM_LOAD_WAIT;
+
+// Sticky, cleared only by reset.
+reg cache_fill_seen_r = 1'b0, cache_mmio_seen_r = 1'b0;
+reg [6:0] romst_seen_r = 7'd0;
+always @(posedge CLK) begin
+    if (~RST_N) begin
+        cache_fill_seen_r <= 1'b0;
+        cache_mmio_seen_r <= 1'b0;
+        romst_seen_r      <= 7'd0;
+    end else if (ENABLE) begin
+        if (ROM_CACHE_EN)       cache_fill_seen_r <= 1'b1;
+        if (MMIO_CACHE_WR)      cache_mmio_seen_r <= 1'b1;
+        if (ROMST <= 3'd6)      romst_seen_r[ROMST] <= 1'b1;
+    end
+end
+assign DBG_CACHE_FILL_SEEN = cache_fill_seen_r;
+assign DBG_CACHE_MMIO_SEEN = cache_mmio_seen_r;
+assign DBG_ROMST_SEEN      = romst_seen_r;
 
 endmodule

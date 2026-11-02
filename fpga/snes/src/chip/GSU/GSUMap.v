@@ -38,7 +38,14 @@ module GSUMap(
     output [15:0] DBG_GO_CNT,
     output        DBG_FLAG_GO,
     output        DBG_CACHE_ANY,
-    output        DBG_EN
+    output        DBG_EN,
+    output [2:0]  DBG_ROMST,
+    output        DBG_IN_CACHE,
+    output        DBG_ROM_CACHE_WAIT,
+    output        DBG_ROM_LOAD_WAIT,
+    output        DBG_CACHE_FILL_SEEN,
+    output        DBG_CACHE_MMIO_SEEN,
+    output [6:0]  DBG_ROMST_SEEN
 );
 
 wire [20:0] ROM_A;
@@ -59,7 +66,11 @@ GSU GSU(
     .RAM_WE_N(RAM_WE_N), .RAM_CE_N(BSRAM_CE_N),
     .TURBO(TURBO),
     .DBG_GO_CNT(DBG_GO_CNT), .DBG_FLAG_GO(DBG_FLAG_GO),
-    .DBG_CACHE_ANY(DBG_CACHE_ANY), .DBG_EN(DBG_EN)
+    .DBG_CACHE_ANY(DBG_CACHE_ANY), .DBG_EN(DBG_EN),
+    .DBG_ROMST(DBG_ROMST), .DBG_IN_CACHE(DBG_IN_CACHE),
+    .DBG_ROM_CACHE_WAIT(DBG_ROM_CACHE_WAIT), .DBG_ROM_LOAD_WAIT(DBG_ROM_LOAD_WAIT),
+    .DBG_CACHE_FILL_SEEN(DBG_CACHE_FILL_SEEN), .DBG_CACHE_MMIO_SEEN(DBG_CACHE_MMIO_SEEN),
+    .DBG_ROMST_SEEN(DBG_ROMST_SEEN)
 );
 
 assign ROM_ADDR = ({2'b00,ROM_A}) & ROM_MASK[22:0];

@@ -1980,3 +1980,36 @@ Measure what the cache fill is waiting on, because the fault is now a named tran
 - User Test: PASS
 
 ---
+
+## 62 COMMIT Unreleased 2026-11-02T13:39:24-07:00
+
+#### Coming From:
+
+Unreleased 8a1e301
+
+#### Purpose:
+
+Separate the two sources that can set the GSU's cache valid bits and record every ROM state the machine has ever entered, because entry 61's single any-valid bit conflated them and its twelve-frame sample could not see a two-percent-duty-cycle event.
+
+#### Outcome:
+
+The GSU does fetch its own code from the cartridge, and it never reaches the state that completes a cache line, which refutes the reading entry 61 drew and moves the fault onto one specific state-machine transition. Two changes carry it. Inside GSU.v, `CACHE_VALID` has two independent sources and they mean opposite things -- `ROM_CACHE_EN`, set at `ROMST_CACHE_DONE` when the coprocessor has fetched a line itself, and `MMIO_CACHE_WR`, set when the 65816 pushes code in through the `$3100-$32FF` window -- so a sticky bit was added for each rather than one for either. Alongside them a seven-bit `ROMST_SEEN` latches every ROM state ever visited, cleared only by reset, because a snapshot cannot be trusted with rare events: entry 62's own twelve-frame sample had missed a state that a later 150-frame burst saw in three frames. All the new outputs were threaded through GSUMap, main and the top level on the same pattern as entries 61 and 62, and main ties them to zero when `USE_GSU` is 0. The three seeds routed hold-clean, and this cycle packed all three rather than stopping at place and route, so a bitstream was ready when the user asked to deploy: seed 9 was chosen at `iosys.clk` 30.171 against 21.505, 40 percent margin, with `hclk` on measured-good pips only, giving SHA-256 `dc03f216fe6869b7ad07f0cc1553f7cef04900e7c156eb3e149f3c1dcf476586`; seeds 1 and 5 were also packed at 33 and 34 percent as fallbacks. The readout is stable rather than sampled: 58 of 60 captured frames decode identically, which is the property the sticky bits were built for and the first GSU reading in this project that does not depend on catching an instant. It reads `go_seen` set with `GO_CNT` at 48 starts, `cache_seen` set, `cache_mmio_seen` CLEAR, `cache_fill_seen` set, and `ROMST_SEEN` equal to IDLE, FETCH and CACHE_END -- with FETCH_DONE and CACHE_DONE absent. Two things follow and the second is the important one. The refutation first: entry 61 concluded that the valid bits had been set by the 65816 writing the cache through MMIO, and `cache_mmio_seen` being clear says the CPU never did that, so the coprocessor really is fetching its own instructions. The narrowing second: the machine enters FETCH but never enters FETCH_DONE or CACHE_DONE, and `ROMST_CACHE_DONE` is exactly the state that raises `ROM_CACHE_EN` and so sets `CACHE_VALID` from the coprocessor's own fill. A fetch sequence that terminates without its completion state is a state-machine transition fault rather than a memory-latency fault, and it is the first explanation in this investigation that is consistent with every measurement taken: the cache looks partly loaded, the GSU starts and is repolled, no line ever completes, and nothing about the SDRAM path is implicated. Two instrument defects from earlier cycles are named here because this cycle's mechanism fixed both rather than merely avoiding them. The field-width sum is now a constant compared against 80 at elaboration with a deliberately undefined module on mismatch, so a wrong total is a build error; it was verified by breaking the width on purpose and watching synthesis fail. And the samplable-event problem is now solved structurally by latching history instead of hoping a photograph lands on a two-percent window; the 12-frame sample of entry 62 that reported a single value, and the 150-frame burst that had to be histogrammed by hand, would both have been answered by one frame of this build. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 61 were not rewritten, made no change to core-reference.md because the GSU's fetch state machine is project state and its encoding is transcribed in the entry itself, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-two-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find why the fetch leaves `FETCH` without reaching `FETCH_DONE`, because the chain is now a named gap between two adjacent states rather than a class of possibilities. The signals to expose are `ROM_FETCH_START`, `ROM_FETCH_END`, `ROM_FETCH_WAIT` and `ROM_CYCLES`, all inside GSU.v, and the last is the leading suspect: `ROM_CYCLES` is loaded at `GSU.v:926` from `TURBO` and `SPEED`, where `SPEED` is `CLS` and `TURBO` was the undriven net that entry 59 fixed to zero, so a cycle count shorter than the number of clocks the ROM needs to answer would end a fetch before its data arrives and would present exactly as this build does -- fetching, terminating early, never completing a line. TCL-019 records that this board's cartridge answers on the fourth master clock against a fastrom window of three, so the arithmetic is worth doing explicitly rather than assumed: latch `ROM_CYCLES` and count the clocks between `ROM_FETCH_START` and `ROM_FETCH_END`, and compare that count against the number the SDRAM path needs. If the count is too short the fault is a timing constant and the fix is in the GSU's cycle accounting, not in memory. If the strobes never pair at all, the fetch is being aborted by something else and `ROM_FETCH_PEND` and `ROM_FETCH_WAIT` will say which. Do not revisit the earlier questions -- header decode, selection, enable, the start handshake, and whether the cache is filled at all are all measured and settled -- and do not build another probe that samples rather than latches, since this cycle demonstrates that latching costs the same and answers in one frame.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- fpga/snes/src/chip/GSU/GSUMap.v
+- fpga/snes/src/main.v
+- fpga/snes/src/snestang_top.v
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
