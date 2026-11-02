@@ -1865,7 +1865,11 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
     .SPC_MODE(), .IO_ADDR(), .IO_DAT(), .IO_WR(), 
 
     .DBG_SEL(dbg_sel), .DBG_REG(dbg_reg), .DBG_REG_WR(dbg_reg_wr), .DBG_DAT_IN(dbg_dat_in), 
-    .DBG_DAT_OUT(dbg_dat_out), .DBG_BREAK(dbg_break)
+    .DBG_DAT_OUT(dbg_dat_out), .DBG_BREAK(dbg_break),
+
+    // GSU debug state, read by TINYSNES_GSU_PROBE.  Zero when USE_GSU is 0.
+    .GSU_DBG_GO_CNT(gsu_dbg_go_cnt), .GSU_DBG_FLAG_GO(gsu_dbg_flag_go),
+    .GSU_DBG_CACHE_ANY(gsu_dbg_cache_any), .GSU_DBG_EN(gsu_dbg_en)
 );
 `endif
 
@@ -2108,40 +2112,49 @@ end
 always @(*) pp_dbg = {pp_dot_seen, pp_hb_seen, pp_vb_seen};
 `endif
 
+// GSU debug state, always declared because main always drives it.
+wire [15:0] gsu_dbg_go_cnt;
+wire        gsu_dbg_flag_go, gsu_dbg_cache_any, gsu_dbg_en;
+
 `ifdef TINYSNES_GSU_PROBE
-// Diagnostic build: is the GSU selected, is the CPU fetching, and did the game
-// ever talk to the coprocessor?
+// Diagnostic build: is the GSU started, and does it ever load a program?
 //
-// Star Fox renders nothing on a bitstream where the GSU compiles, instantiates,
-// passes every gate and has no undriven nets on its path, while Zelda boots on
-// the same image.  Three faults produce that identical black picture and they
-// need different fixes:
+// The first version of this probe answered the outer question: rom_type decodes
+// as GSU ($70), the cartridge is read continuously, and the 65816 makes tens of
+// thousands of accesses in the GSU's $3000-$32FF window, so the coprocessor is
+// selected, out of reset and being polled.  What it could not say is whether
+// the GSU ever *starts*.  The chain inside GSU.v is:
 //
-//   1. the header is not decoded as GSU, so GSUMap holds the chip in reset and
-//      the ROM mux falls through to the DSP branch -- rom_type[7:4] != 4'h7;
-//   2. the CPU never reaches the code that starts the coprocessor -- no access
-//      ever lands in the GSU's $3000-$32FF register window;
-//   3. the game does start it and it fails anyway -- mmio seen, yet no picture.
+//   $301F write -> GO -> (ENABLE && CLK_CE) -> FLAG_GO -> EN -> executes
 //
-// rom_type and the window address are both observable at this level, so the
-// whole question is answerable without reaching inside GSUMap.
+// and the cache is filled afterwards from ROM_BUF only when the core runs.  So
+// the two bits that separate the remaining faults are whether FLAG_GO ever set
+// (the start landed) and whether any CACHE_VALID line ever set (the core loaded
+// its own program).  GO_CNT counts starts and is upstream's own instrument, kept
+// commented out in that file until now.
+//
+// Both history bits are sticky, latched from reset and cleared only by reset,
+// because a start and a cache fill are single events that a periodic snapshot
+// would otherwise miss -- the reasoning TCL-013 records.
 //
 // probe_bus fields, low to high:
-//   [15:0]  rom_type                        (expect $70 for Star Fox: map $20, type $13)
-//   [31:16] cartridge read edges since reset, saturating
-//   [47:32] reads in the GSU register window $3000-$32FF, saturating
-//   [63:48] {mmio_seen, rom_seen, enable, loaded, header_finished,
-//            vblankn_low_seen, hblankn_low_seen, dotclk_seen, 8'b0}
-//   [79:64] ROM_ADDR[15:0] at the snapshot
+//   [15:0]  rom_type                       (expect $70: map $20, type $13)
+//   [31:16] accesses in the GSU window $3000-$32FF, saturating
+//   [47:32] cartridge read edges since reset, saturating
+//   [63:48] GO_CNT, the GSU's own count of starts
+//   [79:64] {8'b0, cache_any_seen, flag_go_seen, mmio_seen, rom_seen,
+//            enable, loaded, header_finished, dotclk_seen}
 //
-// Band: R = an access has landed in the GSU window, G = the cartridge has been
-// read at all, B = enable.  Red with green is a machine that read Star Fox and
-// never spoke to its coprocessor; no green at all is a CPU that never fetched.
+// Band: R = the GSU ever loaded a cache line, G = the GSU was ever started,
+// B = enable.  Green without red is a coprocessor that starts and never loads
+// its program, which is the ROM-cache-fill path; no green at all is a start
+// write that never lands, which is the $301F handshake.
 reg [15:0] gs_rom_cnt  = 16'd0;
 reg [15:0] gs_mmio_cnt = 16'd0;
 reg        gs_rom_seen = 1'b0, gs_mmio_seen = 1'b0;
-reg        gs_hb_seen  = 1'b0, gs_vb_seen = 1'b0, gs_dot_seen = 1'b0;
-reg        gs_rom_r = 1'b0, gs_dot_r = 1'b0;
+reg        gs_dot_seen = 1'b0;
+reg        gs_go_seen  = 1'b0, gs_cache_seen = 1'b0;
+reg        gs_dot_r = 1'b0;
 reg [21:0] gs_refresh = 22'd0;
 reg [79:0] fp_bus     = 80'd0;
 reg  [2:0] gs_dbg     = 3'b000;
@@ -2154,16 +2167,15 @@ wire gs_in_mmio  = gs_rom_rd && (ROM_ADDR[15:12] == 4'h3) &&
                    (ROM_ADDR[11:8] <= 8'h2);
 
 always @(posedge mclk) begin
-    gs_rom_r <= gs_rom_rd;
     gs_dot_r <= dotclk;
     if (~resetn) begin
-        gs_rom_cnt   <= 16'd0;
-        gs_mmio_cnt  <= 16'd0;
-        gs_rom_seen  <= 1'b0;
-        gs_mmio_seen <= 1'b0;
-        gs_hb_seen   <= 1'b0;
-        gs_vb_seen   <= 1'b0;
-        gs_dot_seen  <= 1'b0;
+        gs_rom_cnt    <= 16'd0;
+        gs_mmio_cnt   <= 16'd0;
+        gs_rom_seen   <= 1'b0;
+        gs_mmio_seen  <= 1'b0;
+        gs_dot_seen   <= 1'b0;
+        gs_go_seen    <= 1'b0;
+        gs_cache_seen <= 1'b0;
     end else begin
         if (gs_rom_rd) begin
             gs_rom_seen <= 1'b1;
@@ -2174,26 +2186,24 @@ always @(posedge mclk) begin
             if (gs_mmio_cnt != 16'hFFFF) gs_mmio_cnt <= gs_mmio_cnt + 16'd1;
         end
         if (gs_dot_edge) gs_dot_seen <= 1'b1;
-        if (~hblankn)    gs_hb_seen  <= 1'b1;
-        if (~vblankn)    gs_vb_seen  <= 1'b1;
+
+        // Sticky: these are single events, not levels.
+        if (gsu_dbg_flag_go)   gs_go_seen    <= 1'b1;
+        if (gsu_dbg_cache_any) gs_cache_seen <= 1'b1;
 
         gs_refresh <= gs_refresh + 22'd1;
         if (gs_refresh[15:0] == 16'd0) begin
-            // Widths must total 80.  The first version of this concatenation
-            // summed to 72, so Verilog zero-extended it and every field landed
-            // eight bits above where the comment above says it is; the stripes
-            // were still readable but by shifting.  rom_type is padded to a
-            // whole stripe here so the documented order is literally true.
-            fp_bus <= {ROM_ADDR[15:0],
-                       gs_mmio_seen, gs_rom_seen, enable, loaded, header_finished,
-                       gs_vb_seen, gs_hb_seen, gs_dot_seen, 8'b0,
-                       gs_mmio_cnt, gs_rom_cnt,
-                       8'b0, rom_type};
+            fp_bus <= {8'b0, gs_cache_seen, gs_go_seen, gs_mmio_seen, gs_rom_seen,
+                       enable, loaded, header_finished, gs_dot_seen,
+                       gsu_dbg_go_cnt,
+                       gs_rom_cnt,
+                       gs_mmio_cnt,
+                       rom_type};
         end
     end
 end
 
-always @(*) gs_dbg = {gs_mmio_seen, gs_rom_seen, enable};
+always @(*) gs_dbg = {gs_cache_seen, gs_go_seen, enable};
 `endif
 
 `ifdef TINYSNES_TIMING_PROBE

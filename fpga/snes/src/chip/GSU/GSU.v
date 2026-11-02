@@ -21,10 +21,16 @@ module GSU(
     input [7:0] RAM_DI,
     output [7:0] RAM_DO,
     output RAM_WE_N,
-    output RAM_CE_N
-    // output DBG_IN_CACHE,
-    //  output Microcode_r DBG_MC;      //for MISTer sdram
-    // output [15:0] DBG_GO_CNT
+    output RAM_CE_N,
+    // TinySNES: upstream left these commented out.  Restored, plus two more,
+    // because they separate a GSU that was never started from one that started
+    // and could not load its program: GO_CNT counts starts, FLAG_GO is the
+    // running flag, CACHE_ANY says whether any instruction-cache line ever
+    // became valid, and DBG_EN is the core's own enable.
+    output [15:0] DBG_GO_CNT,
+    output        DBG_FLAG_GO,
+    output        DBG_CACHE_ANY,
+    output        DBG_EN
 );
 
 // CPU Registers
@@ -1500,6 +1506,12 @@ assign RAM_CE_N = ~ENABLE ? 1'b0 :
 
 // assign DBG_IN_CACHE = IN_CACHE;
 // assign DBG_MC = MC;
-// assign DBG_GO_CNT = GO_CNT;
+// TinySNES: the four debug outputs the GSU probe reads.  CACHE_VALID is 32 bits
+// wide in this core -- nine lines of the 512-byte cache are addressable -- so
+// CACHE_ANY is the reduction of all of it.
+assign DBG_GO_CNT    = GO_CNT;
+assign DBG_FLAG_GO   = FLAG_GO;
+assign DBG_CACHE_ANY = |CACHE_VALID;
+assign DBG_EN        = EN;
 
 endmodule

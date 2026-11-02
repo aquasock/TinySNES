@@ -31,7 +31,14 @@ module GSUMap(
     input [7:0] MAP_CTRL,
     input [23:0] ROM_MASK,
     input [23:0] BSRAM_MASK,
-    input TURBO
+    input TURBO,
+
+    // TinySNES: GSU debug outputs, threaded out so a top-level probe can read
+    // them.  See the note in GSU.v's port list.
+    output [15:0] DBG_GO_CNT,
+    output        DBG_FLAG_GO,
+    output        DBG_CACHE_ANY,
+    output        DBG_EN
 );
 
 wire [20:0] ROM_A;
@@ -50,7 +57,9 @@ GSU GSU(
     .ROM_DI(ROM_Q[7:0]), .ROM_RD_N(ROM_OE_N),
     .RAM_A(RAM_A), .RAM_DI(BSRAM_Q), .RAM_DO(BSRAM_D),
     .RAM_WE_N(RAM_WE_N), .RAM_CE_N(BSRAM_CE_N),
-    .TURBO(TURBO)
+    .TURBO(TURBO),
+    .DBG_GO_CNT(DBG_GO_CNT), .DBG_FLAG_GO(DBG_FLAG_GO),
+    .DBG_CACHE_ANY(DBG_CACHE_ANY), .DBG_EN(DBG_EN)
 );
 
 assign ROM_ADDR = ({2'b00,ROM_A}) & ROM_MASK[22:0];

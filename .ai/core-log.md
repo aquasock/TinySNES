@@ -1947,3 +1947,36 @@ Look inside the GSU, because everything outside it is now measured and correct: 
 - User Test: PASS
 
 ---
+
+## 61 COMMIT Unreleased 2026-11-02T11:26:18-07:00
+
+#### Coming From:
+
+Unreleased f39dad7
+
+#### Purpose:
+
+Find whether Star Fox's coprocessor is started at all and whether it ever loads its own program, since entry 60 established that it is selected and then polled tens of thousands of times without result.
+
+#### Outcome:
+
+The GSU starts sixteen times and never fills a single instruction-cache line, which places the fault in the cache-fill path rather than in the start handshake, the header decode or the enable logic. The instrument was extended rather than replaced: upstream GSU.v leaves its own debug ports commented out, so `DBG_GO_CNT`, `DBG_FLAG_GO` and a new `DBG_CACHE_ANY` reduction over the 32 `CACHE_VALID` bits were restored and threaded out through GSUMap, main and the top level, with main tying all four to zero when `USE_GSU` is 0 so the production build is unaffected. Both history bits are sticky and cleared only by reset, because a start and a cache fill are single events a periodic snapshot would miss, which is the reasoning TCL-013 records. The three seeds routed hold-clean between 28.928 and 29.704 MHz against 21.505 and seed 5 was packed for the best margin and for keeping `hclk` entirely on measured-good pips, giving bitstream `5da6e63f49720f9752daf6362d30fdb9f2816419bd017688fba0dd061f66cf9d` with fclk 301.568, hclk 141.663, `iosys.clk` 29.704 and the GSU cache clock at 504.796 against 65.000 MHz, zero hold/min violations. The readout, captured through /dev/video0 and decoded with geometry measured from the frame rather than guessed, is `rom_type` `$70`, `mmio_cnt` saturated, `rom_cnt` saturated, `go_cnt` 16, and a flag byte of `$7F` with `dot_seen`, `header_finished`, `loaded`, `enable`, `rom_seen`, `mmio_seen` and `go_seen` all set and `cache_seen` clear; the status band was cyan in all twelve frames, which is `{cache_seen, go_seen, enable}` with the top bit clear and agrees with the flag byte independently. The reading is self-consistent and it explains the previous cycle's number: the 65816 writes `$301F` sixteen times, each start sets `FLAG_GO`, the GSU begins fetching its program, the fetch never completes, the coprocessor stops, and the CPU polls and retries, which is exactly the saturated register-window count entry 60 reported. Sixteen starts with no cache line ever valid places the fault at one specific mechanism: from GSU.v's cache block, `IN_CACHE && ~VAL_CACHE && CODE_IN_ROM` raises `ROM_CACHE_WAIT` and the ROM state machine must then reach `ROMST_CACHE_DONE` to set `CACHE_VALID`, and that transition is never happening. Three defects in this cycle's own instruments are recorded because the first two produced wrong numbers before being caught. The `fp_bus` concatenation summed to 72 bits rather than 80, because `rom_type` is eight bits wide and was listed as sixteen, so Verilog zero-extended the value and every field again landed eight bits above where the comment puts it -- the same mistake as entry 60, made a second time in the same probe. `tools/decode_probe_frame.py` was then run against the capture and returned low-confidence garbage, 99 of 176 bit-votes on two stripes, because its geometry assumption that the bars span the whole capture width does not hold when a pillarbox is present; decoding it by eye against measured bar pitch instead gave the values above. A third, smaller fault was that the first pixel probe of the frame sampled the dark grey pillarbox rather than the picture window. The pattern across entries 60 and 61 is worth naming plainly: three separate field-width and geometry errors in one instrument, each of which produced a plausible-looking readout rather than an error, and the only reason they were caught is that the pad and flag fields have known expected values. One cross-cutting observation is recorded for a later cycle rather than acted on here. The production cell count from current HEAD is 44,305 against 43,620 at the pre-GSU baseline, a 1.6 percent drift spread across every module including ones this work never touched; synthesis is deterministic, two identical runs both giving 44,137 for one tree, and the drift is ABC9 partition noise rather than added logic, but the production build at HEAD has never been boot-tested and must be before anything ships. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 60 were not rewritten, made no change to core-reference.md because the GSU's internal fetch state machine is project state rather than an externally defined fact, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-one-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Measure what the cache fill is waiting on, because the fault is now a named transition that never happens rather than a coprocessor that does not work. Four signals separate the remaining possibilities and all live inside GSU.v, so the same debug-port route this cycle used will carry them: `ROM_CACHE_WAIT`, which is raised when the GSU's program counter is inside the cache window and that line is not yet valid and would prove the fill was requested at all; `IN_CACHE`, since if it is never high then `CACHE_POS[15:9]` is non-zero and the GSU's PC is outside the current cache block, which is a different fault from a stalled fetch; `ROMST`, the fetch state machine, which says where a requested fill stalls; and `ROM_LOAD_WAIT`, which covers the other path into the same machine and is raised by an `R14` change. If `ROM_CACHE_WAIT` never raises, investigate `CACHE_POS` and `CBR` rather than the memory path. If it raises and `ROMST` never reaches `ROMST_CACHE_DONE`, the fill is stalling in the ROM fetch and the leading suspect is the SDRAM read latency this board has measured at four master clocks against a fastrom window of three (TCL-019), because the GSU's cache is filled from `ROM_BUF` one byte per fetch and sixteen bytes per line. Do not rebuild the outer probe again: header decode, enable, selection and the start handshake are all measured and correct. Before adding any more fields, apply the fix this cycle's mistakes earned -- make the probe's field widths a parameter list that is checked at elaboration against the bus width, so a mismatch is a build error and not a readout that has to be decoded around by hand, and give `tools/decode_probe_frame.py` a picture-window measurement so its geometry assumption survives a pillarbox. Both are small and both would have prevented an error that was made twice in two cycles.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- fpga/snes/src/chip/GSU/GSUMap.v
+- fpga/snes/src/main.v
+- fpga/snes/src/snestang_top.v
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

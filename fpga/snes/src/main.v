@@ -56,8 +56,14 @@ module main (
 	output            ARAM_OE_N,
 	output            ARAM_WE_N,
 
+	// TinySNES: GSU debug outputs, restored and extended for the GSU probe.
+	// Zero when USE_GSU is 0, so the production build is unaffected.
 	// output            GSU_ACTIVE,
 	// input             GSU_TURBO,
+	output [15:0]     GSU_DBG_GO_CNT,
+	output            GSU_DBG_FLAG_GO,
+	output            GSU_DBG_CACHE_ANY,
+	output            GSU_DBG_EN,
 
 	input             BLEND,
 	input             PAL,
@@ -528,10 +534,17 @@ GSUMap GSUMap
 	.ROM_MASK(ROM_MASK),
 	.BSRAM_MASK(RAM_MASK),
 
-	.TURBO(GSU_TURBO)
+	.TURBO(GSU_TURBO),
+	.DBG_GO_CNT(GSU_DBG_GO_CNT), .DBG_FLAG_GO(GSU_DBG_FLAG_GO),
+	.DBG_CACHE_ANY(GSU_DBG_CACHE_ANY), .DBG_EN(GSU_DBG_EN)
 );
-end else
+end else begin
 assign MAP_ACTIVE[2] = 0;
+assign GSU_DBG_GO_CNT = 16'd0;
+assign GSU_DBG_FLAG_GO = 1'b0;
+assign GSU_DBG_CACHE_ANY = 1'b0;
+assign GSU_DBG_EN = 1'b0;
+end
 endgenerate
 
 // assign GSU_ACTIVE = MAP_ACTIVE[2];
