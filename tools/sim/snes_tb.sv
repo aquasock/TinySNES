@@ -164,18 +164,32 @@ module snes_tb;
 
   // ------------------------------------------------------------ WRAM model
   //
-  // With +wlat=N the answer is delayed by N clocks, the same way +lat delays the
-  // cartridge.  Without this the bench cannot express the thing that matters
-  // most about this board: on the board both WRAM and the cartridge live in
-  // SDRAM behind one controller, so a DMA whose source is WRAM is reading from a
-  // memory that answers late, and the DMA's write window closes on a fixed
-  // schedule.  A bench that answers WRAM instantly cannot fail that way, which is
-  // why the DMA bug reproduced only on hardware.
+  // With +wlat=N a WRAM read is answered N clocks late, the same way +lat delays
+  // the cartridge.  Without this the bench cannot express the thing that matters
+  // most about this board: WRAM and the cartridge both live in SDRAM behind one
+  // controller, so a DMA whose source is WRAM reads from a memory that answers
+  // late while the DMA's write window closes on a fixed schedule.  A bench that
+  // answers WRAM instantly cannot fail that way, which is why this bug showed up
+  // on hardware and nowhere else.
+  //
+  // The wait is a registered flag that always expires, and deliberately not a
+  // function of the bus strobes.  Testing "is this a read" with WRAM_OE_N or
+  // WRAM_WE_N looks natural and deadlocks: those strobes are gated by P65_EN,
+  // which is gated by MEM_WAIT, so once the wait is raised the access stops
+  // looking like a read and never releases.  That was measured -- the flag version
+  // and the strobe version disagree, and only the flag one lets the machine run.
+  // Ageing from the address change instead means the wait is cleared by time, so
+  // a wrong guess about the direction costs a delayed access rather than a hung
+  // machine.
   integer wlat = 0;
+  wire dma_active_now = dut.CPU.DMA_RUN | dut.CPU.HDMA_RUN;
+  wire wram_access_is_write = dma_active_now ? dut.CPU.DMA_A_WR
+                                             : ~dut.CPU.P65_R_WN;
   reg [7:0] wram_pipe [0:8];
   integer wi;
   reg [23:0] wram_addr_q = 24'hFFFFFF;
   integer    wram_age    = 0;
+  reg        wram_pending = 1'b0;
   reg [7:0]  wram_q_next;
 
   always @(posedge clk) begin
@@ -184,17 +198,37 @@ module snes_tb;
     for (wi = 8; wi > 0; wi = wi - 1)
       wram_pipe[wi] <= wram_pipe[wi-1];
 
-    if (RAMSEL_N !== 1'b0 || CA !== wram_addr_q) begin
-      wram_addr_q <= CA;
-      wram_age    <= 0;
-    end else if (wram_age < 32) begin
-      wram_age <= wram_age + 1;
+    if (RAMSEL_N !== 1'b0) begin
+      wram_addr_q  <= CA;
+      wram_age     <= 0;
+      wram_pending <= 1'b0;
+    end else if (CA !== wram_addr_q) begin
+      // A new access has been issued, and only reads are held.
+      //
+      // The direction has to come from a signal the wait does not itself gate.
+      // CPUWR_N will not do: it is driven from P65_EN, which is driven from
+      // MEM_WAIT, so holding a write makes the write look like a read and the
+      // byte is never stored -- measured, not supposed.  The 65816's own R/W line
+      // and the DMA channel's direction are both valid with the address, so the
+      // wait depends on them and not on the strobe being modelled.
+      wram_addr_q  <= CA;
+      wram_age     <= 0;
+      wram_pending <= ~wram_access_is_write;
+    end else if (wram_pending) begin
+      if (wram_age >= wlat) begin
+        wram_pending <= 1'b0;
+        wram_age     <= 0;
+      end else begin
+        wram_age <= wram_age + 1;
+      end
     end
   end
 
   always @(posedge clk) begin
-    if (!WRAM_CE_N && !WRAM_WE_N)
+    if (!WRAM_CE_N && !WRAM_WE_N) begin
       wram[WRAM_ADDR] <= WRAM_D;
+      if (bl != 0) $fdisplay(bl, "%0d WRAM[%05X] <= %02X", cyc, WRAM_ADDR, WRAM_D);
+    end
     WRAM_Q <= (wlat == 0) ? wram_q_next : wram_pipe[wlat];
   end
 
@@ -254,7 +288,7 @@ module snes_tb;
   end
 
   assign mem_wait = ((ROMSEL_N === 1'b0) && (cart_age <= rom_lat))
-                 || ((RAMSEL_N === 1'b0) && (wram_age <= wlat));
+                 || ((RAMSEL_N === 1'b0) && wram_pending);
 
   // ------------------------------------------------------------ cart DI mux
   // The core selects the cartridge only when ROMSEL is low and RAMSEL is high;
@@ -339,9 +373,25 @@ module snes_tb;
   always @(posedge clk) begin
     pa_wr_p <= PAWR_N;
     if (bl != 0)
-      $fdisplay(bl, "%0d bbus_wr=%b pa=%02X do=%02X ca=%06X ramsel=%b romsel=%b rd=%b",
-                cyc, ~PAWR_N, PA, dut.CPU.DO, CA, RAMSEL_N, ROMSEL_N, CPURD_N);
+      $fdisplay(bl, "%0d bbus_wr=%b pa=%02X mdr=%02X cpu_di=%02X wq=%02X waddr=%03X ca=%06X mw=%b ds=%0d",
+                cyc, ~PAWR_N, PA, dut.CPU.DO, dut.CPU.DI, WRAM_Q, WRAM_ADDR, CA,
+                mem_wait, dut.CPU.DS);
   end
+
+  // Deliberately free of any signal a candidate fix introduces, so the same
+  // bench builds against the baseline and against a patched core.  Referencing
+  // DMA_SRC_STALL here made the baseline fail to elaborate, which is how a
+  // comparison silently becomes one-sided.
+
+  // What the palette actually received.  Reading the bus is not enough: a byte
+  // can sit on DI, be written to $2122 and still not become a colour, because
+  // CGRAM only latches a word on the second byte.  This logs the latch itself,
+  // so "the transfer put the wrong byte on the bus" and "the PPU ignored it" stay
+  // apart.
+  always @(posedge clk)
+    if (bl != 0 && dut.PPU.CGRAM_WE)
+      $fdisplay(bl, "%0d CGRAM[%02X] <= %04X", cyc,
+                dut.PPU.CGRAM_ADDR, dut.PPU.CGRAM_D);
 
   // Every CPU write, by bank:offset, so the question "does the game touch the
   // PPU" is answered by the bus rather than by a filter that could be wrong.
