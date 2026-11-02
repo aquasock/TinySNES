@@ -1231,6 +1231,91 @@ def wramrw_program() -> bytes:
     return bytes(code)
 
 
+JML_TARGET_OFF = 0x1000       # ROM offset of the routine, reached at $00:9000
+
+
+def jmltest_program(opcode: int = 0x5C, target: int = 0x9000) -> bytes:
+    """Does a long jump to ROM work?  The control for `wramexec`.
+
+    `wramexec` came back red: the CPU did not paint green from sixteen bytes it
+    had stored at $7E:0200.  That was read as "the CPU cannot fetch from WRAM",
+    but every cartridge that failed there used `JML` and every cartridge that
+    passed used plain `JMP`, so the two were confounded and the conclusion was not
+    supported by the evidence.
+
+    This cartridge separates them.  It sets the backdrop red, turns the display
+    on, and long-jumps to a routine in ROM at $00:9000 -- same instruction, same
+    operand size, same target encoding, only the destination bank differs.
+
+      backdrop green   `JML` works, so fetching into bank $7E really is the fault
+                       and the earlier conclusion stands.
+      backdrop red     `JML` itself does not work in this core, and `wramexec`
+                       was measuring the jump rather than the fetch.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank
+    lda(0x00)
+    sta(0x212C)                     # no layers: the backdrop is the picture
+    sta(0x2121)                     # CGRAM entry 0
+    lda(0x1F)
+    sta(0x2122)
+    lda(0x00)
+    sta(0x2122)                     # entry 0 = red, the failure colour
+    lda(0x0F)
+    sta(0x2100)                     # display on: RED from here
+
+    if opcode == 0x5C:
+        emit(0x5C, target & 0xFF, target >> 8, 0x00)    # JML $00:target
+    else:
+        # JMP absolute, which cannot leave bank $00 -- the control that proves the
+        # rest of this cartridge is sound if `JML` turns out to be the fault.
+        emit(0x4C, target & 0xFF, target >> 8)          # JMP target
+
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+
+    return bytes(code)
+
+
+def jml_landing_routine() -> bytes:
+    """The green-painting routine the jump lands on, placed at ROM offset $1000.
+
+    It ends with `BRA -2`, which spins in place, so the routine does not have to
+    know its own address and the same bytes can be planted at any offset.
+    """
+    return bytes([
+        0xA9, 0x00, 0x8D, 0x21, 0x21,      # LDA #$00 / STA $2121   CGRAM entry 0
+        0xA9, 0xE0, 0x8D, 0x22, 0x21,      # LDA #$E0 / STA $2122   green low
+        0xA9, 0x03, 0x8D, 0x22, 0x21,      # LDA #$03 / STA $2122   green high
+        0x80, 0xFE,                        # BRA -2                 spin here
+    ])
+
+
 def build(mode: str = "blink") -> bytes:
     rom = bytearray(ROM_SIZE)
     vectors: dict[int, int] | None = None
@@ -1258,6 +1343,16 @@ def build(mode: str = "blink") -> bytes:
         # works and absolute addressing used the wrong bank; red in both means the
         # fetch itself is what fails.
         body = wramexec_program(use_long=True)
+    elif mode == "jmltest":
+        body = jmltest_program(0x5C)
+    elif mode == "jmptest":
+        body = jmltest_program(0x4C)
+    elif mode == "jmpnear":
+        # The same plain JMP, but to a landing routine at ROM offset $0030, which
+        # is inside the region the working cartridges already execute from.
+        # Green here and red in `jmptest` would put the fault on the far ROM
+        # offset rather than on the jump instruction.
+        body = jmltest_program(0x4C, target=0x8030)
     elif mode == "wramexec":
         body = wramexec_program()
     elif mode == "aputest":
@@ -1280,6 +1375,14 @@ def build(mode: str = "blink") -> bytes:
         # Green $03E0 at the top of a 512 KiB image, reached as $0F:8000.
         rom = bytearray(rom) + bytearray(512 * 1024 - len(rom))
         rom[0x78000:0x78002] = bytes([0xE0, 0x03])
+    if mode == "jmpnear":
+        # Landing routine at ROM offset $0030, which is $00:8030 -- inside the
+        # first 64 bytes, the region every working cartridge already executes.
+        rom[0x30:0x30 + 13] = jml_landing_routine()
+    if mode in ("jmltest", "jmptest"):
+        # The landing routine at $00:9000, which is ROM offset $1000 in a LoROM
+        # image: far from the code, but the same low 32 KiB bank.
+        rom[JML_TARGET_OFF:JML_TARGET_OFF + 13] = jml_landing_routine()
     if mode == "highbank":
         # $00,$7C is blue $7C00.  It lives at bank $01 address $8000, which is
         # ROM offset 0x8000 -- outside the bank the program itself runs in.
@@ -1339,7 +1442,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", default="build/rom/tinysnes_blink.sfc")
-    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmarom", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw"),
+    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmarom", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear"),
                     help="blink: alternate the backdrop colour (tests the whole "
                          "video path).  flash: alternate force-blank (tests only "
                          "whether a PPP write reaches the PPU)")
