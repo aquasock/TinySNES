@@ -54,6 +54,31 @@ clk_first="${TINYSNES_CLK_FIRST:-iosys.clk}"
 # this board.  TINYSNES_ALLOW_UNMEASURED_CLOCKS=1 downgrades that to a warning.
 allow_unmeasured="${TINYSNES_ALLOW_UNMEASURED_CLOCKS:-0}"
 
+# Refuse to build a diagnostic combination that cannot show what the operator is
+# being asked to look at.  Two cycles were lost to this: a build carrying a probe
+# define draws the probe's own bars because `TINYSNES_PROBE_BARS` overrides the
+# production picture, and a build that was reported as "no change" had actually
+# never been given a cartridge, so the screen had no colour in it to change.  The
+# check is here rather than in the operator's head because it has been got wrong
+# twice, and the second time it was reported to the user as a measurement.
+probe_bars=""
+for d in ${TINYSNES_DEFINES:-}; do
+    case "$d" in
+        -DTINYSNES_FETCH_PROBE|-DTINYSNES_CPU_PROBE|-DTINYSNES_TRACE_PROBE|-DTINYSNES_LIVE_PROBE|\
+        -DTINYSNES_APU_PROBE|-DTINYSNES_IPL_PROBE|-DTINYSNES_LINK_PROBE|-DTINYSNES_WHERE_PROBE|\
+        -DTINYSNES_JUMP_PROBE|-DTINYSNES_STACK_PROBE|-DTINYSNES_STACKBYTES_PROBE|\
+        -DTINYSNES_INSN_PROBE|-DTINYSNES_IRQ_PROBE|-DTINYSNES_WAIT_PROBE|\
+        -DTINYSNES_PIXEL_PROBE|-DTINYSNES_SELFTEST_PROBE|-DTINYSNES_TIMING_PROBE|\
+        -DTINYSNES_LINEFILL_PROBE)
+            probe_bars="${probe_bars} ${d#-D}" ;;
+    esac
+done
+if [[ -n "$probe_bars" ]]; then
+    echo "NOTE: this build replaces the picture with the probe display (${probe_bars# })."
+    echo "      The screen will show 16-bar stripes and a status band, NOT the line"
+    echo "      buffer.  Do not read 'the same grid' from a build like this."
+fi
+
 [[ -f "$suite/environment" ]] || { echo "missing open toolchain: $suite" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$suite/environment"

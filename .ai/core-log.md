@@ -1587,3 +1587,34 @@ Find out why the line buffer's port B does not return what port A writes, becaus
 - User Test: NOT RUN
 
 ---
+
+## 50 COMMIT Unreleased 2026-11-01T17:08:23-07:00
+
+#### Coming From:
+
+Unreleased c73ed62
+
+#### Purpose:
+
+Correct entry 49's claim that the line buffer cannot be read back on hardware, which was drawn from a capture taken with no cartridge loaded, and make the two reporting traps that produced it impossible to repeat silently.
+
+#### Outcome:
+
+The line buffer does work on the Tang, and entry 49 said it did not. The counter build `TINYSNES_BUF_PATTERN`, which writes the memory from a free-running counter on every master clock with nothing for synthesis to prove, fills the whole screen with horizontal colour bands when it is actually run: 3,287 distinct colours, 693,505 pixels different from the grid, changing on every capture, and the full 256-pixel width. The write counter in a build carrying both `TINYSNES_BUF_PATTERN` and `TINYSNES_LINEFILL_PROBE` reads 16,383 of 16,384 master clocks, saturated, so the writes are not merely present in the netlist but happening on the device. Entry 49 read the same build as showing the unchanged grid for two separate reasons, both recorded here because both were avoidable. First, the capture that was called "the grid" hashes to the dark no-signal frame, not the grid: no cartridge had been streamed, so the screen had no colour in it to change and would have looked the same whatever the buffer held. Second, the follow-up capture did carry a cartridge but the bitstream under test had `TINYSNES_LINEFILL_PROBE` in it, and that define sets `TINYSNES_PROBE_BARS`, so the stripes on screen were the probe's own display and not the line buffer at all. This is the second time the probe-bars overlap has produced a false negative -- entry 47 retracted the same mistake on the same class of build -- so the guard now lives in the tool rather than in my discipline: `tools/build_tinysnes.sh` inspects `TINYSNES_DEFINES` and, for any define that sets `TINYSNES_PROBE_BARS`, prints a notice that the picture will be the probe display and not the line buffer, before synthesis starts. A new `TINYSNES_BUF_ADDRTEST` build was written to separate the two remaining variables, writing unconditionally so nothing can fold, with the address taken from the PPU's own `{ys[4:0], xs[8:1]}` exactly as the shipping path builds it; its netlist survives synthesis with the write port present, and on hardware it changes 38,565 pixels spanning the full capture width and most of the height, which shows `xs` and `ys` do advance across the buffer rather than sitting in one column. Its screen is otherwise black rather than the constant colour written, and that result is not explained here: the earlier inference that a stuck `OUT_X` explained the single-column change of entry 47 is withdrawn for the third time and should not be reinstated without a measurement that distinguishes a write which lands from a read which sees it. What is now established on hardware, each by a build that cannot be argued with: the raster runs, the display carries live data when `rgb` is driven directly, the line buffer's port A takes writes every clock, port B returns them to the screen across the full width, and the PPU's pixel coordinates span the buffer. What remains is the write gate, which synthesis still folds. The geometry claim of entry 47 is also corrected as a consequence: the grid is the memory's own power-up gradient, since the initial fill writes `{j&31, j&31, j&31}` into the first 512 words and the lit rows read back as a repeating grey ramp, so port B was working all along and the grid was never evidence of a read fault. The default build is unaffected, with synthesis clean and all nine probe benches passing. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 49 were not rewritten and recorded the corrections here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fifty entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Return to the write gate, now that every other part of the video path is established on hardware, and treat the fold as the only remaining defect: `tools/check_linebuf_synth.sh` is the acceptance test and the default configuration still folds, while the RTL is proven correct by `tools/tests/video2_tb.sv`'s 25,759,024 write-enable assertions and by the three hardware builds that write the buffer successfully. Four RTL formulations have failed, so the next attempt should be a build-configuration change rather than another gate expression: synthesise the affected cone with ABC9 disabled, or mark the memory `(* abc9_box *)`, and check the result with the same script before any deployment. That trades area for correctness on a design that is not close to its limits, and it is the user's decision to make rather than mine to take. Also worth resolving before the next hardware claim: the `TINYSNES_BUF_ADDRTEST` build writes a constant through the PPU's coordinates and reads back black, which is inconsistent with everything else measured and should be explained rather than filed.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- tools/build_tinysnes.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

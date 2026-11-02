@@ -369,7 +369,30 @@ assign linefill_bus = lf_bus;
 assign linefill_dbg = lf_dbg;
 `endif
 
-`ifdef TINYSNES_BUF_PATTERN
+`ifdef TINYSNES_BUF_ADDRTEST
+// Diagnostic build: write the buffer unconditionally, but address it with the
+// PPU's own coordinates.
+//
+// BUF_PATTERN proves the memory and both its ports work: writing a counter into
+// every address fills the screen with colour bands, 693,505 pixels different from
+// the grid.  What it does not test is whether the PPU's xs and ys -- the
+// coordinates the shipping write uses for its address -- are any good, because it
+// replaces them with a counter.
+//
+// Here the write enable is unconditional, so synthesis has nothing to prove and
+// cannot fold anything, while the address comes from {ys[4:0], xs[8:1]} exactly as
+// the shipping path builds it.  The value written is a constant bright colour.
+//
+// If the screen fills with a solid colour, xs and ys span their whole range and the
+// address path is sound, which puts the fault back on the gate.  If only part of
+// the screen changes -- a column, or a band -- then xs or ys is not advancing, and
+// the picture of a single changed column seen in the counter build is explained.
+    always @(posedge clk) begin
+        mem_portA_addr  <= {ys[BUF_WIDTH-1:0], xs[8:1]};
+        mem_portA_wdata <= 15'h7FFF;
+        mem_portA_we    <= 1'b1;
+    end
+`elsif TINYSNES_BUF_PATTERN
 // Diagnostic build: prove the line buffer and its read path on hardware, with no
 // dependence on the SNES, the PPU or the write gate.
 //
