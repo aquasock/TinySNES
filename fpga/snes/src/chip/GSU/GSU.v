@@ -44,7 +44,19 @@ module GSU(
     // snapshot missed a 2%-duty-cycle ROMST_LOAD in 12 of 12 frames.
     output        DBG_CACHE_FILL_SEEN,
     output        DBG_CACHE_MMIO_SEEN,
-    output [6:0]  DBG_ROMST_SEEN
+    output [6:0]  DBG_ROMST_SEEN,
+    // Fourth round: execution state.  SFR is the register the 65816 polls at
+    // $3031, so it says directly what the CPU is waiting on, and STATE_SEEN is
+    // a sticky bit per microcode state so a rare one cannot be missed.
+    output [15:0] DBG_SFR,
+    output [15:0] DBG_STATE_SEEN,
+    // Fifth round: the core's own flags beside the exported SFR, plus whether
+    // an OP_STOP was ever executed.  SFR reads all-zero while GO_CNT counts
+    // starts, so either the GSU really stops immediately or the MMIO read path
+    // at $3031 does not return what the core holds; these separate the two.
+    output        DBG_FLAG_GO_INT,
+    output        DBG_FLAG_R_INT,
+    output        DBG_STOP_SEEN
 );
 
 // CPU Registers
@@ -1549,5 +1561,26 @@ end
 assign DBG_CACHE_FILL_SEEN = cache_fill_seen_r;
 assign DBG_CACHE_MMIO_SEEN = cache_mmio_seen_r;
 assign DBG_ROMST_SEEN      = romst_seen_r;
+
+reg [15:0] state_seen_r = 16'd0;
+always @(posedge CLK) begin
+    if (~RST_N)
+        state_seen_r <= 16'd0;
+    else if (ENABLE)
+        state_seen_r[STATE[3:0]] <= 1'b1;
+end
+assign DBG_SFR        = SFR;
+assign DBG_STATE_SEEN = state_seen_r;
+
+reg stop_seen_r = 1'b0;
+always @(posedge CLK) begin
+    if (~RST_N)
+        stop_seen_r <= 1'b0;
+    else if (ENABLE && CPU_EN && OP.OP == OP_STOP)
+        stop_seen_r <= 1'b1;
+end
+assign DBG_FLAG_GO_INT = FLAG_GO;
+assign DBG_FLAG_R_INT  = FLAG_R;
+assign DBG_STOP_SEEN   = stop_seen_r;
 
 endmodule

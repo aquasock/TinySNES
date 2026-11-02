@@ -221,6 +221,26 @@ fi
 [[ "$stage" == synth ]] && { echo "stopping after synthesis"; exit 0; }
 
 # --------------------------------------------------------------- 2. place and route
+#
+# `pack` means "pack the routed netlist that is already here", not "place and
+# route again".  There was no early exit for it, so TINYSNES_STAGE=pack re-ran
+# nextpnr and *overwrote* tinysnes-routed.json and timing.json before packing.
+# nextpnr does not reproduce a placement from an unchanged netlist and seed, so
+# the bitstream that shipped was routinely a different placement from the one
+# whose timing, hold and clock-plane gates had just been checked -- and a seed
+# that gated clean could fail the re-run.  Both were observed: seed 1 of the
+# GSU probe passed place and route and then hit 'Hold/min time violation for
+# clock posedge fclk' on the pack stage's redundant run.  Skipping the re-run
+# makes the packed bitstream exactly the one that was gated, and drops the stage
+# from minutes to seconds.
+if [[ "$stage" == pack ]]; then
+    [[ -f "$out/tinysnes-routed.json" ]] || {
+        echo "no routed netlist in $out; run TINYSNES_STAGE=pnr first" >&2
+        exit 2
+    }
+    echo "=== 2. placement and routing (reused) ==="
+    echo "    $out/tinysnes-routed.json"
+else
 echo "=== 2. placement and routing ==="
 export NPNR_GOWIN_CLK_FIRST="$clk_first"
 "$nextpnr" \
@@ -257,6 +277,7 @@ plane_args=()
     "$out/tinysnes-routed.json" "${plane_args[@]}" || exit 1
 
 [[ "$stage" == pnr ]] && { echo "stopping after place and route"; exit 0; }
+fi   # end of the non-pack branch: place and route
 
 # --------------------------------------------------------------- 3. timing gate and pack
 # The gate is Fmax only.  Hold violations reported by nextpnr do not block a

@@ -2043,3 +2043,38 @@ None.
 - User Test: N/A
 
 ---
+
+## 64 COMMIT Unreleased 2026-11-02T14:50:47-07:00
+
+#### Coming From:
+
+Unreleased 468805c
+
+#### Purpose:
+
+Fix the pack stage so a packed bitstream is the one that was gated, build a single source of truth for probe field order, and establish whether the GSU path is a regression or first bring-up.
+
+#### Outcome:
+
+Three results, one of them a correction to this session's own method and one of them reframing the whole GSU investigation. First, the pack stage was wrong and is fixed. `TINYSNES_STAGE=pack` had no early exit, so it re-ran synthesis, place and route and the clock-plane check before packing, overwriting `tinysnes-routed.json` and `timing.json` in the process. Because nextpnr does not reproduce a placement from an unchanged netlist and seed, every bitstream this session shipped was routinely a different placement from the one whose timing, hold and clock-plane gates had just been read -- and a seed that gated clean could fail the redundant re-run. Both were observed: seed 1 of the GSU internal-flags probe passed place and route and then died on `Hold/min time violation for clock posedge fclk` in the pack stage's second run. The stage now reuses the existing routed netlist, exits with a clear message if there is none, and takes 7.2 seconds instead of about five minutes; packing the same netlist twice produces byte-identical bitstreams, which it previously could not. The gates printed during a pack now come from the stored `timing.json`, so they describe the file that ships. Second, `tools/probe_fields.py` makes field order a property of one list rather than of two hand-written places. Four consecutive cycles (60 to 63) shipped a probe whose displayed field order was wrong and each was caught by luck; the elaboration-time width check added in entry 62 catches a wrong total but not a wrong order. The new tool holds `FIELDS` as the single description, decodes a captured word from it, and `--verify` parses the actual Verilog concatenation and compares both order and width against it, exiting non-zero on any mismatch. It was mutation-tested twice and caught both mutations, and it caught two mistakes while being written: a nested concatenation miscounted as several fields, and a search that matched a comment mentioning the probe name rather than the `` `ifdef `` line, which compared against the wrong probe entirely. The parser now tracks brace depth and anchors on the directive. Third, and this is the reframing: the GSU path is not a regression, it is first bring-up. `chip/GSU/` has been in the tree since the original port commit `bdfe60b`, but `GSU_PKG.v`, `GSU.v` and `GSUMap.v` were never in the build script's source list until entry 59 added them, nothing in the tree ever defined `CHIP_GSU` before this session, and `config.v` still does not. The user reports that nand2mario's focus was the 60K board and that the 138K was secondary, that TangCore's SNES and GBA cores both show graphical glitches, and that no special cartridge has ever been run on either -- so the strong likelihood is that the SuperFX portion of SNESTang was never validated on any board. GSU.v also carries a stale `// XXX 512-byte dual-port ram as cache` marker and derives from srg320's MiSTer core, with GSUMap.v as upstream's adapter to this bus, which makes that adapter the most likely place an integration gap sits. The probe built this cycle added the core's internal `FLAG_GO` and `FLAG_R` and a sticky `OP_STOP`-seen bit beside the exported `SFR`, to separate a GSU that stops immediately from one whose status the 65816 cannot see. Its readout, 58 of 60 captured frames identical and decoded through the new shared spec, is `stop_seen` set, `flag_go_int` clear, `flag_r_int` clear, `sfr` `0x0008` and `state_seen` `0x0007`. The internal flags and the exported register agree, so the `$3031` read path is not at fault and the earlier suspicion that it was has been withdrawn; what the machine shows is a GSU that is started, executes a `STOP` almost at once, and leaves the 65816 polling a coprocessor that has already halted. That is consistent with the microcode never advancing past state 2, and with code that the core is fetching but not decoding as the program the 65816 intended. One process failure is recorded plainly because it recurred in this very cycle. The flags field was misread twice before being decoded correctly -- first as `flag_go_int` set when bit 2 is `stop_seen`, and only a re-derivation of the concatenation put it right -- which is the fifth decode error of the investigation and the reason `probe_fields.py` now exists. The lesson is that a raw 16-bit word carrying packed sub-fields is not a readout; it has to be named before it can be believed. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 63 were not rewritten, made no change to core-reference.md because the findings here are build-process and project-state facts rather than externally defined ones, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-four-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Stop probing the board and build a GSU bench under Verilator, because the hardware loop has returned one word per forty minutes across six cycles and the question has changed from "what is broken" to "is this code correct at all". The decisive fact is that the GSU has never been simulated in this project: `tools/sim/snes_tb.sv` instantiates `SNES.v`, which contains the CPU, PPU and APU but no cartridge mapper, while the GSU lives one level up in `main.v` -- so every GSU measurement so far has come from hardware with no simulation reference to compare against. `tools/tests/main_hde_tb.sv` already instantiates `main.v` and is the model to extend: build a bench that instantiates `main` with `USE_GSU=1` against behavioural cartridge, WRAM and ARAM, loads a minimal four-instruction GSU program through the same MMIO path the 65816 uses, starts it, and writes a VCD so every internal signal is visible once instead of one 16-bit stripe per hardware cycle. The end objective for this thread is an internal screenshot: a frame rendered out of simulation showing Star Fox's Arwing flying, captured by the same pixel-tap mechanism `tools/tests/video2_tb.sv` already uses to write a PPM. Work the pipeline one stage at a time and record each stage as its own entry, as this project has done throughout: first prove the GSU is clocked and its PC advances, then that it decodes the opcode the CPU placed, then that it returns a result the CPU reads, and only then integrate the plot path that draws to the framebuffer. Do not touch the board for this thread -- the Tang is to be left alone until the simulation produces a frame. Do not re-measure anything the hardware already settled: header decode, selection, enable, MMIO cache loading, the fetch path and the `$3031` read path are all confirmed good and are not to be revisited. Separately from the GSU, the user reports a mirrored column at the left edge of Zelda's picture which is present in nand2mario's own Gowin build and therefore not a regression introduced here; it belongs to the `snes2hdmi` horizontal addressing and deserves its own cycle once the GSU thread reaches its objective.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- fpga/snes/src/chip/GSU/GSUMap.v
+- fpga/snes/src/main.v
+- fpga/snes/src/snestang_top.v
+- tools/build_tinysnes.sh
+- tools/probe_fields.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
