@@ -129,7 +129,12 @@ assign P =  OP_ALU[3:1] == 3'b100 ? 16'h0001 :
             OP_P == 2'b10 ? M : 
             N;
 
-always @(OP_ALU, P, Q, ALU_R, FLAGS, OP_A) begin : P5
+// TinySNES: `always @*` where upstream lists its sensitivity by hand.  FLAGS is
+// an unpacked array (reg [5:0] FLAGS[0:1]), and an unpacked array is not a legal
+// event expression: slang rejects it with "invalid type 'reg[5:0]$[2]' for event
+// expression" and the whole design fails to elaborate.  Gowin EDA accepted it,
+// which is why upstream never noticed.  @* is what the hand-written list meant.
+always @* begin : P5
     reg FC;
     reg [15:0] CARRY;
 

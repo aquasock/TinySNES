@@ -1824,3 +1824,34 @@ None.
 - User Test: PASS
 
 ---
+
+## 57 COMMIT Unreleased 2026-11-02T08:33:46-07:00
+
+#### Coming From:
+
+Unreleased adc0299
+
+#### Purpose:
+
+Enable the cartridge DSP and prove it by booting Super Mario Kart, the first title in the project to exercise a coprocessor.
+
+#### Outcome:
+
+Super Mario Kart boots on the Tang with the DSP active, confirmed by the user on HDMI, and the reason it had never done so is not a configuration choice but a compile failure that had been invisible since the port to this flow. Four links in the chain were each measured rather than inferred. First, config.v's `` `define CHIP_DSPn `` never reaches snestang_top.v at all, because read_slang treats every source file as its own compilation unit, so a macro defined in one file is not visible in another; elaborating the shipped design with `-D CHIP_DSPn` on the command line produces an elaboration error that config.v's own define never produces, which is the proof. Second, because CHIP_DSPn was therefore never set, `parameter USE_DSPn=0` and the `generate if (USE_DSPn)` in DSP_LHRomMap.v never elaborated, so DSPn was never instantiated. Third, DSPn.v itself does not compile under slang: line 132 reads `always @(OP_ALU, P, Q, ALU_R, FLAGS, OP_A)` and FLAGS is declared `reg [5:0] FLAGS[0:1]`, an unpacked array, which is not a legal event expression; slang rejects it with `invalid type 'reg[5:0]$[2]' for event expression`, and Gowin EDA's acceptance of the same text is why upstream never saw it. Forcing the generate block on reproduces that exact error, which is what ties the four links together. Fourth, with the sensitivity list repaired the DSP's `$readmemh` calls for `dsp11b23410_p.hex` and `dsp11b23410_d.hex` cannot be opened from the repository root, because the file names carry no path; adding `-I $src/src/chip/DSP` to the read_slang invocation resolves them with no source change. Two edits carry the fix: DSPn.v line 132 becomes `always @*` with a `// TinySNES:` comment recording why, and build_tinysnes.sh gains that include path. The default build is unchanged by both, verified by elaborating with and without the define: the default configuration produces 43,620 cells before the edit and 43,620 after, so the repair is inert unless the DSP is actually enabled. With `-DCHIP_DSPn` the netlist grows to 46,603 cells, an increase of 2,983, and DSPn's own internals appear where the baseline had none -- STACK_RAM 89 cells, PROG_ROM 184, DATA_ROM 468, DATA_RAM 90, FLAGS 46 -- which is the check that the instance is really present rather than merely expected. A six-seed sweep of seeds 1, 3, 5, 7, 9 and 11 routed every one hold-clean with the SNES master clock between 29.211 and 30.958 MHz against 21.505, and all six took the same clock plane as the proven build, `hclk` on SPINE25/SPINE26 CBRIDGEOUT_BOTTOM2 and `iosys.clk` on SPINE16/TOP0 with SPINE0/TOP0 and SPINE25/TOP1 unmeasured, so seed 1 was packed for its margin of 30.958 MHz, 44 percent. The deployed bitstream is build/dsp_synth-sweep/s1/tinysnes.fs, SHA-256 `33ab578f81ce7fb0472091eb579cce69c14bf09d8cd64d8582c5ab847e4339e9`, passing the gates at fclk 231.160 against 64.516, hclk 121.065 against 74.250 and iosys.clk 30.958 against 21.505 MHz with zero hold/min violations. The regression was run before the DSP title and passed: Zelda, a plain LoROM cartridge with no coprocessor, still boots on this exact bitstream, which establishes that enabling the DSP did not disturb the non-DSP path. Super Mario Kart was then streamed on the same bitstream with no reflash, and the loader correctly identified it as HiROM with header at 0xFFC0 scoring 7 against 2, which matters because this cartridge is HiROM where every previous test image was LoROM. One operational fact was established by the user and is worth carrying forward: streaming a second cartridge immediately after a first without rebooting the Tang left the new cartridge unloaded and the screen black, and the load succeeded once the board was rebooted between images. That is a third distinct cartridge-loading failure in this project, separate from the silent flash of BRD-003 and from the `loaded` state cleared by a flash, and until it is understood a ROM swap should be preceded by a reboot. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 56 were not rewritten, made no change to core-reference.md because the read_slang compilation-unit behaviour is recorded here and is a candidate for a TCL record in a later cycle, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fifty-seven-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Record the read_slang per-file compilation-unit behaviour in core-reference.md as a TOOLCHAIN record before any further chip work, because it is the reason two of the three macros in config.v are inert today -- CHIP_DSPn was, and MCU_BL616 still is -- and it will be the identical wall that stops CHIP_GSU for the SuperFX. The record should carry the reproduction: a design elaborated with `-D <macro>` behaves differently from the same design relying on the macro inside config.v, and a parameter override on a module whose parameters are declared in the body rather than in a parameter port list is silently ignored under read_slang even though read_verilog honours it. Then enable the SuperFX on the model this cycle established: add the three chip/GSU files to the build script's source list, build with `-DCHIP_GSU`, and expect a fresh seed sweep and its own margin check because the GSU is far larger than the DSP -- Star Fox is the gate, and the same Zelda regression must be repeated on the GSU bitstream before the target title is loaded. Before that, diagnose the ROM-swap failure, because it will corrupt every subsequent chip result if a cartridge silently fails to load and the failure is read as a chip fault: the instrument is a boot with a known-good cartridge after a swap, and the cheapest discriminator is whether `loaded` is set in that state, which the core already exposes. Do not treat the inert MCU_BL616 as a defect to fix in the same cycle -- both branches of that condition are tie-offs and the machine boots either way, and changing it while testing a coprocessor would add a second behavioural variable -- but do record it. The remaining chip families have no model in this tree at all: SA-1, CX4, S-DD1, SPC7110 and ST010 are named in smc_parser.v for detection only, so those are RTL projects rather than build configuration.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/DSP/DSPn.v
+- tools/build_tinysnes.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
