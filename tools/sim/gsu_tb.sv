@@ -144,6 +144,9 @@ module gsu_tb (
     void'($value$plusargs("frame=%s", frame_path));
     void'($value$plusargs("romtype=%d", romtype_val));
     void'($value$plusargs("lat=%d", rom_lat));
+    void'($value$plusargs("glat=%d", gsu_lat));
+    void'($value$plusargs("bwlat=%d", bwlat));
+    if (gsu_lat > 8) gsu_lat = 8;
     if (rom_lat > 8) rom_lat = 8;
     if (rom_lat < 0) rom_lat = 0;
     if (rom_lat != 0) $display("  [bench] cartridge latency %0d mclk", rom_lat);
@@ -187,7 +190,25 @@ module gsu_tb (
     for (rp = 8; rp > 0; rp = rp - 1) rom_pipe[rp] <= rom_pipe[rp-1];
     rom_pipe[0] <= rom[ROM_ADDR[19:0]];
   end
-  assign ROM_Q = {8'h00, rom_pipe[rom_lat]};
+  // A second, independent delay for reads the GSU initiates.  +lat delays every
+  // cartridge read, which makes it impossible to test the coprocessor beyond the
+  // latency the 65816 itself tolerates: at +lat=6 the CPU freezes at $00:9E4A
+  // and the GSU is never started, so the run says nothing about GSU timing.  On
+  // the board the CPU clearly works at whatever its real latency is, since Zelda
+  // and Super Mario Kart boot, so the GSU needs to be testable on its own.
+  //
+  // The GSU owns the ROM port whenever rom_type selects it (MAP_ACTIVE[2]), and
+  // gsu_active below mirrors that.
+  integer gsu_lat = -1;
+  // Select on the GSU actually fetching, NOT on rom_type.  Keying on rom_type
+  // matched every read while the GSU owned the port mux -- including the
+  // 65816's own instruction fetches, which GSUMap passes straight through when
+  // the GSU is idle -- so the CPU starved and go_cnt stayed 0 at every setting,
+  // which is what gave the mistake away.
+  wire gsu_active = (GSU_ROMST != 3'd0);
+  wire [7:0] rom_q_slow = rom_pipe[rom_lat];
+  wire [7:0] rom_q_gsu  = (gsu_lat >= 0) ? rom_pipe[gsu_lat] : rom_q_slow;
+  assign ROM_Q = {8'h00, gsu_active ? rom_q_gsu : rom_q_slow};
 
   // ----------------------------------------------------------- WRAM model
   reg [7:0] wram [0:131071];
@@ -230,13 +251,36 @@ module gsu_tb (
   // ---------------------------------------------------------- BSRAM model
   // Star Fox's header declares no battery RAM, but the GSU uses this window as
   // its own work RAM, so the model must store.  It is the GSU's only writable
-  // memory.
+  // memory, and on the board it lives in the same SDRAM as the cartridge.
+  //
+  // +bwlat models the board's request/acknowledge handshake.  That handshake is
+  // a toggle pair -- the controller services when `req ^ ack`, and both sides
+  // flip a bit -- so if a second request arrives before the first is serviced
+  // the difference disappears and BOTH are lost.  snestang_top passes
+  // `.bsram_req_ack()` unconnected, so the GSU side never knows whether the
+  // controller caught up.  With +bwlat=0 (the default) this bench answers
+  // instantly and can never show the race, which is why the coprocessor looked
+  // healthy in simulation and not on the board.
+  integer bwlat = 0;
+  integer bw_busy = 0;
+  integer bw_dropped = 0;
+  integer bw_writes = 0;
   reg [7:0] bsram [0:131071];
   initial for (i = 0; i < 131072; i = i + 1) bsram[i] = 8'h00;
   reg [7:0] bsram_q_r;
   always @(posedge clk) begin
-    if (!BSRAM_CE_N && !BSRAM_WE_N) bsram[BSRAM_ADDR] <= BSRAM_D;
-    bsram_q_r <= bsram[BSRAM_ADDR];
+    if (bw_busy > 0) bw_busy <= bw_busy - 1;
+    if (!BSRAM_CE_N && !BSRAM_WE_N) begin
+      bw_writes <= bw_writes + 1;
+      if (bw_busy > 0) begin
+        bw_dropped <= bw_dropped + 1;      // the toggle pair collapsed
+      end else begin
+        bsram[BSRAM_ADDR] <= BSRAM_D;
+        bw_busy <= bwlat;
+      end
+    end
+    if (bwlat == 0) bsram_q_r <= bsram[BSRAM_ADDR];
+    else if (bw_busy == 0) bsram_q_r <= bsram[BSRAM_ADDR];
   end
   assign BSRAM_Q = bsram_q_r;
 
@@ -428,6 +472,7 @@ module gsu_tb (
                GSU_SFR, GSU_STATE_SEEN, GSU_ROMST_SEEN);
       $display("  GSU cache fill_seen %b  mmio_seen %b  in_cache %b",
                GSU_CACHE_FILL_SEEN, GSU_CACHE_MMIO_SEEN, GSU_IN_CACHE);
+      $display("  BSRAM writes %0d, dropped %0d (bwlat=%0d)", bw_writes, bw_dropped, bwlat);
       $display("  frame: %0d pixels captured (full frame = 57344)", fb_captured);
       if (frame_path != 0) write_ppm(frame_path);
       if (fd != 0) $fclose(fd);

@@ -144,7 +144,11 @@ reg RAM_PCF_WAIT;
 reg RAM_FETCH_WAIT;
 reg RAM_CACHE_WAIT;
 reg RAM_PCF_FULL;
-reg [2:0] ROM_ACCESS_CNT;
+// TinySNES: widened from 3 bits.  ROM_CYCLES is the GSU's fixed guess at how
+// long the cartridge takes; upstream's 1..3 assumes a chip that answers in a
+// few clocks, and this board's lives in SDRAM.  4 bits lets ROM_CYCLES reach
+// 13, whose LOAD path needs +2 and so still fits.
+reg [3:0] ROM_ACCESS_CNT;
 reg [2:0] RAM_ACCESS_CNT;
 wire CODE_IN_ROM;
 wire CODE_IN_RAM;
@@ -879,7 +883,7 @@ reg ROM_FETCH_START;
 reg ROM_LOAD_END;
 reg ROM_FETCH_END;
 reg R14_CHANGE_LATCH;
-reg [2:0] ROM_CYCLES;
+reg [3:0] ROM_CYCLES;
 
 always @(negedge CLK) begin
     if (~RST_N) begin
@@ -939,7 +943,7 @@ end
 always @(posedge CLK) begin
     if (~RST_N) begin
         ROMDR <= {8{1'b0}};
-        ROM_ACCESS_CNT <= 3'b010;
+        ROM_ACCESS_CNT <= 4'd2;
         ROM_LOAD_START <= 1'b0;
         ROM_FETCH_START <= 1'b0;
         ROM_LOAD_END <= 1'b0;        
@@ -966,11 +970,11 @@ always @(posedge CLK) begin
             // signature the board showed.  5 is the largest value whose
             // +2 for the LOAD path still fits ROM_ACCESS_CNT's three bits.
             if (TURBO) 
-                ROM_CYCLES <= 3'b101;
+                ROM_CYCLES <= 4'd9;
             else if (SPEED == 1'b0) 
-                ROM_CYCLES <= 3'b101;
+                ROM_CYCLES <= 4'd9;
             else 
-                ROM_CYCLES <= 3'b101;
+                ROM_CYCLES <= 4'd9;
 
             R14_CHANGE_LATCH <= 1'b0;
             if (CPU_EN && R14_CHANGE) 
@@ -985,12 +989,12 @@ always @(posedge CLK) begin
             ROMST_IDLE : 
                 if (ROM_LOAD_PEND) begin
                     FLAG_R <= 1'b1;
-                    ROM_ACCESS_CNT <= ROM_CYCLES + 2;
+                    ROM_ACCESS_CNT <= ROM_CYCLES + 4'd2;
                     ROM_LOAD_START <= 1'b1;
                     ROMST <= ROMST_LOAD;
                     // GSU_ROM_RD <= '1';
                 end else if (ROM_FETCH_PEND) begin
-                    ROM_ACCESS_CNT <= ROM_CYCLES - 1;
+                    ROM_ACCESS_CNT <= ROM_CYCLES - 4'd1;
                     ROM_FETCH_START <= 1'b1;
                     ROMST <= ROMST_FETCH;
                     // GSU_ROM_RD <= '1';
@@ -1029,7 +1033,7 @@ always @(posedge CLK) begin
             ROMST_CACHE : 
                 if (RON) begin
                     ROM_ACCESS_CNT <= ROM_ACCESS_CNT - 1;
-                    if (ROM_ACCESS_CNT == 3'd0) begin
+                    if (ROM_ACCESS_CNT == 4'd0) begin
                         ROM_BUF <= ROM_DI;
                         ROMST <= ROMST_CACHE_DONE;
                     end
