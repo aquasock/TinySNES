@@ -955,12 +955,22 @@ always @(posedge CLK) begin
         end
       //			GSU_ROM_RD <= '0';
         if (EN) begin
+            // TinySNES: 5 rather than 1/2/3.  The GSU latches ROM_DI after
+            // counting ROM_CYCLES of RON, and each GSU cycle is two master
+            // clocks because CLK_CE toggles -- so upstream's 1 to 3 is 2 to 6
+            // mclk.  This board's cartridge lives in SDRAM and answers about
+            // four mclk after the address appears (TCL-019), plus a register in
+            // main.v, so the data is late and the GSU latched garbage.  In the
+            // bench this is the difference between a working cache fill at
+            // +lat=0..2 and none at all at +lat=3..4, which is exactly the
+            // signature the board showed.  5 is the largest value whose
+            // +2 for the LOAD path still fits ROM_ACCESS_CNT's three bits.
             if (TURBO) 
-                ROM_CYCLES <= 3'b010;
+                ROM_CYCLES <= 3'b101;
             else if (SPEED == 1'b0) 
-                ROM_CYCLES <= 3'b001;
+                ROM_CYCLES <= 3'b101;
             else 
-                ROM_CYCLES <= 3'b011;
+                ROM_CYCLES <= 3'b101;
 
             R14_CHANGE_LATCH <= 1'b0;
             if (CPU_EN && R14_CHANGE) 

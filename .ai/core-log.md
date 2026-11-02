@@ -2111,3 +2111,35 @@ Continue the thread in simulation and do not touch the board until the pipeline 
 - User Test: PASS
 
 ---
+
+## 66 COMMIT Unreleased 2026-11-02T16:16:30-07:00
+
+#### Coming From:
+
+Unreleased de21a43
+
+#### Purpose:
+
+Carry the GSU cycle-count fix to the Tang and re-run the control cartridges, to find out whether raising ROM_CYCLES helps Star Fox without disturbing the paths that already work.
+
+#### Outcome:
+
+Three control cartridges were run on one bitstream carrying `ROM_CYCLES = 5`, and Zelda and Super Mario Kart both pass while Star Fox still fails, so the change is safe for the non-GSU paths but is not yet sufficient for the coprocessor. The bitstream is build/gf_s5/tinysnes.fs, SHA-256 `be612b18f31fe268bc027e6d4be03e8ed053f24e016da17e3812226f78c007c1`, seeded at `iosys.clk` 29.911 against 21.505 MHz for 39 percent margin with `hclk` entirely on measured-good pips and zero hold/min violations. Zelda boots instantly and Super Mario Kart runs its full attract sequence, so the wider GSU fetch window did not break the plain LoROM path or the DSP path. Star Fox shows the same failure as before: the static tile grid appears, then the picture goes black, which is a released machine drawing nothing rather than one held in reset. The reasoning that produced the change is recorded because it is the first time this project predicted a hardware failure from simulation rather than the reverse. The bench gained a `+lat` cartridge model, mirroring `snes_tb`'s, and with it Star Fox fails in simulation at a cartridge latency of three and four master clocks while succeeding at zero, one and two -- `cache_fill_seen` goes from set to clear and `go_cnt` from many to one. That is the same signature the board's own probe reported in entry 62, `go_cnt` in the teens and `cache_fill_seen` clear, and the mechanism is `GSU.v`'s ROM fetch latching `ROM_DI` after counting `ROM_CYCLES` of `RON` while `CLK_CE` toggles, giving upstream's 1 to 3 GSU cycles only two to six master clocks; the board's cartridge answers on the fourth (TCL-010) plus a register stage in `main.v`, so the GSU latched whatever was on the bus before the data arrived. Raising `ROM_CYCLES` to 5, the largest value whose `+2` for the LOAD path still fits `ROM_ACCESS_CNT`'s three bits, restored the cache fill in simulation at `+lat=4` and produced a full boot there with 750 GSU starts, all seven ROM states, 5.89M VRAM writes and the CPU in game code. On hardware it did not. The honest reading is therefore that the simulation now reproduces the board's failure and predicts a direction, but the board's real cartridge path is either slower than the four master clocks TCL-010 measured or there is a second GSU fault behind the first, and neither is established. A capture and still frames of a separate rendering defect were taken while SMK ran and are recorded for a later cycle as the user asked, not pursued now: a vertical band at the far left of the picture in which sprites are not drawn, visible during SMK's attract sequence as a character sprite crossing the band and being clipped, with background layers rendering normally through it. The user reports the same defect in nand2mario's own Gowin build, so it is upstream and not a regression from this port. The strongest candidate found by inspection is a read/write race on the sprite pixel buffer at the start of each scanline rather than a clipping error: `ppu_defines.vh` sets `SPR_GET_PIX_START` to 16 and `SPR_GET_PIX_END` to 271 in H_CNT units, so the window in which sprites are fetched and written into `SPR_BUF` begins on the same dot as the first visible pixel rather than during the preceding blanking, while `ppu.v` reads that buffer out through `SPR_PIX_DATA_BUF <= SPR_PIX_Q` at `SPR_PIXEL_X`, incremented once per fetched pixel. If the sprite time engine has not yet written the leftmost addresses when the leftmost pixels are read, those pixels see stale or zero sprite data, which produces a fixed-width band at the left that affects sprites and not backgrounds -- exactly what is observed. Two consequences make this worth recording rather than guessing at: the band's width should be measurable as the sprite time engine's latency, and a fix would move the fetch earlier into blanking rather than shift coordinates. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 65 were not rewritten, made no change to core-reference.md because the TCL-010 latency figure it would need is already recorded there and the sprite band is a candidate rather than a settled fact, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-six-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out how slow the board's cartridge path really is before changing the GSU timing again, because the simulation says `+lat=4` is passable at `ROM_CYCLES = 5` while the board still fails, and the two readings can be reconciled only by measuring rather than by raising the number. The instrument is the existing bench run at `+lat` 5, 6 and 7 with the current RTL: if Star Fox fails in simulation at the latency the board actually has, the fix is to widen `ROM_ACCESS_CNT` so `ROM_CYCLES` can go higher than 5, and if it passes at every latency the board could plausibly have, then a second GSU fault exists and the next probe should read `ROM_FETCH_PEND`, `ROM_ACCESS_CNT` and `ROM_BUF` at the moment `ROMST` reaches `FETCH_DONE`, to see whether the byte latched is the byte the cartridge holds. Do that entirely in simulation -- the board is not to be touched until the bench predicts a pass, which is the discipline this cycle established and the reason the failure was reproducible at all. Do not raise `ROM_CYCLES` again without a simulation result at a matching latency, and do not treat the SMK and Zelda passes as evidence about the GSU, since they exercise no coprocessor and were run precisely to establish that the change was safe. The sprite band at the left edge is recorded above with its candidate cause and should get its own cycle later: the measurement to take first is the band's width in SNES pixels, since the sprite time engine's latency predicts it, and a bench that renders a sprite crossing the left edge would settle it without hardware.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- tools/sim/gsu_tb.sv
+- tools/sim/run_gsu_sim.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---

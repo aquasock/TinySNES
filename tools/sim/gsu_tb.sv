@@ -143,6 +143,10 @@ module gsu_tb (
     void'($value$plusargs("hex=%s", hex_path));
     void'($value$plusargs("frame=%s", frame_path));
     void'($value$plusargs("romtype=%d", romtype_val));
+    void'($value$plusargs("lat=%d", rom_lat));
+    if (rom_lat > 8) rom_lat = 8;
+    if (rom_lat < 0) rom_lat = 0;
+    if (rom_lat != 0) $display("  [bench] cartridge latency %0d mclk", rom_lat);
     void'($value$plusargs("cycles=%d", cycles_max));
     void'($value$plusargs("trace=%s", trace_path));
     void'($value$plusargs("vcd=%s", vcd_path));
@@ -167,8 +171,23 @@ module gsu_tb (
   // the CPU ran garbage, drifted out of the cartridge and never reached the GSU.
   // Indexing directly is the fix; snes_tb.sv remaps because SNES.v hands it CA
   // rather than a linear offset, which is the difference that misled me.
-  wire [7:0] rom_byte = rom[ROM_ADDR[19:0]];
-  assign ROM_Q = {8'h00, rom_byte};
+  // The board's cartridge lives in SDRAM behind a controller that answers about
+  // four master clocks after the address appears (TCL-019), while this bench
+  // would otherwise answer in the same clock.  +lat makes the model match the
+  // hardware, and it is the difference most likely to separate "works in
+  // simulation" from "works on the Tang": the GSU latches ROM_DI after counting
+  // ROM_CYCLES of RON, and if the data is not there yet it latches garbage.
+  integer rom_lat = 0;
+  reg [7:0] rom_pipe [0:8];
+  integer rp;
+  initial begin
+    for (rp = 0; rp < 9; rp = rp + 1) rom_pipe[rp] = 8'h00;
+  end
+  always @(posedge clk) begin
+    for (rp = 8; rp > 0; rp = rp - 1) rom_pipe[rp] <= rom_pipe[rp-1];
+    rom_pipe[0] <= rom[ROM_ADDR[19:0]];
+  end
+  assign ROM_Q = {8'h00, rom_pipe[rom_lat]};
 
   // ----------------------------------------------------------- WRAM model
   reg [7:0] wram [0:131071];

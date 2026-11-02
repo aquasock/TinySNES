@@ -18,6 +18,7 @@
 #   --vcd          dump waves to <out>/waves.vcd
 #   --out DIR      output directory (default build/gsusim)
 #   --define X     extra Verilator -D define, repeatable
+#   --lat N        cartridge read latency in mclk (default 0; the board is ~4)
 #   --romtype N    mapper chip bits after the header arrives (default 112 = $70,
 #                  GSU; use 32 = $20 for a plain LoROM control run)
 #
@@ -31,6 +32,7 @@ shift || true
 cycles=400000
 vcd=0
 rt=112
+lat=0
 out="$root/build/gsusim"
 defines=()
 while [[ $# -gt 0 ]]; do
@@ -40,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --out)    out="$2"; shift 2 ;;
         --define) defines+=("-D$2"); shift 2 ;;
     --romtype) rt="$2"; shift 2 ;;
+    --lat) lat="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -102,7 +105,7 @@ for f in "${sources[@]}"; do
     [[ -f "$f" ]] || { echo "missing source: $f" >&2; exit 2; }
 done
 
-args=(+hex="$hex" +cycles="$cycles" +trace="$out/gsu.trace" +frame="$out/frame.ppm" +romtype="$rt")
+args=(+hex="$hex" +cycles="$cycles" +trace="$out/gsu.trace" +frame="$out/frame.ppm" +romtype="$rt" +lat="$lat")
 [[ "$vcd" == 1 ]] && args+=("+vcd=$out/waves.vcd")
 
 cd "$out"
