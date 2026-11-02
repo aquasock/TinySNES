@@ -370,6 +370,24 @@ module snes_tb;
   // visible pixels and how many colour changes reach the output.  This is the one
   // reading that says a boot reached the picture rather than merely running code,
   // and it needs no capture card.
+  // One frame of the picture the PPU produces, written as a PPM so it can be
+  // looked at.  Reading a colour-change count says "something moved"; it does not
+  // say whether a game drew its title screen or the machine emitted noise, and
+  // the difference between those two decides where the next fault is.
+  integer fp;
+  initial fp = 0;
+  reg [14:0] frame_buf [0:255*224];
+  integer fx, fy;
+  reg frame_done_d = 1'b0;
+  always @(posedge clk) begin
+    if (fp != 0) begin
+      if (HDE) begin
+        if (dut.PPU.Y_OUT < 9'd224 && dut.PPU.X_OUT < 9'd256)
+          frame_buf[dut.PPU.Y_OUT*256 + dut.PPU.X_OUT] <= RGB_OUT;
+      end
+    end
+  end
+
   integer vf;
   initial vf = 0;
   integer hde_count = 0;
@@ -593,6 +611,12 @@ module snes_tb;
         end
       end
       begin
+        reg [1023:0] fp_path;
+        if ($value$plusargs("frame=%s", fp_path)) begin
+          fp = 1;
+        end
+      end
+      begin
         reg [1023:0] vl_path;
         if ($value$plusargs("vramlog=%s", vl_path)) begin
           vlog = $fopen(vl_path, "w");
@@ -621,6 +645,24 @@ module snes_tb;
     $display("video: HDE pixels=%0d, colour changes on HDE=%0d, final RGB=%04X",
              hde_count, rgb_changes, RGB_OUT);
     $display("vram writes=%0d", vram_wr);
+    begin
+      reg [1023:0] fp_path2;
+      if ($value$plusargs("frame=%s", fp_path2)) begin
+        integer fd;
+        fd = $fopen(fp_path2, "w");
+        if (fd != 0) begin
+          $fdisplay(fd, "P3 256 224 255");
+          for (fy = 0; fy < 224; fy = fy + 1)
+            for (fx = 0; fx < 256; fx = fx + 1)
+              $fdisplay(fd, "%0d %0d %0d",
+                        (frame_buf[fy*256+fx] >> 10) & 31,
+                        (frame_buf[fy*256+fx] >> 5) & 31,
+                        frame_buf[fy*256+fx] & 31);
+          $fclose(fd);
+          $display("frame written to %0s", fp_path2);
+        end
+      end
+    end
     if (tf != 0) $fclose(tf);
     $finish;
   end

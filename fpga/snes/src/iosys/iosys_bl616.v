@@ -62,21 +62,28 @@ localparam [8*STR_LEN-1:0] CONF_STR = "Tangcores;-;O12,OSD key,Right+Select,Sele
 localparam CLK_FREQ = FREQ;
 localparam BAUD_RATE = 2_000_000;
 
-reg overlay_reg = 1;
-`ifdef TINYSNES_NO_OSD
-// Diagnostic build: hold the on-screen display off.
+// The on-screen display is removed from this build.
 //
-// overlay_reg powers up set, and snes2hdmi draws the menu BRAM in preference to
-// the picture while it is set, so a core whose OSD-off frame never arrives shows
-// the menu for ever.  The menu is a fixed grid of text cells, which is exactly
-// what this project has been calling "the static grid" and reading as a broken
-// PPU on every build since entry 25.  Tying it off turns the grid into the one
-// thing that settles the question: if the grid is the OSD, the picture behind it
-// appears; if it is not, the grid stays and the OSD is exonerated.
+// Why, rather than left as a runtime toggle.  `overlay_reg` powers up set, and
+// `snes2hdmi` draws the overlay in preference to the picture while it is set, so
+// the machine is invisible until the host sends the OSD-off command over the
+// UART.  That command is sent at the end of `tools/load_snes_rom.py`, which means
+// everything before it -- the whole upload, and any load where the command is
+// dropped -- shows the OSD instead of the SNES.  That is a second, independent
+// reason for a black or corrupt screen that has nothing to do with the core.
+//
+// It also has no consumer here.  TinySNES has no menu, the character buffer is
+// never written by anything in this tree, and the tool that is meant to provide
+// the OSD later is TinyDesk.  So the display is tied off rather than toggleable:
+// a runtime flag that can silently come back on is exactly the kind of state that
+// produced the wrong readings this project has already paid for twice.
+//
+// What remains is `textdisp` itself, kept instantiated and clocked so nothing
+// else in the iosys hierarchy changes shape, but with its output unused.  The
+// menu BRAM is initialised from font.vh and logo.vh and is ~2 KB of block RAM;
+// that is left in place rather than removed, because deleting it is a separate
+// change to a vendor-primitive wrapper and this one is about the picture.
 assign overlay = 1'b0;
-`else
-assign overlay = overlay_reg;
-`endif
 
 reg [7:0] rom_loading_reg = LOADING_STATE;
 assign rom_loading = rom_loading_reg;
@@ -284,7 +291,12 @@ always @(posedge clk) begin
                         rom_do_valid <= 1;      // pulse data valid
                     end
                     8: begin
-                        overlay_reg <= rx_data[0];
+                        // Overlay control is accepted and ignored.  The display
+                        // is tied off above; dropping the write rather than the
+                        // whole command keeps the frame length and the byte
+                        // count unchanged, so the host's protocol state machine
+                        // sees exactly what it saw before.
+                        ;
                     end
                     9: begin
                         case (data_cnt)

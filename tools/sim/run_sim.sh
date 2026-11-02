@@ -98,7 +98,7 @@ for f in "${sources[@]}"; do
 done
 
 args=(+hex="$hex" +cycles="$cycles" +lat="$lat" +wlat="$wlat" +stoplow="$stoplow"
-      +trace="$out/pc.trace" +oplog="$out/op.log" +pplog="$out/ppu.log" +spclog="$out/spc.log" +apulog="$out/apu.log" +wrlog="$out/wr.log" +vidlog="$out/vid.log" +vramlog="$out/vram.log" +buslog="$out/bus.log" +rom="$rom")
+      +trace="$out/pc.trace" +oplog="$out/op.log" +pplog="$out/ppu.log" +spclog="$out/spc.log" +apulog="$out/apu.log" +wrlog="$out/wr.log" +vidlog="$out/vid.log" +vramlog="$out/vram.log" +buslog="$out/bus.log" +frame="$out/frame.ppm" +rom="$rom")
 [[ "$vcd" == 1 ]] && args+=("+vcd=$out/waves.vcd")
 
 cd "$out"
