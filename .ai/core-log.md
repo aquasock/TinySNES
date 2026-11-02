@@ -1794,3 +1794,33 @@ Play a retail title past its title screen, which requires controller input over 
 - User Test: pass, Zelda: A Link to the Past runs with correct video and audio
 
 ---
+
+## 56 COMMIT Unreleased 2026-11-02T07:54:31-07:00
+
+#### Coming From:
+
+Unreleased 69dc6dc
+
+#### Purpose:
+
+Deploy the bitstream entry 54 recorded as proven and confirm a retail cartridge still boots, establishing the board's working state at the start of a new session.
+
+#### Outcome:
+
+The Legend of Zelda: A Link to the Past runs on the Tang with correct video and correct audio, confirmed by the user on the board's HDMI output, and no RTL changed this cycle; the work was a deployment of an already-proven image plus the record of two facts that differ from what the project had written down. The bitstream deployed was `build/faithful-sweep/s9/tinysnes.fs`, SHA-256 `e6ebba7ac2aa8af5f0c58be8742b84da7d336e88a88c2b171c4f2691d1a7814d`, which is the seed 9 placement of entry 54. Its gates read fclk 245.459 against 64.516 MHz, hclk 129.752 against 74.250 and `iosys.clk` 30.631 against 21.505 MHz, with zero hold/min violations; `hclk` took `SPINE25/CBRIDGEOUT_BOTTOM2` and `SPINE26/CBRIDGEOUT_BOTTOM2`, both measured good on this board, while `iosys.clk` took `SPINE16/CBRIDGEOUT_TOP0` alongside `SPINE24/TOP0` and `SPINE25/TOP1`, which are unmeasured and were admitted by `TINYSNES_ALLOW_UNMEASURED_CLOCKS=1`. Note also that `build/tinysnes/` is stale -- it holds `01e89c09` from entry 3, not the proven image -- so a successor must deploy from `build/faithful-sweep/s9` or rebuild and re-check the spine rather than trusting the default output directory. The cartridge came from the operator's MiSTer card rather than from `/tmp`, and its identity is worth recording because it is not the image the project has been measuring: SHA-256 `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`, 1 MiB, LoROM, header type `$02`, checksum `AF0D` against a valid `$50F2` complement, reset vector `$8000`, and a map byte at `$7FD5` of `$20` -- LoROM without the FastROM bit -- where the recorded `75267ac6` image reads `$30`. The consequence is bounded and worth stating precisely: TCL-019 puts the FastROM access window at three master clocks against a board path that answers on the fourth, so a SlowROM image sits on the safer side of that threshold, and this result therefore neither confirms nor refutes TCL-019; what it establishes is that a SlowROM LoROM cartridge boots on the same bitstream that boots the FastROM one, so the set of working cartridges is wider than a single hash and a later measurement must not be discarded merely for naming a different image. The first flash of this file produced a black screen, reported by the user, and reloading the identical file and restreaming the cartridge produced the working picture. That is the third recorded occurrence of the silent-flash failure BRD-003 describes and the first in which the reload was the only variable changed, which is what makes it evidence for that record rather than a repetition of it. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 55 were not rewritten, made no change to `core-reference.md` because a cartridge's identity and a flash outcome are build results rather than externally defined facts and belong in this log, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fifty-six-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Play the same cartridge past its title screen, which now needs only the one thing this machine has never exercised: controller input over the BL616 link. The path exists in the RTL -- `iosys_bl616` command `0x09` loads `hid1` and `hid2`, `snestang_top` ORs them into `joy1` and `joy2` at the `SNES` instantiation, and the core serialises them into the joypad registers -- but no probe has ever read `$4218` and no game has been played with a pad, so a title screen that ignores every input is currently indistinguishable from a dead link. Resolve it with the self-checking cartridge pattern the project already uses rather than with a new probe: add a mode to `tools/make_test_rom.py` that polls `$4218` and `$4219` and writes the observed button word into the `$00:0010` latch that `TINYSNES_SELFTEST_PROBE` already reads, so the result comes back through an instrument that needs no new display. Confirm the button bit order against the `SNES` joypad serialiser before building anything, because the shift order is the one part a plausible-looking readout cannot validate. Then, and only then, the two items entry 55 left: remove the inert `TINYSNES_CART_WAIT` block and the `cpu_dout_tog` stub in `snestang_top.v`, which this session confirmed are instrumentation-only -- `mem_wait` reaches no port on `main`, `SNES` or `cpu`, and `cpu_dout_tog` is tied low in `sdram_cl2_2ch.v` and never set -- and enable the SuperFX by adding `-DCHIP_GSU` to `config.v` and the three `chip/GSU` files to the build script, expecting a fresh seed and its own margin check. Do not re-measure the picture path or the clock plane to answer a question about input, and do not treat the stale `build/tinysnes/` directory as the current build.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
