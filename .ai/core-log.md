@@ -1855,3 +1855,33 @@ Record the read_slang per-file compilation-unit behaviour in core-reference.md a
 - User Test: PASS
 
 ---
+
+## 58 COMMIT Unreleased 2026-11-02T08:40:45-07:00
+
+#### Coming From:
+
+Unreleased ded629b
+
+#### Purpose:
+
+Find out why a second cartridge streamed without rebooting the Tang was reported unloaded, since that failure would corrupt every later coprocessor result if it were mistaken for a chip fault.
+
+#### Outcome:
+
+The failure did not reproduce in nine consecutive loads and no RTL was changed, so this cycle's result is a documented negative plus two defects found by inspection that are not its cause. The sequence run on one flash of the DSP bitstream `33ab578f81ce7fb0472091eb579cce69c14bf09d8cd64d8582c5ab847e4339e9` with no reboot at any point was: Zelda, Zelda, Super Mario Kart, then three further Zelda-to-Kart swaps, six loads in total after the first pair, four of them crossing from a LoROM image to a HiROM image. The user reported the screen correct throughout, and Super Mario Kart booted from a cold Zelda state on the first cross-layout attempt, which refutes the hypothesis this cycle was built on. That hypothesis was that smc_parser retains the previous cartridge's layout, because its reset branch clears only `cnt` and `header_finished` while `mapper_header`, `rom_type_header`, `company_header`, `rom_size`, `ram_size` and `rom_type` all survive; a HiROM title loaded after a LoROM title would then be mapped as LoROM and draw nothing, which is exactly the symptom the user had seen. Four consecutive LoROM-to-HiROM swaps booting correctly remove that as the cause, and leave the observation at one failure in five attempts, which is an intermittent rather than a deterministic mapping fault. The user's own explanation is recorded because it is a better fit than any mechanism found here: the one failing load coincided with another process probing or otherwise holding the Tang, which is the same class as the silent flash of BRD-003 and the `loaded` state being cleared by a flash, both of which resolve on reload rather than on repair. Two defects were established by reading the RTL during this cycle and are recorded as latent rather than fixed, since changing RTL to address an unreproduced fault is exactly the kind of unverified change this project's record warns against. The first is the smc_parser reset described above: it is incomplete, and a second load whose header parse does not complete cleanly would inherit the previous image's `rom_type`, which feeds `MAP_CTRL` into the mapper. The second is that the BL616 frame parser in iosys_bl616.v has no timeout or resynchronisation in its `RECV_PARAM` state, so a stream that begins mid-frame stays misaligned and can drop the 64 header bytes, which would leave `header_finished` clear, `loaded` never set, and the machine held in reset with the screen black -- the same symptom as the first defect by a different mechanism. Neither is proven to be this fault and neither was provoked in nine attempts. The operational guidance the user asked for is therefore replaced by the stronger finding: rebooting between cartridges is not required, and a reboot was never what fixed the earlier failure, since nine loads including four cross-layout swaps succeeded without one. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 57 were not rewritten, made no change to core-reference.md because an unreproduced observation is a build result and the two latent defects are already covered in principle by TCL-017's class of findings and would be better recorded when one is fixed, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fifty-eight-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Proceed to the SuperFX, which entry 57 established as the next approved step and which this cycle clears the way for: add the three chip/GSU files to the build script's source list, build with `-DCHIP_GSU` on the command line rather than relying on config.v, and expect a fresh seed sweep and its own margin check because the GSU is much larger than the DSP. Repeat the Zelda regression on the GSU bitstream before loading Star Fox, exactly as this project did for the DSP. A ROM swap between cartridges needs no reboot, so a chip test can move between its target title and a plain title freely; if a load does appear to fail, reload the same file first and check whether another process is holding the board before treating it as a chip fault, because that is the shape the one failure in five took. If the failure returns and reproduces, the instrument to build is a sticky readback of `loaded` and `header_finished` through an existing probe display, which would say in one frame whether the core believed a cartridge was present, and that single bit separates the two latent defects described above; do not add BL616 frame-parser timeout logic speculatively, and do not complete the smc_parser reset on inspection alone, since both would be unverified changes made in response to a fault that nine loads could not reproduce.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: PASS
+
+---
