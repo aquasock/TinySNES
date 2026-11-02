@@ -63,6 +63,9 @@
 `ifdef TINYSNES_LINEFILL_PROBE
   `define TINYSNES_PROBE_BARS 1
 `endif
+`ifdef TINYSNES_GSU_PROBE
+  `define TINYSNES_PROBE_BARS 1
+`endif
 
 // The two memory self-tests share one display, so they are folded into a single
 // define rather than tested in one `elsif` expression.  `elsif A || B does NOT

@@ -2108,6 +2108,94 @@ end
 always @(*) pp_dbg = {pp_dot_seen, pp_hb_seen, pp_vb_seen};
 `endif
 
+`ifdef TINYSNES_GSU_PROBE
+// Diagnostic build: is the GSU selected, is the CPU fetching, and did the game
+// ever talk to the coprocessor?
+//
+// Star Fox renders nothing on a bitstream where the GSU compiles, instantiates,
+// passes every gate and has no undriven nets on its path, while Zelda boots on
+// the same image.  Three faults produce that identical black picture and they
+// need different fixes:
+//
+//   1. the header is not decoded as GSU, so GSUMap holds the chip in reset and
+//      the ROM mux falls through to the DSP branch -- rom_type[7:4] != 4'h7;
+//   2. the CPU never reaches the code that starts the coprocessor -- no access
+//      ever lands in the GSU's $3000-$32FF register window;
+//   3. the game does start it and it fails anyway -- mmio seen, yet no picture.
+//
+// rom_type and the window address are both observable at this level, so the
+// whole question is answerable without reaching inside GSUMap.
+//
+// probe_bus fields, low to high:
+//   [15:0]  rom_type                        (expect $70 for Star Fox: map $20, type $13)
+//   [31:16] cartridge read edges since reset, saturating
+//   [47:32] reads in the GSU register window $3000-$32FF, saturating
+//   [63:48] {mmio_seen, rom_seen, enable, loaded, header_finished,
+//            vblankn_low_seen, hblankn_low_seen, dotclk_seen, 8'b0}
+//   [79:64] ROM_ADDR[15:0] at the snapshot
+//
+// Band: R = an access has landed in the GSU window, G = the cartridge has been
+// read at all, B = enable.  Red with green is a machine that read Star Fox and
+// never spoke to its coprocessor; no green at all is a CPU that never fetched.
+reg [15:0] gs_rom_cnt  = 16'd0;
+reg [15:0] gs_mmio_cnt = 16'd0;
+reg        gs_rom_seen = 1'b0, gs_mmio_seen = 1'b0;
+reg        gs_hb_seen  = 1'b0, gs_vb_seen = 1'b0, gs_dot_seen = 1'b0;
+reg        gs_rom_r = 1'b0, gs_dot_r = 1'b0;
+reg [21:0] gs_refresh = 22'd0;
+reg [79:0] fp_bus     = 80'd0;
+reg  [2:0] gs_dbg     = 3'b000;
+
+wire gs_rom_rd   = ~ROM_CE_N;
+wire gs_dot_edge = dotclk & ~gs_dot_r;
+// GSUMap drives ROM_ADDR from the CPU address while the GSU is not fetching, so
+// a register write to $3000-$32FF appears here as 0x30xx.
+wire gs_in_mmio  = gs_rom_rd && (ROM_ADDR[15:12] == 4'h3) &&
+                   (ROM_ADDR[11:8] <= 8'h2);
+
+always @(posedge mclk) begin
+    gs_rom_r <= gs_rom_rd;
+    gs_dot_r <= dotclk;
+    if (~resetn) begin
+        gs_rom_cnt   <= 16'd0;
+        gs_mmio_cnt  <= 16'd0;
+        gs_rom_seen  <= 1'b0;
+        gs_mmio_seen <= 1'b0;
+        gs_hb_seen   <= 1'b0;
+        gs_vb_seen   <= 1'b0;
+        gs_dot_seen  <= 1'b0;
+    end else begin
+        if (gs_rom_rd) begin
+            gs_rom_seen <= 1'b1;
+            if (gs_rom_cnt != 16'hFFFF) gs_rom_cnt <= gs_rom_cnt + 16'd1;
+        end
+        if (gs_in_mmio) begin
+            gs_mmio_seen <= 1'b1;
+            if (gs_mmio_cnt != 16'hFFFF) gs_mmio_cnt <= gs_mmio_cnt + 16'd1;
+        end
+        if (gs_dot_edge) gs_dot_seen <= 1'b1;
+        if (~hblankn)    gs_hb_seen  <= 1'b1;
+        if (~vblankn)    gs_vb_seen  <= 1'b1;
+
+        gs_refresh <= gs_refresh + 22'd1;
+        if (gs_refresh[15:0] == 16'd0) begin
+            // Widths must total 80.  The first version of this concatenation
+            // summed to 72, so Verilog zero-extended it and every field landed
+            // eight bits above where the comment above says it is; the stripes
+            // were still readable but by shifting.  rom_type is padded to a
+            // whole stripe here so the documented order is literally true.
+            fp_bus <= {ROM_ADDR[15:0],
+                       gs_mmio_seen, gs_rom_seen, enable, loaded, header_finished,
+                       gs_vb_seen, gs_hb_seen, gs_dot_seen, 8'b0,
+                       gs_mmio_cnt, gs_rom_cnt,
+                       8'b0, rom_type};
+        end
+    end
+end
+
+always @(*) gs_dbg = {gs_mmio_seen, gs_rom_seen, enable};
+`endif
+
 `ifdef TINYSNES_TIMING_PROBE
 // Diagnostic build: why the raster is dead.
 //
@@ -2774,6 +2862,13 @@ snes2hdmi s2h(
     .probe_bus(lf_bus_top),
     .linefill_bus(lf_bus_top),
     .linefill_dbg(lf_dbg_top),
+`elsif TINYSNES_GSU_PROBE
+    // Diagnostic build: is the GSU selected, is the CPU fetching, and did the
+    // game ever reach the coprocessor's register window?  See the
+    // TINYSNES_GSU_PROBE block for the field order.
+    .dbg(gs_dbg),
+    .bist_mask(fp_bus[15:0]),
+    .probe_bus(fp_bus),
 `elsif TINYSNES_TIMING_PROBE
     // Diagnostic build: why the raster is dead.  See the TINYSNES_TIMING_PROBE
     // block for the field order.

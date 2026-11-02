@@ -1916,3 +1916,34 @@ Find out whether the GSU is selected, running or neither, because the machine is
 - User Test: FAIL
 
 ---
+
+## 60 COMMIT Unreleased 2026-11-02T10:37:05-07:00
+
+#### Coming From:
+
+Unreleased 437e403
+
+#### Purpose:
+
+Find out which of three candidate faults makes Star Fox render nothing, now that the machine is known healthy and the GSU compiles and instantiates cleanly.
+
+#### Outcome:
+
+The GSU is selected, running and being driven, so the failure is inside the coprocessor rather than in detection, wiring or enable -- and that is the third of the three cases the cycle set out to separate. `TINYSNES_GSU_PROBE` was built to distinguish a header that is not decoded as GSU, a 65816 that never reaches the coprocessor's register window, and a game that starts the coprocessor and fails anyway; all three are observable at the top level, so none of the question needed reaching inside GSUMap. The probe latches `rom_type`, a saturating count of cartridge read edges since reset, a saturating count of accesses inside the GSU's `$3000-$32FF` register window, a flag byte and `ROM_ADDR` at the snapshot, and draws them on the shared five-stripe display with a band of `{mmio_seen, rom_seen, enable}`. Reads: 29.797 to 30.097 MHz was the range across the seeds that routed, seed 9 was packed at `iosys.clk` 30.097 against 21.505, fclk 203.749, hclk 146.413 and the GSU cache clock at 297.530 against 65.000 MHz, zero hold/min violations, and it was chosen over seed 5 because seed 5 added SPINE19 and SPINE27 to `hclk` while seed 9 kept it entirely on measured-good pips. The deployed bitstream is build/gsupr_s9/tinysnes.fs, SHA-256 `03c1e67b3ccfe36211a90f24e4b71280e43d1dcd48ac365a3b9b1285294e3256`. The display branch was checked with `slang --preprocess` before the build was trusted, because a probe macro that silently selects the production branch is the failure TCL-012 records: six `probe_bus` references appear with the define and none without it, so the probe really drew the screen. The readout, from three captures the user supplied, decodes to `rom_type` `$70`, cartridge read count saturated at `$FFFF`, 34880 accesses in the GSU window, all eight flag bits set -- dot clock seen, horizontal blank seen, vertical blank seen, header finished, loaded, enable, ROM read, GSU window written -- with `ROM_ADDR` `$B301` at the snapshot. Three conclusions follow directly. The header decodes correctly: `rom_type[7:4]` is `4'h7`, which is what smc_parser produces for map byte `$20` and type `$13`, so `GSUMap`'s `MAP_SEL` is high and the coprocessor is out of reset rather than held in it. The 65816 is reading the cartridge continuously, since the read counter saturated. And 34880 writes into the GSU's register window is not setup traffic but a polling loop, which is the 65816 repeatedly asking the coprocessor for a result that never arrives. That last figure is the most useful number in the cycle: it converts "Star Fox draws nothing" into "Star Fox is blocked waiting on a GSU that never completes a job", which is a different and much narrower fault than any of the three the cycle set out to test. One defect in this cycle's own instrument is recorded because it would have misled the decode: the concatenation assembling `fp_bus` summed to 72 bits rather than 80, so Verilog zero-extended it and every field landed eight bits above where the block's comment places it; the stripes were still legible but only by shifting, and the giveaway was the `8'b0` pad field reading exactly `$00` in the position that shift predicts. The packing was corrected to total exactly 80 bits with `rom_type` padded to a whole stripe, so the documented field order is now literally the order the RTL produces. The second datapoint from the display is what closed the question: the band read `{mmio_seen, rom_seen, enable}` all set, which alone rules out both of the first two cases before any stripe is decoded. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 59 were not rewritten, made no change to core-reference.md because the GSU's internal structure is project state rather than an externally defined fact and the record worth writing there is the probe-packing discipline already covered by TCL-011 and TCL-018, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Look inside the GSU, because everything outside it is now measured and correct: the next instrument should expose the three quantities that separate a coprocessor that is never started from one that starts and cannot load its program from one that loads and cannot execute. The first is `FLAG_GO` inside GSU.v, which the 65816 is supposed to set by writing `$301F`; the probe already proves the register window is being hit 34880 times, but not that the specific start write lands, and a `FLAG_GO` that never sets would mean the stride of the polling loop is not what it looks like. The second is `CACHE_VALID`, the nine valid bits over the 512-byte instruction cache, which is set only at the end of a 16-byte cache line fill from `ROM_BUF` -- if any bit sets, the GSU loaded program bytes and the fault is in execution, and if none does, the cache fill from the cartridge is broken and the `ROM_BUF` path is the suspect. The third is the GSU's own `STATE` and microcode `LAST_CYCLE` progression, which says whether the core is stepping through instructions or stuck. GSU.v already carries commented-out debug ports for exactly this (`DBG_IN_CACHE`, `DBG_MC`, `DBG_GO_CNT`), so exposing them is restoration rather than invention. Read `CACHE_VALID` first, because this board has a documented history of exactly that class of fault: a cache or buffer fed by a slow SDRAM read that returns stale data produces a coprocessor that looks started and executes nothing, and TCL-019 records that the cartridge path here answers on the fourth master clock against a fastrom window of three. Do not rebuild the outer probe, which has answered its question in full, and do not re-test header decode, enable, or cartridge reads. The packing rule from this cycle is worth applying to any new probe: sum the concatenation widths before believing a stripe order, because a 72-bit value assigned to an 80-bit bus decodes as plausible nonsense rather than as an error.
+
+#### Files Modified:
+
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/snes2hdmi.v
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
