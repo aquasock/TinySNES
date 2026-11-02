@@ -61,7 +61,14 @@ module snes_tb;
   // ---------------------------------------------------------------- memories
   // 128 KiB WRAM, 64 KiB VRAM, 64 KiB ARAM, 32 KiB battery SRAM, 4 MiB ROM.
   reg [7:0]  wram [0:17'h1FFFF];
-  reg [7:0]  vram [0:16'hFFFF];
+  // Two 32 KiB planes, not one 64 KiB array.  SNES VRAM is two 8-bit memories:
+  // port A holds the low byte of every word and port B the high byte, and both
+  // are addressed with the same 15-bit word address.  Modelling it as one array
+  // makes the two ports overwrite each other, so a word written as $11 then $22
+  // reads back as $22 in both halves -- which is not what the hardware does and
+  // hid the difference between a correct upload and a scattered one.
+  reg [7:0]  vram_lo [0:15'h7FFF];
+  reg [7:0]  vram_hi [0:15'h7FFF];
   reg [7:0]  aram [0:16'hFFFF];
   reg [7:0]  bsram[0:16'h7FFF];
   reg [7:0]  rom  [0:21'h3FFFFF];
@@ -239,18 +246,34 @@ module snes_tb;
   // "nothing ever wrote VRAM" are different faults and only the bus can tell them
   // apart.  A DMA upload and a CPU-poked upload look identical from outside the
   // core; here they leave the same trace or none.
+  // What the CPU reads back from VRAM, and what VRAM holds, so "the DMA did not
+  // write" and "it wrote and readback is broken" are different lines.
+  // The PPU's own output, not the CPU wrapper's MDR: MDR is only reloaded on a
+  // particular clock enable and lags the value the CPU actually latches, so
+  // logging it reports the previous instruction's byte.
+  always @(posedge clk)
+    if (bl != 0 && (PA == 8'h39 || PA == 8'h3A) && dut.PPU.PAWR_N && dut.PPU.PARD_N === 1'b0)
+      $fdisplay(bl, "%0d rdvram pa=%02X ppu_do=%02X prefetch=%04X vmadd=%04X",
+                cyc, PA, dut.PPU.D_OUT, dut.PPU.VRAMDATA_Prefetch, dut.PPU.VMADD);
+  always @(posedge clk) begin
+    if (bl != 0 && !VRAM_WRA_N)
+      $fdisplay(bl, "%0d vramLO[%04X] <= %02X", cyc, VRAM_ADDRA, VRAM_DAO);
+    if (bl != 0 && !VRAM_WRB_N)
+      $fdisplay(bl, "%0d vramHI[%04X] <= %02X", cyc, VRAM_ADDRB, VRAM_DBO);
+  end
+
   integer vram_wr = 0;
   integer vlog;
   initial vlog = 0;
   always @(posedge clk) begin
     if (!VRAM_WRA_N) begin
-      vram[VRAM_ADDRA] <= VRAM_DAO;
+      vram_lo[VRAM_ADDRA[14:0]] <= VRAM_DAO;
       vram_wr <= vram_wr + 1;
       if (vlog != 0) $fdisplay(vlog, "%0d vram %04X <- %02X", cyc, VRAM_ADDRA, VRAM_DAO);
     end
-    if (!VRAM_WRB_N) vram[VRAM_ADDRB] <= VRAM_DBO;
-    VRAM_DAI <= vram[VRAM_ADDRA];
-    VRAM_DBI <= vram[VRAM_ADDRB];
+    if (!VRAM_WRB_N) vram_hi[VRAM_ADDRB[14:0]] <= VRAM_DBO;
+    VRAM_DAI <= vram_lo[VRAM_ADDRA[14:0]];
+    VRAM_DBI <= vram_hi[VRAM_ADDRB[14:0]];
   end
 
   // ------------------------------------------------------------ ARAM model
@@ -518,7 +541,8 @@ module snes_tb;
     end
 
     for (i = 0; i < 131072; i = i + 1) wram[i]  = 8'h00;
-    for (i = 0; i < 65536; i = i + 1) vram[i]  = 8'h00;
+    for (i = 0; i < 32768; i = i + 1) vram_lo[i] = 8'h00;
+    for (i = 0; i < 32768; i = i + 1) vram_hi[i] = 8'h00;
     for (i = 0; i < 65536; i = i + 1) aram[i]  = 8'h00;
     for (i = 0; i < 32768; i = i + 1) bsram[i] = 8'h00;
     for (i = 0; i < 1048576; i = i + 1) rom[i]   = 8'hFF;

@@ -726,6 +726,11 @@ def dmatest_program(dmap: int = 0x01) -> bytes:
         lda(colour >> 8)
         sta(0x2122)                 # 0 black, 1 red, 2 green, 3 blue
 
+    # VMAIN=$80 so each unit's two bytes become one VRAM word.  With the reset
+    # value of $00 the word address advances after the low byte, the high byte
+    # lands one word further on, and the upload scatters.
+    lda(0x80)
+    sta(0x2115)
     lda(0x00)
     sta(0x2116)                     # VMADD = $0000, tile data at word 0
     lda(0x00)
@@ -1317,6 +1322,217 @@ def jml_landing_routine() -> bytes:
     ])
 
 
+def vramrb_program() -> bytes:
+    """Did a DMA actually put the right bytes in VRAM?  Read them back.
+
+    On hardware, a DMA into CGRAM works and a DMA into VRAM does not, while a CPU
+    poking $2118/$2119 into the same VRAM works.  A black screen cannot say which
+    of three things has happened, and they lead to different fixes:
+
+      the transfer never reached the PPU          the write path is at fault
+      it reached the PPU with the wrong bytes     the capture is at fault
+      it landed correctly and the PPU reads it
+      back wrong                                  the readback or fetch is at fault
+
+    $2139/$213A answer that directly.  A write to $2139 starts a prefetch from
+    VMADD and the next reads return the low and high bytes of what is there, so
+    the cartridge can compare what it wrote with what came back and paint the
+    verdict.
+
+    Two transfers are made into the same region and both are read back, so the
+    answer is a pair rather than a bit:
+
+      $0000, 2 words via CPU pokes     the control, already known to work
+      $0010, 2 words via DMA           the transfer under test
+
+    The backdrop reports the DMA pair's first word:
+
+      backdrop green   DMA wrote what it was given: VRAM holds $03E0
+      backdrop red     DMA wrote something else, or nothing: VRAM is not $03E0
+      backdrop blue    the DMA word reads as $0000, so nothing was written
+      backdrop white   the control pair also failed, so the readback path itself
+                       is at fault and neither comparison means anything
+
+    The colours are chosen so that they cannot be confused: green $03E0, red
+    $001F, blue $7C00, white $7FFF.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+    rel8: list[tuple[int, int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    def branch(opcode: int, name: str) -> None:
+        op_at = len(code)
+        emit(opcode, 0x00)
+        rel8.append((len(code) - 1, op_at, name))
+
+    def jmp(name: str) -> None:
+        # A real jump.  Using BEQ as an unconditional branch looks tempting and is
+        # wrong: it tests the zero flag left by whatever ran before it, and after
+        # a colour write that is the last byte LDA'd, not the comparison the code
+        # meant.  That mistake made this cartridge report red for a transfer it
+        # had already verified as correct.
+        emit(0x4C)
+        abs16.append((len(code), name))
+        emit(0x00, 0x00)
+
+    def vram_settle() -> None:
+        # A write to $2139 starts a prefetch that takes the PPU four SYSCLK cycles
+        # to fill VRAMDATA_Prefetch, so the reads that follow it have to wait.
+        # Reading straight after the trigger returns the previous prefetch or
+        # nothing at all, which shows up as a failed comparison rather than as a
+        # timing problem.
+        # The label has to be unique per call.  Branch fixups are resolved after
+        # the whole program is emitted, so a shared name resolves every one of
+        # them to the last call's position and the earlier wait loops jump into
+        # the wrong place.
+        nm = f"settle{len(marks)}"
+        emit(0xA2, 0x08, 0x00)          # LDX #$0008
+        label(nm)
+        emit(0xCA)                      # DEX
+        branch(0xD0, nm)                # BNE settle
+
+    def vram_addr(addr: int) -> None:
+        lda(addr & 0xFF)
+        sta(0x2116)
+        lda(addr >> 8)
+        sta(0x2117)
+
+    def set_colour(colour: int) -> None:
+        # CGADD advances by one word per two bytes written, so every colour has to
+        # re-point it at entry 0.  Getting this wrong writes the verdict into
+        # palette entry 255 and leaves the backdrop showing entry 0's old value --
+        # which reads on screen as "the test said nothing".
+        lda(0x00)
+        sta(0x2121)
+        lda(colour & 0xFF)
+        sta(0x2122)
+        lda(colour >> 8)
+        sta(0x2122)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x10)                # REP #$10             16-bit X and Y
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank: VRAM is writable now
+    lda(0x00)
+    sta(0x212C)                     # no layers, the backdrop is the picture
+    # VMAIN=$80: increment the word address after the *high* byte and no
+    # address translation.  $00 increments after the low byte, which spreads a
+    # single word's two halves across two different VRAM addresses -- the low
+    # byte into the mem1 array and the high byte into mem2 one address later --
+    # and every readback then compares halves that were never a word.  That is a
+    # cartridge bug, not a core bug, and it is what made a correct DMA look
+    # broken.
+    lda(0x80)
+    sta(0x2115)
+
+    # --- control: two words by CPU poke at $0000 -------------------------
+    vram_addr(0x0000)
+    lda(0x11); sta(0x2118); lda(0x22); sta(0x2119)
+    lda(0x33); sta(0x2118); lda(0x44); sta(0x2119)
+
+    # --- the transfer under test: two words by DMA at $0010 --------------
+    # The source is written here rather than read from a table, so the transfer
+    # cannot fail because of a stale ROM table or an offset that moved.
+    lda(0xE0); emit(0x8F, 0x20, 0x01, 0x00)     # STA long $00:0120
+    lda(0x03); emit(0x8F, 0x21, 0x01, 0x00)     # STA long $00:0121
+    lda(0xAB); emit(0x8F, 0x22, 0x01, 0x00)     # STA long $00:0122
+    lda(0xCD); emit(0x8F, 0x23, 0x01, 0x00)     # STA long $00:0123
+    lda(0x01)
+    sta(0x4300)                     # A->B, increment, mode 1
+    lda(0x18)
+    sta(0x4301)                     # B-bus $2118
+    lda(0x20)
+    sta(0x4302)
+    lda(0x01)
+    sta(0x4303)                     # A-bus $0120 in bank $00, WRAM
+    lda(0x00)
+    sta(0x4304)
+    lda(0x04)
+    sta(0x4305)
+    lda(0x00)
+    sta(0x4306)                     # four bytes
+    vram_addr(0x0010)
+    lda(0x01)
+    sta(0x420B)                     # start channel 0
+
+    # --- read the control word back -------------------------------------
+    vram_addr(0x0000)
+    emit(0xAD, 0x39, 0x21)          # LDA $2139   triggers the prefetch
+    vram_settle()
+    emit(0xAD, 0x39, 0x21)          # LDA $2139   low byte
+    sta(0x0000)
+    emit(0xAD, 0x3A, 0x21)          # LDA $213A   high byte
+    sta(0x0001)
+
+    # --- read the DMA word back -----------------------------------------
+    vram_addr(0x0010)
+    emit(0xAD, 0x39, 0x21)
+    vram_settle()
+    emit(0xAD, 0x39, 0x21)
+    sta(0x0002)
+    emit(0xAD, 0x3A, 0x21)
+    sta(0x0003)
+
+    # white unless the control pair reads back as written
+    set_colour(0x7FFF)
+
+    emit(0xAD, 0x00, 0x00)          # control low,  expect $11
+    emit(0xC9, 0x11)
+    branch(0xD0, "done")            # not $11 -> leave it white
+    emit(0xAD, 0x01, 0x00)          # control high, expect $22
+    emit(0xC9, 0x22)
+    branch(0xD0, "done")
+
+    # the control is good, so the readback path works; judge the DMA word
+    emit(0xAD, 0x02, 0x00)          # DMA low
+    emit(0xC9, 0xE0)
+    branch(0xD0, "notgreen")
+    emit(0xAD, 0x03, 0x00)          # DMA high
+    emit(0xC9, 0x03)
+    branch(0xD0, "notgreen")
+    label("green")
+    set_colour(0x03E0)              # DMA wrote what it was given
+    jmp("done")
+    label("notgreen")
+    emit(0xAD, 0x02, 0x00)
+    branch(0xF0, "blue")            # low byte zero -> nothing was written
+    set_colour(0x001F)              # wrote something, but the wrong thing
+    jmp("done")
+    label("blue")
+    set_colour(0x7C00)              # reads as zero: nothing arrived
+
+    label("done")
+    lda(0x0F)
+    sta(0x2100)                     # display on, brightness 15
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+    for off, op_at, name in rel8:
+        code[off] = (marks[name] - (op_at + 2)) & 0xFF
+
+    return bytes(code)
+
+
 def build(mode: str = "blink") -> bytes:
     rom = bytearray(ROM_SIZE)
     vectors: dict[int, int] | None = None
@@ -1332,6 +1548,8 @@ def build(mode: str = "blink") -> bytes:
         body, vectors = nmitest_program()
     elif mode == "dmatest":
         body = dmatest_program()
+    elif mode == "vramrb":
+        body = vramrb_program()
     elif mode == "dmatest0":
         # The same two uploads in mode 0: one byte per unit, B-bus incrementing.
         # Mode 1 and mode 0 differ only in how the B-bus address advances, so a
@@ -1470,7 +1688,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", default="build/rom/tinysnes_blink.sfc")
-    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmaflag0", "dmabad", "dmarom", "dmarom0", "dmatest0", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear", "dmaflag0", "dmabad", "dmarom0", "dmatest0"),
+    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmaflag0", "dmabad", "dmarom", "dmarom0", "dmatest0", "vramrb", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear", "dmaflag0", "dmabad", "dmarom0", "dmatest0", "vramrb"),
                     help="blink: alternate the backdrop colour (tests the whole "
                          "video path).  flash: alternate force-blank (tests only "
                          "whether a PPP write reaches the PPU)")
