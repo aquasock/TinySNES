@@ -1649,3 +1649,33 @@ Find why the write address and data are proved undefined while the enable is not
 - User Test: NOT RUN
 
 ---
+
+## 52 COMMIT Unreleased 2026-11-01T18:19:46-07:00
+
+#### Coming From:
+
+Unreleased cdc4110
+
+#### Purpose:
+
+Find why the line buffer's write address and data are resolved to don't-care when its enable is not, by reading the shipped netlist rather than a stand-in.
+
+#### Outcome:
+
+The whole of the PPU's video output path is absent from the shipped netlist, and that is a much larger fact than the write gate it was meant to explain. Reading `build/gatelevel/tinysnes_gate.v` for the PPU's outputs finds no net for `X_OUT`, `Y_OUT`, `COLOR_OUT`, `DOTCLK`, `HDE`, `VDE` or even `H_CNT`, while `V_CNT` survives with 95 references and `FORCE_BLANK` with 9, so what remains of the PPU is the part the CPU can read through `$4212` and the part that gates register writes, not the part that draws. With the pixel path gone, `xs`, `ys` and `rgb5` are undriven at `snes2hdmi`, so `mem_portA_wdata` and the address bits become don't-care and the line buffer accumulates garbage or keeps its power-up gradient depending on which build is examined. This also corrects the reading in entry 51: the write enable is not a live net that happens to be false, it resolves to constant 1, and `CEA` resolves to constant 1 with it, so the memory is written unconditionally, at an address whose only defined bit is the low one and with data that is entirely undefined. Two experiments were run against that. Adding `(* keep *)` to the PPU's video output ports restores every one of those nets -- from zero references to one each, with `VDE` at two -- which proves the deletion is optimisation and not a source defect, and confirms the same class of tool behaviour recorded for `HDE` in entry 46. It does not fix the picture: the write data remains don't-care, `snes2hdmi`'s write becomes unconditional with undefined data, and the Tang shows the same black screen that `TINYSNES_BUF_ADDRTEST` produced, with the grid's bars gone and nothing in their place. That is a coherent result rather than a null one -- unconditional writes with undefined data wipe the buffer, where no writes leave the gradient -- and it means the address and data cone has to be repaired before the gate is worth revisiting. The `keep` change was reverted because it fixes fidelity without fixing behaviour, and shipping it would change the default build for no user-visible gain. One instrument this cycle was made trustworthy by reading the artifact instead of modelling it: `tools/emit_gatelevel.sh` re-synthesises the shipped design and `tools/report_linebuf_gate.py` inspects the line-buffer instances by name, both of which read what the bitstream is packed from rather than a reconstruction whose faithfulness would itself need proving. The default build is unaffected, with synthesis clean and all nine probe benches passing. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 51 were not rewritten and recorded the corrections here instead, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the fifty-two entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find what makes the PPU's pixel path provably dead in synthesis when it is live in simulation, because that single question now stands between this core and any picture: `video_tb.sv` shows `DOTCLK` toggling nine million times and `video2_tb.sv` drives the real line buffer with 25 million write assertions, while the shipped netlist has no `DOTCLK` net at all. The `(* keep *)` result narrows it usefully, since keeping the output ports restores the nets but leaves the write data don't-care, which means the value is lost inside the PPU rather than at its boundary -- so the next instrument should read the internal registers that feed `X_OUT` and `COLOR_OUT` from the shipped netlist, the way this cycle read the line-buffer ports, rather than trusting a staged Yosys run. `OUT_X` is loaded from `WINDOW_X` only while `BG_MATH` is high, and `WINDOW_X` only while `BG_GET_PIXEL` is high, so a single one of those three being proved constant would explain the whole cascade; checking which of them survives in the netlist is a read of an existing artifact and costs nothing. Only when the address and data cone is intact, with `tools/report_linebuf_gate.py` reporting eight of eight instances carrying real address and data, is another hardware build worth making.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
