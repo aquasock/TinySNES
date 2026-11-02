@@ -26,6 +26,7 @@ rom="${ROM:-/tmp/zelda.smc}"
 cycles=400000
 lat=0
 wlat=0
+nowait=0
 stoplow=0
 vcd=0
 engine=verilator
@@ -35,6 +36,7 @@ while [[ $# -gt 0 ]]; do
         --cycles)  cycles="$2"; shift 2 ;;
         --lat)     lat="$2"; shift 2 ;;
         --wlat)    wlat="$2"; shift 2 ;;
+        --nowait)  nowait="$2"; shift 2 ;;
         --stoplow) stoplow="$2"; shift 2 ;;
         --vcd)     vcd=1; shift ;;
         --iverilog) engine=iverilog; shift ;;
@@ -97,7 +99,7 @@ for f in "${sources[@]}"; do
     [[ -f "$f" ]] || { echo "missing source: $f" >&2; exit 2; }
 done
 
-args=(+hex="$hex" +cycles="$cycles" +lat="$lat" +wlat="$wlat" +stoplow="$stoplow"
+args=(+hex="$hex" +cycles="$cycles" +lat="$lat" +wlat="$wlat" +nowait="$nowait" +stoplow="$stoplow"
       +trace="$out/pc.trace" +oplog="$out/op.log" +pplog="$out/ppu.log" +spclog="$out/spc.log" +apulog="$out/apu.log" +wrlog="$out/wr.log" +vidlog="$out/vid.log" +vramlog="$out/vram.log" +buslog="$out/bus.log" +frame="$out/frame.ppm" +rom="$rom")
 [[ "$vcd" == 1 ]] && args+=("+vcd=$out/waves.vcd")
 

@@ -5,7 +5,6 @@ module main (
 	input			  MCLK,
 	input             RESET_N,
 	input             ENABLE,
-	input             MEM_WAIT,		// TinySNES: hold the CPU while SDRAM has no data for its read
 
 	output 			  SYSCLKF_CE,		// snes system clock falling cycle (for CPU/DMA control work and DMA memory writes)
 	output            SYSCLKR_CE,		// snes system clock rising cycle (for memory reads/writes)
@@ -156,7 +155,7 @@ wire  [5:0] MAP_ACTIVE;
 
 SNES SNES
 (
-	.MCLK(MCLK), .RST_N(RESET_N), .ENABLE(ENABLE), .MEM_WAIT(MEM_WAIT),
+	.MCLK(MCLK), .RST_N(RESET_N), .ENABLE(ENABLE),
 
 	.CA(CA), .CPURD_N(CPURD_N),	.CPUWR_N(CPUWR_N), .CPURD_CYC_N(CPURD_CYC_N),
 	.PA(PA), .PARD_N(PARD_N), .PAWR_N(PAWR_N), .DI(DI),	.DO(DO),

@@ -2,7 +2,6 @@ module SCPU(
     input CLK,              // Master clock 21 Mhz
     input RST_N,
     input ENABLE,
-    input MEM_WAIT,         // TinySNES: the SDRAM CPU port has no data for this read yet
 
     output reg [23:0] CA,   // Addr Bus A: S-CPU to WRAM and Cart
     output reg CPURD_N,    
@@ -75,7 +74,6 @@ wire [23:0] P65_A;
 wire [7:0] P65_DO;
 reg [7:0] P65_DI;
 wire P65_NMI_N, P65_IRQ_N;
-wire [7:0] p65_dbg_dat;   // TinySNES: the core's debug byte, before the 0x16 intercept
 wire P65_EN;
 wire P65_VPA, P65_VDA;
 wire P65_BRK;
@@ -315,22 +313,7 @@ always @(posedge CLK) begin
 end
 
 assign EN = ENABLE & ~REFRESHED;
-// TinySNES: the cartridge and WRAM live in SDRAM and answer in a number of master
-// clocks that moves, because a refresh clock edge resets the controller's phase
-// rotation mid-sequence.  The CPU cannot absorb that by choosing a region speed:
-// it latches D_IN at a fixed phase of its own cycle, so an answer that is one
-// mclk late is read early, and the byte it latches is stale.  Measured on this
-// board, the reset vector fetch saw ROM_Q = $0000 at ROMSEL and two mclk later
-// and $8000 at four, and $0000 is BRK.
-//
-// So MEM_WAIT holds RDY low while the data for the outstanding read is still
-// moving, which is the same mechanism the WRAM refresh already uses: P65C816
-// advances its microcode, address generator and registers only on RDY_IN & CE,
-// so a low RDY freezes the machine with the access's address still on the bus
-// and the controller free to answer it.  Only reads are held -- writes complete
-// at the controller whether or not the CPU waits for them -- so the cost is one
-// handshake per read and nothing on the write path.
-assign P65_EN = ~DMA_ACTIVE & EN & ~MEM_WAIT;
+assign P65_EN = ~DMA_ACTIVE & EN;
 
 assign SYSCLK = INT_CLK; 
 assign SYSCLKF_CE = INT_CLKF_CE;
@@ -349,59 +332,8 @@ P65C816 P65C816(
     .RDY_OUT(), .MLB(), .VPB(),
 
     .BRK_OUT(P65_BRK), .DBG_REG(DBG_REG), .DBG_DAT_IN(DBG_DAT_IN),
-    .DBG_DAT_OUT(p65_dbg_dat), .DBG_DAT_WR(DBG_CPU_WR)
+    .DBG_DAT_OUT(DBG_CPU_DAT), .DBG_DAT_WR(DBG_CPU_WR)
 );
-
-`ifdef TINYSNES_IRQ_PROBE
-// TinySNES: sticky interrupt history for the TINYSNES_IRQ_PROBE build, so a CPU
-// that has halted on WAI can be explained rather than guessed at.  Every bit
-// latches from reset and is never cleared, for the reason core-reference TCL-013
-// records: a sampled current value cannot separate "never happened" from
-// "happened and went away", and GotInterrupt in the core's register 0x15 is
-// exactly that trap, being held for one instruction sequence only.
-//
-// These signals all live here, in the SNES wrapper, rather than inside the
-// 65816 core: VBLANK comes from the PPU, NMI_EN is the $4200 bit 7 the game
-// writes, and NMI_FLAG is the vblank edge detector below.
-reg  st_vblank  = 1'b0;   // VBLANK has ever been high
-reg  st_nmien   = 1'b0;   // $4200 bit 7 has ever been set
-reg  st_nmiflag = 1'b0;   // the vblank NMI edge detector has ever fired
-// Two more bits separate "the code never got there" from "the write never
-// landed", which a bit on NMI_EN alone cannot: the reset path writes $81 to
-// $4200 only 48 bytes in, so a NMI_EN that never sets means either the CPU
-// never executed that store or the store was decoded to the wrong value.
-reg  st_w42xx   = 1'b0;   // any write to $4200-$42FF has been decoded
-reg  st_w4200   = 1'b0;   // a write to $4200 specifically has been decoded
-
-// The same condition cpu.v uses to act on an IO write, so a bit here means the
-// store reached the decode rather than merely that the address was on the bus.
-wire io_write_now = P65_EN && ~P65_R_WN && ~P65_A[22] && P65_A[15:8] == 8'h42;
-
-always @(posedge CLK) begin
-    if (~RST_N) begin
-        st_vblank  <= 1'b0;
-        st_nmien   <= 1'b0;
-        st_nmiflag <= 1'b0;
-        st_w42xx   <= 1'b0;
-        st_w4200   <= 1'b0;
-    end else begin
-        if (VBLANK)   st_vblank  <= 1'b1;
-        if (NMI_EN)   st_nmien   <= 1'b1;
-        if (NMI_FLAG) st_nmiflag <= 1'b1;
-        if (io_write_now) begin
-            st_w42xx <= 1'b1;
-            if (P65_A[7:0] == 8'h00) st_w4200 <= 1'b1;
-        end
-    end
-end
-// Register 0x16 is not used by the core, so the sticky byte takes it and every
-// other register passes through untouched.  Bits 5-3 are the write history.
-assign DBG_CPU_DAT = (DBG_REG == 8'h16)
-                     ? {3'b0, st_w4200, st_w42xx, st_nmiflag, st_nmien, st_vblank}
-                     : p65_dbg_dat;
-`else
-assign DBG_CPU_DAT = p65_dbg_dat;
-`endif
 
 always @* begin
     SPEED = SLOW;
@@ -415,32 +347,16 @@ always @* begin
                  P65_A[15:13] == 3'b011)                // $6000-$7FFF | Slow
             SPEED = SLOW;
         else if (P65_A[15]) begin                       // $8000-$FFFF | Fast,Slow
-`ifdef TINYSNES_FORCE_SLOW_ROM
-            // TinySNES: diagnostic build. The test image is a fast-ROM
-            // cartridge (header map mode 0x30, bit 4 set), so for these banks
-            // CPU_LAST_CLOCK is 5 and the CPU latches a ROM read at mclk 5,
-            // while the SDRAM path delivers at mclk 4. A latch one mclk early
-            // reads ROM_Q before the controller answers, and that value is
-            // zero -- which is the BRK opcode, and the BRK vector is what the
-            // trace ring keeps finding. Forcing SLOW gives three mclk of
-            // margin instead of one, without moving any clock.
-            SPEED = SLOW;
-`else
             if (~P65_A[23])
                 SPEED = SLOW;
             else
                 SPEED = SLOWFAST;
-`endif
         end else
             SPEED = FAST;
     end else if (P65_A[23:22] == 2'b01)                 // $40-$7D | $0000-$FFFF | Slow
       SPEED = SLOW;                                     // $7E-$7F | $0000-$FFFF | Slow
     else if (P65_A[23:22] == 2'b11)                     // $C0-$FF | $0000-$FFFF | Fast,Slow
-`ifdef TINYSNES_FORCE_SLOW_ROM
-      SPEED = SLOW;                                     // TinySNES: diagnostic, see above
-`else
       SPEED = SLOWFAST;
-`endif
 end
 
 assign INT_A =  HDMA_RUN ? HDMA_A :
@@ -1173,9 +1089,9 @@ always @(posedge CLK) begin
   DMA_RUNr <= DMA_RUN;
   DMA_CAr <= CA;
   if (DMA_RUN && ~DMA_RUNr) 
-    /* TinySNES: $fdisplay removed for synthesis */;
+    $fdisplay(32'h80000002, "PC=%06x, DMA Started", DMA_CAr);
   else if (~DMA_RUN && DMA_RUNr)
-    /* TinySNES: $fdisplay removed for synthesis */;
+    $fdisplay(32'h80000002, "DMA Finished");
 end
 
 `endif

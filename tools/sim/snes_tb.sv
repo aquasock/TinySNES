@@ -119,7 +119,10 @@ module snes_tb;
   wire mem_wait;
 
   SNES dut (
-    .MCLK(clk), .RST_N(rst_n), .ENABLE(enable), .MEM_WAIT(mem_wait),
+    // No MEM_WAIT: the core is upstream's, and upstream's SNES.v has no such
+    // input.  The bench's +lat/+wlat now only age the memory models, which is
+    // what a machine without a wait state sees.
+    .MCLK(clk), .RST_N(rst_n), .ENABLE(enable),
     .PAL(1'b0), .BLEND(1'b0), .DIS_SHORTLINE(1'b0),
     .CA(CA), .CPURD_N(CPURD_N), .CPUWR_N(CPUWR_N),
     .CPURD_CYC_N(CPURD_CYC_N), .DOT_CLK_CE(DOT_CLK_CE),
@@ -310,8 +313,14 @@ module snes_tb;
     end
   end
 
-  assign mem_wait = ((ROMSEL_N === 1'b0) && (cart_age <= rom_lat))
-                 || ((RAMSEL_N === 1'b0) && wram_pending);
+  // +nowait ties the wait input low, which is what the shipping build does:
+  // `mem_wait` in snestang_top is `1'b0` unless -DTINYSNES_CART_WAIT is defined.
+  // With a non-zero +lat the data is then delivered later than the CPU samples
+  // it, which is the board's situation and should reproduce its failures here.
+  integer nowait = 0;
+  assign mem_wait = nowait ? 1'b0 :
+                    (((ROMSEL_N === 1'b0) && (cart_age <= rom_lat))
+                     || ((RAMSEL_N === 1'b0) && wram_pending));
 
   // ------------------------------------------------------------ cart DI mux
   // The core selects the cartridge only when ROMSEL is low and RAMSEL is high;
@@ -631,6 +640,7 @@ module snes_tb;
         end
       end
       if ($value$plusargs("wlat=%d", wlat)) ;
+      if ($value$plusargs("nowait=%d", nowait)) ;
     end
 
     repeat (16) @(posedge clk);

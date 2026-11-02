@@ -1828,7 +1828,7 @@ parameter USE_GSU=0;
 
 `ifndef DISABLE_SNES
 main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
-    .MCLK(mclk), .RESET_N(resetn & ~loading), .ENABLE(enable), .MEM_WAIT(mem_wait),
+    .MCLK(mclk), .RESET_N(resetn & ~loading), .ENABLE(enable),
     .SYSCLKF_CE(sysclkf_ce), .SYSCLKR_CE(sysclkr_ce), .REFRESH(refresh),
 
     .ROM_TYPE(rom_type), .ROM_MASK(rom_mask), .RAM_MASK(ram_mask),
@@ -2503,7 +2503,7 @@ sdram_snes sdram(
     // Diagnostic build: sdram_bist owns the CPU port; the machine's requests are
     // left unconnected because no ROM is loaded and the SNES is never enabled.
     .cpu_addr(bist_addr), .cpu_din(bist_din), .cpu_port(1'b0),
-    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(bist_req), .cpu_req_ack(bist_ack), .cpu_dout_tog(cpu_dout_tog),
+    .cpu_port0(cpu_port0), .cpu_port1(cpu_port1), .cpu_req(bist_req), .cpu_req_ack(bist_ack),
     .cpu_we(bist_we), .cpu_ds(2'b11),
 `else
     .cpu_addr(cpu_addr[22:1]), .cpu_din(cpu_din), .cpu_port(cpu_port), 

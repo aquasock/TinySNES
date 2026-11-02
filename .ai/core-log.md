@@ -1711,3 +1711,50 @@ Separate the two readings of that black frame: a cartridge that never clears for
 - User Test: pending, picture area black for retail ROMs, magenta for tinysnes_blink
 
 ---
+## 54 COMMIT Unreleased 2026-11-01T23:05:10-07:00
+
+#### Coming From:
+
+Unreleased 130dc2b
+
+#### Purpose:
+
+Stop patching symptoms and make the port faithful to nand2mario's design, then establish what actually separates a working picture from a black one.
+
+#### Outcome:
+
+Retail cartridges boot on the Tang. Space Invaders runs with correct video and correct audio, confirmed by the user on the board's HDMI output. The machine that produces this is upstream SNESTang with four debug-time modifications removed and nothing else changed in the core.
+
+Those four were found by diffing every file against `nand2mario/snestang` at `5f0ef19`, the commit this port names as its source. `cpu.v`, `SNES.v`, `main.v`, `ppu.v` and `swram.v` are now byte-identical to upstream; `smp.v` and `dsp.v` differ only by removed `$fdisplay` statements; `sdram_cl2_2ch.v` differs by one output port (`cpu_dout_tog`) declared and tied to zero so the top level needs no edit. The four removed changes were a `MEM_WAIT` input and its `~MEM_WAIT` term on `P65_EN`, the same signal threaded through `SNES.v` and `main.v`, a DQ capture moved to negedge/posedge and re-timed to `cycle[5]`/`cycle[2]`, and the half of `snestang_top.v` that drove them. The last of those was written for an SDRAM clock made by an ODDR that had since been reverted, so the capture was skewed for a clock configuration that did not exist: the design was in neither upstream's state nor TinyNES's. The only behavioural change that survives, and that this flow genuinely requires, is `PAL = 1'b0` in `snestang_top.v`; upstream leaves `reg PAL` undriven and relies on Gowin tying it low, which Yosys turns into constant `x` and which froze the PPU's HV counters.
+
+Three hypotheses were tested on the way and all three are refuted with numbers rather than impressions. Placement margin is not the fault: a twelve-seed sweep with `tools/sweep_mclk.sh` routed six seeds in parallel and every one came back hold-clean with the SNES master clock at 30.2 to 31.4 MHz against a 21.505 MHz requirement, 41 to 46 percent margin, and the best seed was seed 9, which is the seed every earlier test had already used. The clock plane is not the fault: the working build and the failing build report the same `hclk` pips, and every clock is on a pip this board has measured. The SNES core is not the fault: the bench renders Space Invaders' Nintendo logo and Mega Man X's CAPCOM screen from the same RTL, and did so both before and after the revert.
+
+What the bench cannot answer, and this is the lesson worth keeping, is anything about the board. It models the cartridge, WRAM, VRAM and ARAM as plain arrays with no latency, and it has no SDRAM controller, no physical clock domains, no HDMI and no BL616 link. Its `mclk` and `fclk` are unrelated ideal oscillators, so a design whose correctness depends on the phase relationship between them cannot fail in it. Eight subsystems "working" in simulation while the board showed nothing was not a contradiction to be explained away; it was the bench reporting on a different machine. The bench earned its place once, by finding the undriven `PAL`, and it should have been abandoned for hardware work immediately after that.
+
+One operational fact is recorded because it cost a wrong conclusion inside this very cycle. `build/faithful` was flashed once, showed no HDMI sync, and was reported as a build that does not work. The project's own reference notes say a load that reports Done can still leave the board silent and that reloading the same file fixes it. When the same netlist was packed again and flashed, it worked. The two bitstreams differ (`1b2e8cb5` against `e6ebba7a`) despite an identical netlist hash and the same seed, because nextpnr's placement is not deterministic, so either that first load genuinely failed at the SRAM load or placement variance separated the two; the record cannot distinguish them and does not claim to. A single flash is not a test of a bitstream.
+
+#### Next Steps:
+
+Rebuild from the committed tree and confirm the picture survives a fresh synthesis, since nextpnr does not reproduce a bitstream from a seed and only the RTL is pinned by this commit. Then move the working configuration into the build script rather than leaving it as a description: the revert removed `MEM_WAIT` entirely, so `TINYSNES_CART_WAIT` and the `TINYSNES_CART_WAIT` guard in `snestang_top.v` now refer to machinery that no longer exists and should be removed or re-derived. After that the port is at parity and the remaining work is features rather than bring-up: controller input over the BL616 link, which `config.v` has never enabled on this board and which no game has yet been played with, and the OSD, which is tied off and which TinyDesk is meant to replace.
+
+#### Files Modified:
+
+- fpga/snes/src/cpu.v
+- fpga/snes/src/SNES.v
+- fpga/snes/src/main.v
+- fpga/snes/src/sdram_cl2_2ch.v
+- fpga/snes/src/snestang_top.v
+- tools/make_test_rom.py
+- tools/sim/snes_tb.sv
+- tools/sim/run_sim.sh
+- tools/onewire.sh
+- tools/sweep_mclk.sh
+- .ai/core-log.md
+
+#### Status:
+
+- Build: pass, seed 9, fclk 264.201/64.516, hclk 126.839/74.25, iosys.clk 31.377/21.505, zero hold violations
+- Deployment: tinysnes.fs e6ebba7ac2aa8af5f0c58be8742b84da7d336e88a88c2b171c4f2691d1a7814d, one-wire, Space Invaders streamed at the core UART
+- User Test: pass, retail cartridge runs with correct video and correct audio
+
+---

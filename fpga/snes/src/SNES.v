@@ -7,7 +7,6 @@ module SNES(
 
     input RST_N,
     input ENABLE,
-    input MEM_WAIT,          // TinySNES: hold the CPU while SDRAM has no data for its read
     input PAL,
     input BLEND,
     input DIS_SHORTLINE,
@@ -154,7 +153,7 @@ wire [7:0] DBG_CPU_TEMP;
 // CPU
 SCPU CPU(
     .CLK(MCLK), .RST_N(RST_N), 
-    .ENABLE(ENABLE), .MEM_WAIT(MEM_WAIT), .IRQ_N(IRQ_N), .HBLANK(INT_HBLANK), .VBLANK(INT_VBLANK),     
+    .ENABLE(ENABLE), .IRQ_N(IRQ_N), .HBLANK(INT_HBLANK), .VBLANK(INT_VBLANK),     
     .CA(INT_CA), .CPURD_N(INT_CPURD_N), .CPUWR_N(INT_CPUWR_N),
     .PA(INT_PA), .PARD_N(INT_PARD_N), .PAWR_N(INT_PAWR_N),
     .DI(CPU_DI), .DO(CPU_DO),

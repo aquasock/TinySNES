@@ -1533,6 +1533,126 @@ def vramrb_program() -> bytes:
     return bytes(code)
 
 
+def apu2_program() -> bytes:
+    """Does the APU upload get past its START, not just its hello?
+
+    `aputest` proved the first handshake: the 65816 writes $AA to $2140 and the
+    IPL ROM's echo comes back, so the SPC700 is alive, has left reset and is
+    running its own boot code.  Every retail cartridge then does something else
+    before it draws: it uploads an SPC driver, and it cannot start that upload
+    until the second handshake completes, which is
+
+        LDA #$CC / STA $2140        ask to begin
+        LDA #$BB / STA $2141        the expected answer
+      wait:
+        LDA $2140 / CMP #$CC        the IPL echoes $CC to say "go on"
+
+    If that echo never arrives the game waits for ever with the display still in
+    force blank, which looks on screen exactly like a machine that has not
+    booted: black, with the line buffer's own gradient already overwritten.
+
+    That is the shape of the difference this project keeps hitting -- every
+    cartridge that works here uses no APU at all, and every retail game uploads a
+    driver first.  The APU's ARAM is SDRAM on this board and has no wait state of
+    its own, so a stale read is exactly what the second handshake would trip on.
+
+      backdrop green   $CC came back: the upload can begin, and the fault is on
+                       the SPC side of it or further into the game.
+      backdrop red     $CC never came back: the upload never starts, and every
+                       retail cartridge deadlocks here.
+      black            the machine did not reach the code at all.
+    """
+    code = bytearray()
+    marks: dict[str, int] = {}
+    abs16: list[tuple[int, str]] = []
+    rel8: list[tuple[int, int, str]] = []
+
+    def emit(*bs: int) -> None:
+        code.extend(bs)
+
+    def label(name: str) -> None:
+        marks[name] = len(code)
+
+    def lda(value: int) -> None:
+        emit(0xA9, value & 0xFF)
+
+    def sta(addr: int) -> None:
+        emit(0x8D, addr & 0xFF, addr >> 8)
+
+    def branch(opcode: int, name: str) -> None:
+        op_at = len(code)
+        emit(opcode, 0x00)
+        rel8.append((len(code) - 1, op_at, name))
+
+    def set_colour(colour: int) -> None:
+        lda(0x00)
+        sta(0x2121)
+        lda(colour & 0xFF)
+        sta(0x2122)
+        lda(colour >> 8)
+        sta(0x2122)
+
+    emit(0x78, 0x18, 0xFB)          # SEI; CLC; XCE        native mode
+    emit(0xC2, 0x10)                # REP #$10             16-bit X and Y
+
+    lda(0x8F)
+    sta(0x2100)                     # force blank while setting up
+    lda(0x00)
+    sta(0x212C)                     # no layers: the backdrop is the picture
+    set_colour(0x001F)              # red: the failure colour, set before anything
+    lda(0x0F)
+    sta(0x2100)                     # display on: RED means the echo never came
+
+    # --- first handshake, already proven by `aputest` --------------------
+    lda(0xAA)
+    sta(0x2140)
+    emit(0xA2, 0x00, 0x00)          # LDX #$0000
+    label("hello")
+    emit(0xAD, 0x40, 0x21)          # LDA $2140
+    emit(0xC9, 0xAA)
+    branch(0xF0, "start")           # BEQ start
+    emit(0xCA)                      # DEX
+    branch(0xD0, "hello")           # BNE hello
+    label("stuck1")
+    emit(0x4C)
+    abs16.append((len(code), "stuck1"))
+    emit(0x00, 0x00)                # never echoed $AA: leave RED
+
+    # --- second handshake: the one the upload begins with ----------------
+    label("start")
+    lda(0xCC)
+    sta(0x2140)                     # ask to begin
+    lda(0xBB)
+    sta(0x2141)                     # the answer the IPL expects
+    emit(0xA2, 0x00, 0x00)          # LDX #$0000
+    label("begin")
+    emit(0xAD, 0x40, 0x21)          # LDA $2140
+    emit(0xC9, 0xCC)                # the IPL echoes $CC when it takes the pair
+    branch(0xF0, "ok")              # BEQ ok
+    emit(0xCA)                      # DEX
+    branch(0xD0, "begin")           # BNE begin
+    label("stuck2")
+    emit(0x4C)
+    abs16.append((len(code), "stuck2"))
+    emit(0x00, 0x00)                # leave RED
+
+    label("ok")
+    set_colour(0x03E0)              # green: the upload can start
+    label("spin")
+    emit(0x4C)
+    abs16.append((len(code), "spin"))
+    emit(0x00, 0x00)
+
+    for off, name in abs16:
+        target = ENTRY + marks[name]
+        code[off] = target & 0xFF
+        code[off + 1] = target >> 8
+    for off, op_at, name in rel8:
+        code[off] = (marks[name] - (op_at + 2)) & 0xFF
+
+    return bytes(code)
+
+
 def build(mode: str = "blink") -> bytes:
     rom = bytearray(ROM_SIZE)
     vectors: dict[int, int] | None = None
@@ -1594,6 +1714,8 @@ def build(mode: str = "blink") -> bytes:
         body = jmltest_program(0x4C, target=0x8030)
     elif mode == "wramexec":
         body = wramexec_program()
+    elif mode == "apu2test":
+        body = apu2_program()
     elif mode == "aputest":
         body = aputest_program()
     elif mode == "highbank_mirror":
@@ -1688,7 +1810,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("-o", "--out", default="build/rom/tinysnes_blink.sfc")
-    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmaflag0", "dmabad", "dmarom", "dmarom0", "dmatest0", "vramrb", "highbank", "highbank512", "highbank_mirror", "aputest", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear", "dmaflag0", "dmabad", "dmarom0", "dmatest0", "vramrb"),
+    ap.add_argument("--mode", default="blink", choices=("blink", "flash", "selftest", "stacktest", "hvtest", "bgdraw", "nmitest", "dmatest", "dmaflag", "dmaflag0", "dmabad", "dmarom", "dmarom0", "dmatest0", "vramrb", "highbank", "highbank512", "highbank_mirror", "aputest", "apu2test", "wramexec", "wramexec_long", "wramrw", "jmltest", "jmptest", "jmpnear", "dmaflag0", "dmabad", "dmarom0", "dmatest0", "vramrb", "apu2test"),
                     help="blink: alternate the backdrop colour (tests the whole "
                          "video path).  flash: alternate force-blank (tests only "
                          "whether a PPP write reaches the PPU)")
