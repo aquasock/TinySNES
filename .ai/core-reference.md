@@ -98,6 +98,7 @@ rules:
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
 | How does a core image or ROM get onto the card? | BRD | BRD-004 |
 | Can a cartridge coprocessor be used for sound, as on the Famicom? | EXT | EXT-013 |
+| How is a cartridge's map mode encoded, and how is ExHiROM laid out? | EXT | EXT-014 |
 
 ---
 
@@ -121,7 +122,8 @@ BRD-005 placement, not timing, decides whether this netlist boots ·
 EXT-012 the APU handshake completes and a boot takes 30M clocks ·
 EXT-010 the opcode-commit point for instruction-level probes ·
 EXT-011 JSR/JSL/RTS/RTL microcode push and pull widths ·
-EXT-013 the cartridge DSP is math-only, so no cart expands audio
+EXT-013 the cartridge DSP is math-only, so no cart expands audio ·
+EXT-014 the map-mode field is 4 bits wide, and ExHiROM file ordering
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
@@ -654,6 +656,20 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "This repository, fpga/snes/src/dsp.v (the S-DSP) and fpga/snes/src/chip/DSP/DSPn.v (the cartridge DSP), and their port lists"
     - "This repository, fpga/snes/src/chip/GSU/GSUMap.v: no APU, ARAM or SMP port"
   verification: "Read from fullsnes and checked against this tree's RTL on 2026-11-03 (core-log entry 82), while answering whether any cartridge could use the coprocessor for sound generation: a port search over DSPn.v and GSUMap.v returns no APU or ARAM connection, so the hardware path is absent independently of the command set.  Revised 2026-11-03 (core-log entry 83): the MSU-1 sentence was sharpened from `homebrew-era hardware with no retail releases` to its actual identity and status, because the earlier wording left it ambiguous whether such silicon had ever shipped.  MSU-1 is `Media Streaming Unit revision 1`, a homemade enhancement chip by Near (byuu), present in no retail cartridge and in no physical form: it exists as emulation in bsnes and as flashcart firmware in sd2snes, registered at `$2000-$2007` and identifying as `S-MSU1`, streaming up to 4 GB and CD-quality stereo from a `.msu` data file beside the ROM.  A related correction is more useful than the chip itself: the SNES cartridge slot does carry a stereo audio input that is mixed into the console's output, so the provision for a cartridge to supply its own sound did exist in hardware.  fullsnes records that path as used only by the SGB and the MSU1, which makes the Super Game Boy the one retail cartridge that used it -- it passes an entire second console's audio through the SNES mixer rather than adding channels, so it is the nearest retail analogue to a Famicom sound-expansion cart without being a SNES sound expander.  Neither the SGB nor the MSU-1 is supported by this core, and `main.v` carries commented-out `MSU_TRACK_*` ports left unconnected from upstream."
+
+- record_id: EXT-014
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The header map-mode field is bits 3-0 of `$FFD5` and not a two-bit value, and ExHiROM (mode 5) orders its file with the first 4 MB last"
+  status: VERIFIED
+  verified_date: 2026-11-03
+  statement: "fullsnes decomposes the header byte at `$FFD5` as: bits 7-6 always 0, bit 5 always 1, bit 4 the ROM speed (0 = slow, 1 = fast), and bits 3-0 the map mode.  The documented modes are 0 = LoROM/32K banks (Mode 20), 1 = HiROM/64K banks (Mode 21), 2 = LoROM/32K banks plus S-DD1 (Mode 22), 3 = LoROM/32K banks plus SA-1 (Mode 23), 5 = HiROM/64K banks (Mode 25, ExHiROM) and A = HiROM/64K banks plus SPC7110.  ExHiROM is used by exactly two titles, Dai Kaiju Monogatari 2 (JP, 5 MB) and Tales of Phantasia (JP, 6 MB).  An ExHiROM image is ordered as the fast HiROM banks `C0h..FFh` first, which is the first 4 MB, followed by the slower HiROM banks, and the header and exception vectors sit in the upper 32K of the first slow HiROM bank, which is file offset `40FFC0h` rather than `00FFC0h`."
+  consequence: "A mapper that tests only bits 1-0 of the map mode cannot tell mode 5 from mode 1 and routes every ExHiROM cartridge down the HiROM path, where banks above 4 MB read the wrong data silently rather than failing.  It also cannot tell mode 2 from the value 2 in bits 1-0, so an S-DD1 cartridge, which is LoROM, reaches the ExHiROM address path instead.  Both errors have one cause and one fix: decode the low nibble of the map-mode byte, not its two least-significant bits.  In this tree the mapping arithmetic was already correct and needed no change -- `DSP_LHRomMap.v`'s `2'b10` branch computes `CART_ADDR = {1'b0, ~CA[23], CA[21:0]}`, which was checked by hand against the documented bank split: bank `C0h` maps to `$00FFC0` (inside the first 4 MB), bank `40h` maps to `$400000` (the continuation beyond it), and `00:$FFC0` maps to `$40FFC0`, which is exactly where fullsnes puts the ExHiROM header.  `smc_parser.v`'s `rom_type <= {6'b0, mapper_header[1:0]}` is the single line at fault.  Note this is about the ROM-image ordering on a cartridge, which is a different question from how a flashcart or this design's loader presents the image; the loader streams the file byte for byte and the mapper applies the offset, so an image must be in the documented order for the offsets above to land correctly."
+  sources:
+    - "fullsnes (nocash), SNES Cartridge ROM Header section: the `FFD5h` bit decomposition and the map-mode list"
+    - "fullsnes (nocash), ExHiROM Files: the C0h-FFh-then-40h ordering and the `40FFC0h` header offset"
+    - "This repository, fpga/snes/src/smc_parser.v and fpga/snes/src/chip/DSP/DSP_LHRomMap.v"
+  verification: "Read from fullsnes on 2026-11-03 (core-log entry 84).  The decoder defect was measured with `tools/sim/run_maptype.sh`, this project's layout harness, which feeds a synthetic header through the real `smc_parser` and the real `DSP_LHRomMap` and reports the resulting cart offset: map bytes `$25` and `$35`, both documented as ExHiROM, decode as `rom_type $01`, and the harness's own 256-byte sweep reports the ExHiROM branch reachable from 64 map bytes, which are the ones whose bits 1-0 are `2'b10` rather than the ones the standard documents.  The mapper arithmetic was verified by replicating the branch's expression in Python and comparing eight CPU addresses against the documented bank split, not on hardware: no ExHiROM cartridge is present on this machine, so nothing here confirms a real ExHiROM image booting."
 
 - record_id: BRD-003
   kind: BOARD

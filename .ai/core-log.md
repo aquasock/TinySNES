@@ -2690,3 +2690,33 @@ None.
 - User Test: N/A
 
 ---
+
+## 84 COMMIT Unreleased 2026-11-03T08:32:56-07:00
+
+#### Coming From:
+
+Unreleased a171130
+
+#### Purpose:
+
+Test Chrono Trigger and establish what stands between this core and the two cartridges the user asked for next, Tales of Phantasia and Star Ocean, which closes the cartridge-validation thread the user was running.
+
+#### Outcome:
+
+Chrono Trigger (USA) passes with correct picture and audio, and it is the sixth retail cartridge confirmed on this core. The image is 4,194,304 bytes at `06d1c2b06b716052c559...`, header `CHRONO TRIGGER` at `0xFFC0` with map mode `$31`, cart type `$02`, rom size `$0C`, ram size `$03` and reset vector `$FF00`; it streamed in 21.7 seconds at 195 KB/s on `build/blackbars/tinysnes.fs`, SHA-256 `69d00abb1bc93ab5dcc6ce1258ccff6461583311b329d303466300ac7c5b4551`, after the board was re-flashed following a reboot, which BRD-003 holds costs exactly one flash and one stream. At 4 MiB it is the second image at the mapper's full size after Donkey Kong Country, and unlike DKC it declares 8 KB of battery-backed SRAM, so it exercises the SRAM window as well as the fastrom HiROM path. Its soundtrack was the audio target, since Chrono Trigger leans on echo with feedback, and the user reports it passing. Neither of the other two cartridges could be tested and the reasons are different, which is worth recording so they are not conflated later. Neither image is present on this machine -- a search of the SNES library and both removable mounts found only PlayStation-era Star Ocean disc images in the Trash -- and both are Japan-only releases with no US version. Beyond that, Star Ocean is 6 MB LoROM with an S-DD1 decompression chip, and `main.v` names `SDD1Map` while no such file exists, as is true for `SPC7110Map`, `CX4Map`, `SA1Map` and `BSXMap`, so that title would fail elaboration and supporting it means writing a decompressor from scratch rather than changing a configuration. Tales of Phantasia is 6 MB ExHiROM and the blocker there is narrower than this project's record had it. Entry 73 reported that the canonical ExHiROM bytes `$25` and `$35` decode to `rom_type=$01` and take the HiROM path, and its Next Steps asked whether to fix that; this cycle established that the mapping arithmetic was never the problem. `DSP_LHRomMap.v` already carries a dedicated `2'b10` ExHiROM branch computing `CART_ADDR = {1'b0, ~CA[23], CA[21:0]}`, and replicated in Python that expression puts bank `C0h` at `$00FFC0` inside the first 4 MB, bank `40h` at `$400000` on the continuation beyond it, and `00:$FFC0` at `$40FFC0`, which is exactly where fullsnes places the ExHiROM header and exception vectors. The single faulty line is `smc_parser.v`'s `rom_type <= {6'b0, mapper_header[1:0]}`: fullsnes decomposes `$FFD5` as bit 4 the ROM speed and bits 3-0 the map mode, with 0 LoROM, 1 HiROM, 2 LoROM plus S-DD1, 3 LoROM plus SA-1, 5 HiROM plus ExHiROM and A HiROM plus SPC7110, so slicing two bits turns mode 5 into 1 and mode 2 into 2. That second direction is a defect this cycle was not looking for and is recorded because it has the same cause and the same fix: `tools/sim/run_maptype.sh` reports the ExHiROM branch reachable from 64 map bytes, and those are the bytes whose bits 1-0 are `2'b10`, which includes `$22`, a documented S-DD1 LoROM mode that would be routed down the ExHiROM path. No source was changed this cycle, because the fix is a source change the user has not approved and because one of its consequences needs a decision: bytes `$26`, `$2A` and `$2E` reach the ExHiROM path today and would stop doing so. The finding went into `core-reference.md` as EXT-014 rather than staying in this log, with the `$FFD5` decomposition, the ExHiROM file ordering and the hand-trace of the mapper arithmetic as its sources, because it is an externally defined fact and the next agent would otherwise re-derive it; the file's routing table and fast lookup index gained matching entries. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 83 were not rewritten and that EXT-014 was added rather than an existing record rewritten, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-four-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Cartridge validation is finished at the user's direction, so do not open new titles on the board without being asked; the six confirmed are Space Invaders, Zelda, Super Mario Kart, Donkey Kong Country, Super Castlevania IV and Chrono Trigger, spanning 256 KiB to 4 MiB, LoROM and HiROM, slow and fast, with and without a coprocessor, with and without SRAM. Two threads are parked with their blockers named. Tales of Phantasia needs the one-line mode decode in `smc_parser.v` fixed to read the low nibble of the map-mode byte, verified with `tools/sim/run_maptype.sh` across all 256 map bytes and regressed against the six confirmed cartridges, and it needs an ExHiROM image supplied before anything can be confirmed on hardware, since none is present here. Star Ocean is out of scope until someone implements S-DD1, which is new IP and not a polish item. The largest remaining product gap is the OSD, and it is a connected change rather than new work because `textdisp` is already instantiated in `iosys_bl616.v`, clocked and initialised from `font.vh` and `logo.vh`, with its output deliberately unused and `overlay` tied to zero; the comment there records that a runtime flag which can silently come back on already cost this project a debugging cycle, so re-enabling it should be deliberate. If the user wants the stronger audio claim than "sounds great", the route is unchanged and still blocked on tooling: capture `AUDIO_L` and `AUDIO_R` in a bench and diff a deterministic sequence against a reference emulator, none of which is installed. Two facts to carry into any future hardware session: the board has now rebooted twice, each costing a re-flash and a re-stream, and the FT2232 has re-enumerated with it, so a silent screen after a power event is unconfigured rather than a fault; and the production bitstream's black pillarbox means `tools/frame_stats.py` cannot separate a blank picture from no signal, so a diagnostic build is required whenever that distinction matters.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: PASS
+
+---
