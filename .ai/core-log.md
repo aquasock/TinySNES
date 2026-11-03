@@ -2208,3 +2208,33 @@ Flash the BSRAM-counting probe and read it, because it is now the only instrumen
 - User Test: FAIL
 
 ---
+
+## 69 COMMIT Unreleased 2026-11-02T18:01:39-07:00
+
+#### Coming From:
+
+Unreleased 5bb7507
+
+#### Purpose:
+
+Read the board's GSU activity directly with the BSRAM-counting probe, since the bench says the coprocessor is healthy and every model-derived prediction so far has failed to move the hardware result.
+
+#### Outcome:
+
+The board's GSU does real memory work but runs exactly one job, and the reading is the first hardware measurement that agrees with the bench on any point while disagreeing sharply on the scale of activity. The probe deployed was build/lp_s9/tinysnes.fs, SHA-256 `c01a10d2901a688403f5b993aaed1ce8a728a23206a67cf9004473eaa5eac657`, seeded at 29.34 MHz against 21.505 for 36 percent margin with zero hold/min violations and `hclk` on measured-good pips; seed 5 was rejected at two hold violations. Thirty-nine of forty captured frames decode identically to `go_cnt` 1, `SFR` `0x8000`, `state_seen` `0x0003`, and a fifth stripe of `$FFFF` for the BSRAM pair. Read against the bench's own figures -- 739 starts, microcode states 0 to 3, cache filled from the cartridge, and the intro rendering -- the differences are precise: the board starts the coprocessor once rather than hundreds of times, advances its microcode through states 0 and 1 rather than 0 to 3, reports `FLAG_IRQ` set with `FLAG_GO` clear, and has executed a `STOP`. Taken together that is a coprocessor that ran one job, finished it, raised its completion flag, and was never restarted by the 65816. One caveat on the instrument is recorded because the number must not be read as a count: the fifth stripe saturated at `$FFFF` in every frame, and `RAM_CE_N` is held low for the whole of each `RAMST` state rather than pulsed, so `bsram_rd`/`bsram_wr` are level-derived and the reading establishes only that the BSRAM port was continuously active, not that 255 transfers occurred. What it does establish is that the GSU is not idle and its memory path is not dead, which is the useful part. Two candidate explanations for the missing restarts were examined in the RTL and one was eliminated without a hardware cycle. `main.v` drives `IRQ_N = GSU_IRQ_N` only inside `case (MAP_ACTIVE)` branch `'b000100`, so the coprocessor's interrupt reaches the 65816 only while `MAP_ACTIVE[2]` is high, which is `GSUMap`'s `MAP_SEL` and therefore only while `rom_type[7:4]` reads `4'h7`; a GSU that cleared its own mapper select would silently drop its interrupt, and that is a live suspicion rather than a finding. Against it, the standing register-window measurement from entry 60 saturates at 65,535 accesses in `$3000-$32FF` while `rom_type` must have been `$70` for those accesses to decode as GSU, so the mapper was selected throughout and the interrupt path was therefore reachable. That leaves the other explanation, which the RTL supports directly: `GSU.v:304` clears `FLAG_IRQ` on every `MMIO_RD` of `$3031`, so a 65816 that polls `SFR` clears the completion flag it is polling for. If that is what the game does, the first read that observes `FLAG_IRQ` set also destroys it, the game never sees a second job complete, and the machine deadlocks exactly as measured -- one start, one stop, and tens of thousands of polls. This is stated as the leading hypothesis and not as a conclusion, because the register-window count cannot distinguish polling from any other repeated access, and the instrument that would is not yet built. No source was changed this cycle: the work was a deployment and a measurement, and the probe build already existed. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 68 were not rewritten, made no change to core-reference.md because the GSU register semantics it will need belong to a record still owed rather than to a measurement, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the sixty-nine-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Build the instrument that can tell polling from any other repeated access, because the leading hypothesis now rests on a distinction no existing probe can make. The question is whether the 65816 destroys `GSU.v`'s `FLAG_IRQ` by reading `$3031` before the game's handler can act on it, and the signals needed are the ones that make that sequence visible: a sticky latch of the first time `FLAG_IRQ` was ever set, a sticky latch of the first `MMIO_RD` of `$3031` that occurred while it was set, and a small counter of `$3031` reads since reset so a poll loop is distinguishable from a handler read. If the read-while-set event happens before any second write to `$301F`, the hypothesis is confirmed and the fix is a real question about what the core should do rather than a port defect -- upstream clears on read, which is correct for a design whose software was written against it, so any change here would have to be justified against how Star Fox actually polls. If the event never happens, `FLAG_IRQ` is being cleared by something else and the write path to `$3037`'s `IRQ_OFF` bit becomes the suspect. Read the released Star Fox ROM's GSU driver before building the probe, since a few hundred bytes of disassembly around its `$3031` accesses would settle whether it polls or takes an interrupt, and that costs no hardware cycle at all. Do not change `GSU.v`'s flag semantics on the strength of the hypothesis; do not reflash the just-deployed probe, which has answered its question; and do not treat the saturated BSRAM counts as a transfer count, since the strobes are levels. If the polling hypothesis is refuted, the next step is the interrupt path through `main.v`'s `MAP_ACTIVE` mux, and the instrument for that is a sticky record of whether `MAP_ACTIVE[2]` was ever low while `FLAG_IRQ` was set.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---
