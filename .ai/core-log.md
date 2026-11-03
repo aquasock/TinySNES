@@ -2238,3 +2238,37 @@ None.
 - User Test: FAIL
 
 ---
+
+## 70 COMMIT Unreleased 2026-11-02T18:47:07-07:00
+
+#### Coming From:
+
+Unreleased 8d08fc3
+
+#### Purpose:
+
+Find out what the 65816 reads back from the GSU status port, because entry 69's leading hypothesis depended on a distinction between polling and interrupt handling that no probe could make.
+
+#### Outcome:
+
+The probe answered a different question than it was built for, and in doing so refuted a claim made in entry 69 on the strength of a static search rather than a measurement. The reading, decoded identically by two independent decoders -- a purpose-written script and the project's own `tools/decode_probe_frame.py`, 38 of 40 frames and 38 of 40 agreeing on every stripe -- is `go_cnt` 2, `state_seen` `0x0007`, `sfr` `0x0000`, `sfr_lo` `0x40`, and a flag byte of `0x2C` carrying `stop_seen`, `cache_fill` and `rom_seen`. The decisive value is `sfr` being `0x0000`. `GSU.v` clears `FLAG_IRQ` in exactly one place, an `MMIO_RD` of `$3031`, and entry 69 had read `FLAG_IRQ` set as `0x8000`. So between the two builds the 65816 read `$3031`, and entry 69's statement that Star Fox "reads `$3030`, never `$3031`" -- drawn from a literal-operand search that found four `$3030` accesses and one `CPX $3037` -- is wrong. The game reaches `$3031` through an address the search could not see. That makes entry 69's polling hypothesis correct after all, and it was declared refuted there on evidence that was too weak to carry the conclusion: a negative from a pattern search over one encoding is not a negative about the program. The deadlock mechanism is therefore live again and is now measured rather than inferred: the 65816 reads the SFR high byte, that read clears `FLAG_IRQ`, and the CPU then tests a completion flag it has just destroyed, so the coprocessor is never restarted and the game waits forever. One inconsistency in this cycle's own instrument is recorded and was fixed rather than explained away. `sfr_lo` read `0x40`, which is `FLAG_R` set and `FLAG_GO` clear, while the sticky bit meant to record "a `$3030` read happened while `FLAG_GO` was clear" read zero -- two fields that cannot both be true. The cause is that they were derived from separate conditions rather than from the same latched value, which is the same class of defect as the field-order errors of entries 60 to 63, and the fix is the same shape: the sticky now records only that a `$3030` read occurred, and any judgement about what the byte meant is left to the reader of the byte itself, so the two cannot disagree. This is recorded because the contradiction was found by checking the two fields against each other, not by the values looking wrong individually -- they did not. No source outside the probe was changed. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 69 were not rewritten and that entry 69's incorrect claim is left intact with this entry recording the correction, made no change to core-reference.md because the GSU's status-port semantics are project state and belong with the eventual fix, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventy-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Confirm the mechanism with the instrument it requires, which is already built and routed: a sticky latch of the first `$3031` read taken while `FLAG_IRQ` was set, a sticky latch of whether a `$301F` restart ever followed that read, a saturating count of `$301F` writes, alongside `SFR`, `state_seen` and `GO_CNT`. Those three bits separate the two readings of the deadlock that a count alone cannot: if the read-while-set happens and no restart ever follows, the CPU destroys the flag and never retries, which is the mechanism and the fix becomes a real design question about whether clear-on-read is right for this core; if the read-while-set happens and a restart does follow, the CPU saw the flag, cleared it, restarted the job and failed elsewhere, which moves the work downstream of the status port entirely. Only after that should any RTL change be considered, and it should be considered rather than assumed, because `GSU.v`'s clear-on-read is upstream's own semantics and correct for software written against it -- a change here would be justified only by evidence that this core's behaviour differs from the hardware the game was written for, which is exactly what the three bits will show. Do not rely on a literal-operand search to establish what a program does; entry 69 did and was wrong within the hour, and the lesson is that a negative from one encoding says nothing about indexing, computed addresses or indirect forms. Keep the two-decoder cross-check for any future probe readout, since it cost seconds and caught nothing this time only because both agreed.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- fpga/snes/src/chip/GSU/GSUMap.v
+- fpga/snes/src/main.v
+- fpga/snes/src/snestang_top.v
+- tools/probe_fields.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

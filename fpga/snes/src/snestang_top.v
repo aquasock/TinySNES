@@ -1878,7 +1878,10 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
     .GSU_DBG_ROMST_SEEN(gsu_dbg_romst_seen),
     .GSU_DBG_SFR(gsu_dbg_sfr), .GSU_DBG_STATE_SEEN(gsu_dbg_state_seen),
     .GSU_DBG_FLAG_GO_INT(gsu_dbg_flag_go_int), .GSU_DBG_FLAG_R_INT(gsu_dbg_flag_r_int),
-    .GSU_DBG_STOP_SEEN(gsu_dbg_stop_seen)
+    .GSU_DBG_STOP_SEEN(gsu_dbg_stop_seen),
+    .GSU_DBG_SFR_LO_LAST(gsu_dbg_sfr_lo_last), .GSU_DBG_SFR_LO_READ(gsu_dbg_sfr_lo_read),
+    .GSU_DBG_SFR31_RD_WHILE_SET(gsu_dbg_sfr31_while_set),
+    .GSU_DBG_RESTART_AFTER(gsu_dbg_restart_after), .GSU_DBG_GO_WRITES(gsu_dbg_go_writes)
 );
 `endif
 
@@ -2149,6 +2152,10 @@ wire        gsu_dbg_cache_fill_seen, gsu_dbg_cache_mmio_seen;
 wire [6:0]  gsu_dbg_romst_seen;
 wire [15:0] gsu_dbg_sfr, gsu_dbg_state_seen;
 wire        gsu_dbg_flag_go_int, gsu_dbg_flag_r_int, gsu_dbg_stop_seen;
+wire [7:0]  gsu_dbg_sfr_lo_last;
+wire        gsu_dbg_sfr_lo_read;
+wire        gsu_dbg_sfr31_while_set, gsu_dbg_restart_after;
+wire [7:0]  gsu_dbg_go_writes;
 
 `ifdef TINYSNES_GSU_PROBE
 // Diagnostic build: on the board, is the GSU started, does its cache fill, and
@@ -2196,20 +2203,19 @@ always @(posedge mclk) begin
         gs_cache_mmio_seen <= 1'b0;
         fp_bus <= 80'd0;
     end else begin
-        if (bs_stb_rd && gs_bsram_rd != 8'hFF) gs_bsram_rd <= gs_bsram_rd + 8'd1;
-        if (bs_stb_wr && gs_bsram_wr != 8'hFF) gs_bsram_wr <= gs_bsram_wr + 8'd1;
         if (~ROM_CE_N) gs_rom_seen <= 1'b1;
         if (gsu_dbg_cache_fill_seen) gs_cache_fill_seen <= 1'b1;
         if (gsu_dbg_cache_mmio_seen) gs_cache_mmio_seen <= 1'b1;
 
         gs_refresh <= gs_refresh + 22'd1;
         if (gs_refresh[15:0] == 16'd0) begin
-            fp_bus <= {{gs_bsram_rd, gs_bsram_wr},
-                       gsu_dbg_go_cnt,
+            fp_bus <= {gsu_dbg_go_cnt,
                        gsu_dbg_state_seen,
                        gsu_dbg_sfr,
-                       {10'b0, gs_rom_seen, gs_cache_mmio_seen, gs_cache_fill_seen,
-                        gsu_dbg_stop_seen, gsu_dbg_flag_r_int, gsu_dbg_flag_go_int}};
+                       {8'b0, gsu_dbg_go_writes},
+                       {8'b0, gsu_dbg_sfr_lo_read, gsu_dbg_restart_after,
+                        gsu_dbg_sfr31_while_set, gs_rom_seen, gs_cache_fill_seen,
+                        gsu_dbg_stop_seen, gsu_dbg_sfr[15], gsu_dbg_flag_go_int}};
         end
     end
 end

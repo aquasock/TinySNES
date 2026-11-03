@@ -45,6 +45,18 @@ module GSU(
     output        DBG_CACHE_FILL_SEEN,
     output        DBG_CACHE_MMIO_SEEN,
     output [6:0]  DBG_ROMST_SEEN,
+    // Latched value the core presents for an SFR low-byte read, and a sticky
+    // flag for a $3030 read taken while FLAG_GO was already clear -- i.e. the
+    // CPU was told the GSU was finished.
+    output [7:0]  DBG_SFR_LO_LAST,
+    output        DBG_SFR_LO_READ,
+    // The $3031 question: a read of SFR high clears FLAG_IRQ, so if the 65816
+    // reads it while the flag is set, the CPU destroys the completion signal it
+    // is about to test.  These three bits say whether that happened and whether
+    // the coprocessor was ever restarted afterwards.
+    output        DBG_SFR31_RD_WHILE_SET,
+    output        DBG_RESTART_AFTER,
+    output [7:0]  DBG_GO_WRITES,
     // Fourth round: execution state.  SFR is the register the 65816 polls at
     // $3031, so it says directly what the CPU is waiting on, and STATE_SEEN is
     // a sticky bit per microcode state so a rare one cannot be missed.
@@ -1596,5 +1608,50 @@ end
 assign DBG_FLAG_GO_INT = FLAG_GO;
 assign DBG_FLAG_R_INT  = FLAG_R;
 assign DBG_STOP_SEEN   = stop_seen_r;
+
+// SFR low-byte readback: what the 65816 is given at $3030, and whether that read
+// ever happened while FLAG_GO was clear.  The core's $3030 path is
+// `8'h30 : DO = SFR[7:0]`, so a correct read returns the live low byte; the
+// question is whether the board returns it.
+reg [7:0] sfr_lo_last_r = 8'h00;
+reg       sfr_lo_valid_r = 1'b0;
+always @(posedge CLK) begin
+    if (~RST_N) begin
+        sfr_lo_last_r <= 8'h00;
+        sfr_lo_valid_r <= 1'b0;
+    end else if (MMIO_RD && ADDR[7:0] == 8'h30) begin
+        sfr_lo_last_r <= SFR[7:0];
+        sfr_lo_valid_r <= 1'b1;
+    end
+end
+assign DBG_SFR_LO_LAST = sfr_lo_last_r;
+assign DBG_SFR_LO_READ = sfr_lo_valid_r;
+
+// $3031 read-while-IRQ-set, and whether a $301F restart followed it.
+// GSU.v clears FLAG_IRQ on `MMIO_RD && ADDR[7:0] == 8'h31` and starts the core on
+// `MMIO_REG_WR && ADDR[4:0] == 5'b11111`, so these two events bracket the
+// suspected deadlock exactly.
+reg sfr31_while_set_r = 1'b0;
+reg restart_after_r   = 1'b0;
+reg [7:0] go_writes_r = 8'd0;
+always @(posedge CLK) begin
+    if (~RST_N) begin
+        sfr31_while_set_r <= 1'b0;
+        restart_after_r   <= 1'b0;
+        go_writes_r       <= 8'd0;
+    end else if (ENABLE) begin
+        // Note the order: FLAG_IRQ is still set on the clock the read is seen,
+        // because its clear is registered and takes effect on the next edge.
+        if (MMIO_RD && ADDR[7:0] == 8'h31 && FLAG_IRQ)
+            sfr31_while_set_r <= 1'b1;
+        if (MMIO_REG_WR && ADDR[4:0] == 5'b11111) begin
+            if (go_writes_r != 8'hFF) go_writes_r <= go_writes_r + 8'd1;
+            if (sfr31_while_set_r) restart_after_r <= 1'b1;
+        end
+    end
+end
+assign DBG_SFR31_RD_WHILE_SET = sfr31_while_set_r;
+assign DBG_RESTART_AFTER      = restart_after_r;
+assign DBG_GO_WRITES          = go_writes_r;
 
 endmodule

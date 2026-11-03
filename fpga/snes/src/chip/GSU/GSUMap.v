@@ -46,6 +46,13 @@ module GSUMap(
     output        DBG_CACHE_FILL_SEEN,
     output        DBG_CACHE_MMIO_SEEN,
     output [6:0]  DBG_ROMST_SEEN,
+    // What the 65816 actually reads from the SFR low byte, and whether it was
+    // ever read while the core already reported the GSU finished.
+    output [7:0]  DBG_SFR_LO_LAST,
+    output        DBG_SFR_LO_READ,
+    output        DBG_SFR31_RD_WHILE_SET,
+    output        DBG_RESTART_AFTER,
+    output [7:0]  DBG_GO_WRITES,
     output [15:0] DBG_SFR,
     output [15:0] DBG_STATE_SEEN,
     output        DBG_FLAG_GO_INT,
@@ -76,6 +83,9 @@ GSU GSU(
     .DBG_ROM_CACHE_WAIT(DBG_ROM_CACHE_WAIT), .DBG_ROM_LOAD_WAIT(DBG_ROM_LOAD_WAIT),
     .DBG_CACHE_FILL_SEEN(DBG_CACHE_FILL_SEEN), .DBG_CACHE_MMIO_SEEN(DBG_CACHE_MMIO_SEEN),
     .DBG_ROMST_SEEN(DBG_ROMST_SEEN),
+    .DBG_SFR_LO_LAST(DBG_SFR_LO_LAST), .DBG_SFR_LO_READ(DBG_SFR_LO_READ),
+    .DBG_SFR31_RD_WHILE_SET(DBG_SFR31_RD_WHILE_SET),
+    .DBG_RESTART_AFTER(DBG_RESTART_AFTER), .DBG_GO_WRITES(DBG_GO_WRITES),
     .DBG_SFR(DBG_SFR), .DBG_STATE_SEEN(DBG_STATE_SEEN),
     .DBG_FLAG_GO_INT(DBG_FLAG_GO_INT), .DBG_FLAG_R_INT(DBG_FLAG_R_INT),
     .DBG_STOP_SEEN(DBG_STOP_SEEN)

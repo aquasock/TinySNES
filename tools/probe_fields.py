@@ -32,11 +32,12 @@ Usage:
 
 # (name, width) pairs, LOW bit first.
 FIELDS = [
-    ("flags", 16),      # {10'b0, rom_seen, cache_mmio, cache_fill, stop, flag_r, flag_go}
+    ("flags", 16),   # {7'b0, sfr30_read, restart_after, sfr31_while_set,
+                     #  rom_seen, cache_fill, stop_seen, flag_irq, flag_go}
+    ("go_writes", 16),
     ("sfr", 16),
     ("state_seen", 16),
     ("go_cnt", 16),
-    ("bsram", 16),      # {8-bit read count, 8-bit write count}
 ]
 
 BUS_WIDTH = 80
@@ -128,7 +129,7 @@ def verify_rtl(path: str, marker: str = "TINYSNES_GSU_PROBE") -> list[str]:
         # sub-fields (a packed flag word, a pair of counters).  Accept a brace
         # term at those named positions; the sub-field order inside it is the
         # RTL comment's job and is not checkable from here.
-        if got.startswith("{") and want in ("flags", "flags_now", "bsram", "state_pair"):
+        if got.startswith("{") and want in ("flags", "flags_now", "bsram", "state_pair", "sfr_lo", "go_writes"):
             continue
         if stem != want:
             problems.append(f"position mismatch: RTL {got!r} vs FIELDS {want!r}")
