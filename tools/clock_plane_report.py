@@ -78,9 +78,27 @@ CLKDIV_SOURCES = {"hclk"}
 OWN_MEASURED = {
     ("clkdiv", "SPINE24", "CBRIDGEOUT_BOTTOM2"): True,   # pixel clock, stable picture
     ("clkdiv", "SPINE25", "CBRIDGEOUT_BOTTOM2"): True,   # pixel clock, stable picture
+    ("clkdiv", "SPINE19", "CBRIDGEOUT_BOTTOM2"): True,   # 2026-11-03, entry 76
+    ("clkdiv", "SPINE27", "CBRIDGEOUT_BOTTOM2"): True,   # 2026-11-03, entry 76
     ("pll", "SPINE24", "CBRIDGEOUT_BOTTOM0"): True,      # 50 MHz into pll_27; HDMI runs
     ("pll", "SPINE26", "CBRIDGEOUT_TOP0"): True,         # reaches working video logic
     ("pll", "SPINE16", "CBRIDGEOUT_TOP0"): True,         # reaches working video logic
+    # 2026-11-03, core-log entry 76.  These four are the mclk (iosys.clk) and
+    # fclk routes of the build that booted Zelda after pll_snes moved to
+    # PLL_L[0] and fclk moved to CLKOUT2.  A retail cartridge booting to its
+    # title screen is the measurement: mclk clocks the 65816, the PPU and the
+    # APU, and fclk clocks the SDRAM controller that serves all three memories,
+    # so a machine that boots at all has had both distributed to their branches.
+    ("pll", "SPINE0",  "CBRIDGEOUT_TOP0"): True,         # mclk, entry 76
+    ("pll", "SPINE24", "CBRIDGEOUT_TOP0"): True,         # mclk, entry 76
+    ("pll", "SPINE25", "CBRIDGEOUT_TOP1"): True,         # mclk, entry 76
+    ("pll", "SPINE18", "CBRIDGEOUT_TOP2"): True,         # fclk via TLPLL0CLK2, entry 76
+    ("pll", "SPINE28", "CBRIDGEOUT_TOP2"): True,         # fclk via TLPLL0CLK2, entry 76
+    # pll_27.clkin carries the 50 MHz reference into the HDMI PLL.  The user
+    # confirmed Zelda's picture on this build, so the HDMI chain produced a
+    # synced image and this reference reached the PLL that makes the pixel and
+    # serializer clocks.  entry 76.
+    ("pll", "SPINE8",  "CBRIDGEOUT_BOTTOM0"): True,
 }
 
 
