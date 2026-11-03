@@ -7,9 +7,14 @@ times: a frame with no image is either the machine drawing nothing, the HDMI
 transmitter holding sync with a blank picture, or the capture device not having
 a signal at all, and one image cannot tell them apart.
 
-`snes2hdmi` draws its pillarbox bars outside the 4:3 picture area at a fixed
-place, so the three states are distinguishable without knowing anything about
-the SNES:
+`snes2hdmi` puts a pillarbox outside the 4:3 picture area at a fixed place, and
+its colour is the marker these classes depend on.  In a production build that
+area is black, matching the sibling cores, so a frame that is black everywhere is
+reported as `no-signal` even when it may be a working transmitter drawing black
+-- the two are genuinely the same measurement then.  A diagnostic build keeps the
+pillarbox grey (`24'h303030`, under TINYSNES_DIAG_DISPLAY), and on such a build
+the three states below are distinguishable without knowing anything about the
+SNES.  Use a diagnostic build when that distinction is what is being measured:
 
   no-signal   every pixel black.  The transmitter is not producing a frame, or
               the capture card never locked to it; nothing about the console can
@@ -29,6 +34,8 @@ from PIL import Image
 
 BAR_X = 20            # a column inside the left pillarbox bar
 PICTURE = (200, 500, 700, 1000)   # x range well inside the 960-wide picture area
+# The production pillarbox is black.  This is kept only so the constant is named
+# where the bar test is read, not because any comparison uses it.
 GREY_BAR = (34, 34, 34)
 
 

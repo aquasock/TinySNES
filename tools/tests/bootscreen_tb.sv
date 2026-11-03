@@ -136,6 +136,7 @@ module bootscreen_tb;
     integer run_start;
     integer run_len;
     integer i;
+    integer px_bad;
 
     task analyse(input bit expect_bars);
         begin
@@ -225,6 +226,23 @@ module bootscreen_tb;
                 line[i] === BAR3 || line[i] === BAR4 || line[i] === BAR5 ||
                 line[i] === BAR6) k = k + 1;
         check(k == 0, "no colour bar survives once a cartridge is loaded");
+
+        // --- pillarbox: outside the 4:3 picture the area is black, as the
+        // siblings draw it, not the grey this core used to show.  The picture
+        // occupies x 160..1119 (XSTART to XSTOP in snes2hdmi), so those two bands
+        // are the only places a pillarbox colour can appear.
+        px_bad = 0;
+        for (i = 0; i < 160; i = i + 1)
+            if (line[i] !== 24'h000000) px_bad = px_bad + 1;
+        for (i = 1120; i < 1280; i = i + 1)
+            if (line[i] !== 24'h000000) px_bad = px_bad + 1;
+        if (px_bad == 0)
+            $display("ok    pillarbox is black on both sides");
+        else begin
+            errors = errors + 1;
+            $display("FAIL  %0d pillarbox pixels are not black (left %06h, right %06h)",
+                     px_bad, line[20], line[1260]);
+        end
 
         $display("");
         if (errors == 0) $display("PASS  boot screen draws eight colour bars with no cartridge, and clears on load");

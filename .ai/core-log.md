@@ -2598,3 +2598,35 @@ Continue product polish with the machine's software surface rather than the copr
 - User Test: PASS
 
 ---
+
+## 81 COMMIT Unreleased 2026-11-03T08:14:56-07:00
+
+#### Coming From:
+
+Unreleased bf4f145
+
+#### Purpose:
+
+Replace the grey bars either side of the picture with the black the sibling cores draw, so the finished product frames the picture the same way TinyNES and TinyGBC do.
+
+#### Outcome:
+
+The pillarbox `snes2hdmi.v` paints outside the 4:3 picture area is now `24'h000000` in a production build instead of `24'h303030`, which is what both siblings specify: their colour decision ends `pic3 ? rgb3 : 24'd0` in `fpga/ae350_soc/video.sv`, so everything outside the picture is pure black rather than a dark grey frame. The change is not a bare constant swap, because that grey was load-bearing for this project's own instrument. `tools/frame_stats.py` samples a column inside the left pillarbox to prove the transmitter is producing a frame at all, and that sample is the entire basis for separating `no-signal` from `blank` -- a working core drawing black. With black bars those two become the same measurement, and it is that distinction entry 78 used to conclude Star Fox was drawing a blank picture on a synchronised transmitter rather than producing no signal. The diagnostic builds therefore keep the grey under the `TINYSNES_DIAG_DISPLAY` gate introduced in entry 80, and production gets black; `slang --preprocess` confirms the split, with no `24'h303030` in the production build and exactly one in each of `TINYSNES_SDRAM_TEST` and `TINYSNES_GSU_PROBE`. `tools/frame_stats.py` carries the consequence in its docstring rather than leaving it to be rediscovered: on a production build an all-black frame is reported as `no-signal` even when it may be a working transmitter drawing black, and a diagnostic build is what recovers the distinction. Its `GREY_BAR` constant was already dead code before this change and no comparison uses it. The bench grew an assertion rather than the change going unverified: `tools/tests/bootscreen_tb.sv` knows the picture occupies x 160 to 1119, the `XSTART`/`XSTOP` band `snes2hdmi` uses, and now checks that both bands outside it, x 0 to 159 and x 1120 to 1279, are exactly `24'h000000`. It passes, and it was mutation-tested by putting the grey back, which reports `320 pillarbox pixels are not black (left 303030, right 303030)` and fails, so the assertion can catch a revert. The bitstream is `build/blackbars/tinysnes.fs`, SHA-256 `69d00abb1bc93ab5dcc6ce1258ccff6461583311b329d303466300ac7c5b4551`, seed 9, with every clock on a measured-good bridge pip on the same assignment as the previous build and timing at fclk 299.133 against 64.516, hclk 134.354 against 74.250, `iosys.clk` 30.149 against 21.505 and the GSU cache clock 396.197 against 65.000 MHz. It was flashed with `openFPGALoader -b tangconsole`, reporting Done and DONE, and two control cartridges were streamed over one-wire. Zelda was run first, from the image at `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`, 1,048,576 bytes in 5.9 seconds at 195 KB/s, and the user confirmed the picture was correct with the black framing, which is the acceptance this cycle's Status records. Super Mario Kart was then streamed from the image at `2ada8919688087be60a6a48cace8f877add60c45d2e5d09e2442faa55be62a49`, 524,288 bytes in 3.2 seconds, with the loader correctly choosing `$FFC0` over `$7FC0` at 7 against 2 and the user moving on to the next request without reporting a fault; that swap also crossed LoROM to HiROM without a reboot, which is consistent with entry 57's nine-load result rather than new evidence about it. No reboot occurred during this cycle and the FT2232 stayed on one device number throughout, after the previous cycle's reboot cost a flash and a stream. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 80 were not rewritten, and made no change to `core-reference.md` because the siblings' output colour is already recorded in EXT-001 and this cycle only re-read it; validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-one-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+The immediate open item is Donkey Kong Country, which is streamed and running but not yet reported: it is 4,194,304 bytes with map mode `$31`, cart type `$02` and rom size `$0C`, making it the first 4 MiB image this core has held, and it has no coprocessor, so it isolates ROM size from the SuperFX thread that is deferred. The addressing path was checked in the RTL before the load rather than after a failure: `smc_parser.v` computes `rom_mask` as `0x3FFFFF` for `rom_size = $0C`, which is exactly the declared 4096 KiB, and `loader_addr` and `ROM_ADDR` are both 23 bits so nothing truncates; that is an argument and not a measurement, and the panel is the measurement. If DKC passes it is a new capability worth recording as its own result rather than folding into a polish entry, and if it fails the first thing to separate is size from layout by running a smaller HiROM title on the same bitstream. Beyond that the OSD remains the largest product gap and is a connected change rather than new IP, since `textdisp` is already instantiated in `iosys_bl616.v`, clocked and initialised from `font.vh` and `logo.vh`, with its output deliberately unused and `overlay` tied to zero; the comment there records that a runtime flag which can silently come back on already cost this project a debugging cycle, so re-enabling it needs to be deliberate. `README.md` still lists controller input as untested under its Not tested line, which entry 58 refuted on hardware when synthesised presses drove the RetroRegen menu, and that line should be corrected in the next cycle that touches the file. One consequence of this cycle is worth carrying: `tools/frame_stats.py` is now only able to tell a black picture from no signal on a diagnostic build, so any future session that needs that distinction must build with a probe define rather than assuming the production bitstream can answer it.
+
+#### Files Modified:
+
+- fpga/snes/src/snes2hdmi.v
+- tools/frame_stats.py
+- tools/tests/bootscreen_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

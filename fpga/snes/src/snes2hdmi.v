@@ -907,7 +907,20 @@ assign linefill_dbg = lf_dbg;
 `ifdef TINYSNES_DBG_BORDER
             rgb <= {dbg[2] ? 8'hFF : 8'h00, dbg[1] ? 8'hFF : 8'h00, dbg[0] ? 8'hFF : 8'h00};
 `else
+  `ifdef TINYSNES_DIAG_DISPLAY
+            // Diagnostic builds keep the grey pillarbox, and the reason is the
+            // instrument rather than the look: `tools/frame_stats.py` reads this
+            // colour to prove the transmitter is producing a frame, which is the
+            // whole difference between "no signal" and "the PPU is drawing
+            // black".  With black bars those two become the same measurement.
             rgb <= 24'h303030;
+  `else
+            // Production: black outside the 4:3 picture, which is what the
+            // sibling cores draw.  TinyNES and TinyGBC end their colour decision
+            // with `pic3 ? rgb3 : 24'd0` in fpga/ae350_soc/video.sv, so anything
+            // outside the picture area is pure black rather than a grey frame.
+            rgb <= 24'h000000;
+  `endif
 `endif
     end
 
