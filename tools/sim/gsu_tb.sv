@@ -146,6 +146,7 @@ module gsu_tb (
     void'($value$plusargs("lat=%d", rom_lat));
     void'($value$plusargs("glat=%d", gsu_lat));
     void'($value$plusargs("bwlat=%d", bwlat));
+    void'($value$plusargs("rtog=%d", rtog));
     if (gsu_lat > 8) gsu_lat = 8;
     if (rom_lat > 8) rom_lat = 8;
     if (rom_lat < 0) rom_lat = 0;
@@ -208,7 +209,34 @@ module gsu_tb (
   wire gsu_active = (GSU_ROMST != 3'd0);
   wire [7:0] rom_q_slow = rom_pipe[rom_lat];
   wire [7:0] rom_q_gsu  = (gsu_lat >= 0) ? rom_pipe[gsu_lat] : rom_q_slow;
-  assign ROM_Q = {8'h00, gsu_active ? rom_q_gsu : rom_q_slow};
+  // +rtog models the toggle-collapse on the ROM port.  snestang_top issues a
+  // cartridge request with `cpu_req <= ~cpu_req` and the SDRAM controller
+  // services on `cpu_req ^ cpu_ack`, a toggle pair: if a second address arrives
+  // before the controller has serviced the first, the difference vanishes and
+  // BOTH requests are lost, leaving ROM_Q stale.  Nothing applies back-pressure,
+  // because the default build ties `mem_wait = 1'b0`.  A fixed delay (+lat,
+  // +glat) cannot express this -- the delay is not the fault, the lost request
+  // is -- which is why the bench could report a healthy coprocessor while the
+  // board stalled.
+  integer rtog = 0;
+  integer rtog_busy = 0;
+  integer rtog_lost = 0, rtog_seen = 0;
+  reg [23:0] rtog_addr_q = 24'hFFFFFF;
+  reg [7:0]  rom_q_held = 8'h00;
+  always @(posedge clk) begin
+    if (rtog_busy > 0) rtog_busy <= rtog_busy - 1;
+    if (ROM_ADDR != rtog_addr_q) begin
+      rtog_seen <= rtog_seen + 1;
+      rtog_addr_q <= ROM_ADDR;
+      if (rtog_busy > 0) rtog_lost <= rtog_lost + 1;   // toggle collapsed
+      else rtog_busy <= rtog;
+    end
+    if (rtog == 0) rom_q_held <= rom[ROM_ADDR[19:0]];
+    else if (rtog_busy == 0) rom_q_held <= rom[rtog_addr_q[19:0]];
+  end
+  wire [7:0] rom_q_final = (rtog == 0) ? (gsu_active ? rom_q_gsu : rom_q_slow)
+                                       : (gsu_active ? rom_q_held : rom_q_slow);
+  assign ROM_Q = {8'h00, rom_q_final};
 
   // ----------------------------------------------------------- WRAM model
   reg [7:0] wram [0:131071];
@@ -473,6 +501,7 @@ module gsu_tb (
       $display("  GSU cache fill_seen %b  mmio_seen %b  in_cache %b",
                GSU_CACHE_FILL_SEEN, GSU_CACHE_MMIO_SEEN, GSU_IN_CACHE);
       $display("  BSRAM writes %0d, dropped %0d (bwlat=%0d)", bw_writes, bw_dropped, bwlat);
+      $display("  ROM requests %0d, lost to toggle collapse %0d (rtog=%0d)", rtog_seen, rtog_lost, rtog);
       $display("  frame: %0d pixels captured (full frame = 57344)", fb_captured);
       if (frame_path != 0) write_ppm(frame_path);
       if (fd != 0) $fclose(fd);

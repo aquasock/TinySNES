@@ -1903,7 +1903,26 @@ reg         bsram_req, bsram_we;
 reg [19:0]  bsram_addr;
 reg [7:0]   bsram_din;
 wire [7:0]  bsram_dout;
-wire        bsram_rd = ~BSRAM_CE_N & (~BSRAM_RD_N || rom_type[7:4] == 4'hC);
+// TinySNES: a BSRAM read is a read whichever master asked for it.
+//
+// This was `~BSRAM_CE_N & (~BSRAM_RD_N || rom_type[7:4] == 4'hC)`, and
+// BSRAM_RD_N is CPURD_CYC_N -- the 65816's own read strobe, `~P65_R_WN` out of
+// cpu.v.  So a GSU-initiated BSRAM read only reached the SDRAM controller when
+// the CPU happened to be reading on that same clock, and returned stale data
+// otherwise.  BSRAM is the GSU's only writable memory -- its work RAM, pixel
+// cache and plot buffer all live there -- which is why writes always landed
+// (`bsram_wr` uses the port's own strobe) while reads silently depended on what
+// the 65816 was doing.
+//
+// `~BSRAM_OE_N` is the port's own output-enable: GSUMap drives it from the
+// GSU's read strobe and DSP_LHRomMap drives it from the CPU's, so it is low for
+// any read regardless of master.  The `rom_type[7:4] == 4'hC` term is for OBC1,
+// whose mapper reads through this window without driving OE, and is kept.
+//
+// No bench in this project can show this: the simulations model BSRAM as a
+// plain array that always answers, which is the same blind spot as an undriven
+// wire -- the model is correct and the bitstream is not.
+wire        bsram_rd = ~BSRAM_CE_N & (~BSRAM_OE_N | rom_type[7:4] == 4'hC);
 wire        bsram_wr = ~BSRAM_CE_N & ~BSRAM_WE_N;
 reg         bsram_rd_r, bsram_wr_r;
 
@@ -2132,64 +2151,70 @@ wire [15:0] gsu_dbg_sfr, gsu_dbg_state_seen;
 wire        gsu_dbg_flag_go_int, gsu_dbg_flag_r_int, gsu_dbg_stop_seen;
 
 `ifdef TINYSNES_GSU_PROBE
-// Diagnostic build: does the GSU really stop at once, or is $3031 not returning
-// what the core holds?
+// Diagnostic build: on the board, is the GSU started, does its cache fill, and
+// is it doing any BSRAM work at all?
 //
-// Five cycles have narrowed this to one question.  Measured and settled: the
-// header decodes as GSU; the cartridge is read continuously; the 65816 hits the
-// $3000-$32FF window tens of thousands of times; the GSU is started (GO_CNT in
-// the teens); the 65816 loads the GSU's code by MMIO; the GSU's own cache fill
-// never runs, which is correct because VAL_CACHE is already set; and the fetch
-// path works, since ROMST reaches FETCH_DONE.  The last reading added the bad
-// news: SFR reads 0x0000 -- every flag clear, FLAG_GO included -- while GO_CNT
-// counts 18 starts and the microcode is only ever seen in states 0 to 3.
+// The bench says this machine is healthy: 739 GSU starts, all seven ROM states,
+// cache filled from the cartridge, and the intro rendering.  The board says
+// tiles then black, and it said that before and after two changes that the
+// bench endorsed -- ROM_CYCLES raised to 9 and `bsram_rd` re-derived from the
+// port's own output-enable rather than the 65816's read strobe.  So the
+// question is no longer "what is wrong with the GSU" but "does the board's GSU
+// behave at all like the bench's".
 //
-// Two explanations remain and they need different fixes:
+// BSRAM is the GSU's work RAM, pixel cache and plot buffer, and Star Fox has no
+// battery save, so on this cartridge essentially every BSRAM access belongs to
+// the coprocessor.  Counting them is therefore a direct read of whether the GSU
+// is doing work, independent of what it puts on screen.
 //
-//   A. the GSU really is stopping almost immediately, so the fault is in its
-//      instruction decode or its start sequence; or
-//   B. the core holds flags that the 65816 never sees, so the fault is the MMIO
-//      read path at $3031 and the coprocessor may be working fine.
-//
-// The core's own FLAG_GO and FLAG_R, and a sticky record of any OP_STOP, tell
-// them apart in one frame: if internal FLAG_GO is clear and STOP was seen, the
-// GSU stops for real; if internal differs from what SFR carries, the read path
-// is the fault.
-//
-// Field layout is generated from tools/probe_fields.py, the single source of
-// truth for this concatenation and the host decoder.  `--verify` fails if they
-// disagree; four earlier cycles shipped a wrong field order and each was caught
-// by luck, so the check is no longer optional.
-//
-// probe_bus fields, low to high (all 16 bits wide):
-//   [15:0]  {13'b0, stop_seen, flag_r_int, flag_go_int}
+// probe_bus fields, low to high (all 16 bits):
+//   [15:0]  {10'b0, rom_seen, cache_mmio_seen, cache_fill_seen,
+//            stop_seen, flag_r_int, flag_go_int}
 //   [31:16] SFR as the 65816 reads it
 //   [47:32] sticky microcode-state history, one bit per STATE[3:0]
 //   [63:48] GO_CNT
-//   [79:64] rom_type                        (expect $70: map $20, type $13)
+//   [79:64] {8-bit BSRAM read count, 8-bit BSRAM write count}, saturating
 //
-// Band: R = an OP_STOP was executed, G = the GSU was ever started, B = enable.
+// Band: R = the GSU ever completed a cache line, G = ever started, B = enable.
+reg [7:0]  gs_bsram_rd = 8'd0;
+reg [7:0]  gs_bsram_wr = 8'd0;
+reg        gs_rom_seen = 1'b0;
+reg        gs_cache_fill_seen = 1'b0, gs_cache_mmio_seen = 1'b0;
 reg [21:0] gs_refresh = 22'd0;
 reg [79:0] fp_bus     = 80'd0;
 reg  [2:0] gs_dbg     = 3'b000;
 
+wire bs_stb_rd = ~BSRAM_CE_N & ~BSRAM_OE_N;
+wire bs_stb_wr = ~BSRAM_CE_N & ~BSRAM_WE_N;
+
 always @(posedge mclk) begin
     if (~resetn) begin
+        gs_bsram_rd <= 8'd0;
+        gs_bsram_wr <= 8'd0;
+        gs_rom_seen <= 1'b0;
+        gs_cache_fill_seen <= 1'b0;
+        gs_cache_mmio_seen <= 1'b0;
         fp_bus <= 80'd0;
     end else begin
+        if (bs_stb_rd && gs_bsram_rd != 8'hFF) gs_bsram_rd <= gs_bsram_rd + 8'd1;
+        if (bs_stb_wr && gs_bsram_wr != 8'hFF) gs_bsram_wr <= gs_bsram_wr + 8'd1;
+        if (~ROM_CE_N) gs_rom_seen <= 1'b1;
+        if (gsu_dbg_cache_fill_seen) gs_cache_fill_seen <= 1'b1;
+        if (gsu_dbg_cache_mmio_seen) gs_cache_mmio_seen <= 1'b1;
+
         gs_refresh <= gs_refresh + 22'd1;
         if (gs_refresh[15:0] == 16'd0) begin
-            fp_bus <= {rom_type,
+            fp_bus <= {{gs_bsram_rd, gs_bsram_wr},
                        gsu_dbg_go_cnt,
                        gsu_dbg_state_seen,
                        gsu_dbg_sfr,
-                       {13'b0, gsu_dbg_stop_seen,
-                        gsu_dbg_flag_r_int, gsu_dbg_flag_go_int}};
+                       {10'b0, gs_rom_seen, gs_cache_mmio_seen, gs_cache_fill_seen,
+                        gsu_dbg_stop_seen, gsu_dbg_flag_r_int, gsu_dbg_flag_go_int}};
         end
     end
 end
 
-always @(*) gs_dbg = {gsu_dbg_stop_seen, gsu_dbg_flag_go_int, enable};
+always @(*) gs_dbg = {gs_cache_fill_seen, gsu_dbg_flag_go_int, enable};
 `endif
 
 `ifdef TINYSNES_TIMING_PROBE

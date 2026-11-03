@@ -37,6 +37,7 @@ rt=112
 lat=0
 glat=-1
 bwlat=0
+rtog=0
 out="$root/build/gsusim"
 defines=()
 while [[ $# -gt 0 ]]; do
@@ -49,6 +50,7 @@ while [[ $# -gt 0 ]]; do
     --lat) lat="$2"; shift 2 ;;
     --glat) glat="$2"; shift 2 ;;
     --bwlat) bwlat="$2"; shift 2 ;;
+    --rtog) rtog="$2"; shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -111,7 +113,7 @@ for f in "${sources[@]}"; do
     [[ -f "$f" ]] || { echo "missing source: $f" >&2; exit 2; }
 done
 
-args=(+hex="$hex" +cycles="$cycles" +trace="$out/gsu.trace" +frame="$out/frame.ppm" +romtype="$rt" +lat="$lat" +glat="$glat" +bwlat="$bwlat")
+args=(+hex="$hex" +cycles="$cycles" +trace="$out/gsu.trace" +frame="$out/frame.ppm" +romtype="$rt" +lat="$lat" +glat="$glat" +bwlat="$bwlat" +rtog="$rtog")
 [[ "$vcd" == 1 ]] && args+=("+vcd=$out/waves.vcd")
 
 cd "$out"

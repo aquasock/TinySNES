@@ -32,11 +32,11 @@ Usage:
 
 # (name, width) pairs, LOW bit first.
 FIELDS = [
-    ("flags_now", 16),   # one 16-bit term: {13'b0, stop_seen, flag_r_int, flag_go_int}
+    ("flags", 16),      # {10'b0, rom_seen, cache_mmio, cache_fill, stop, flag_r, flag_go}
     ("sfr", 16),
     ("state_seen", 16),
     ("go_cnt", 16),
-    ("rom_type", 16),
+    ("bsram", 16),      # {8-bit read count, 8-bit write count}
 ]
 
 BUS_WIDTH = 80
@@ -124,7 +124,11 @@ def verify_rtl(path: str, marker: str = "TINYSNES_GSU_PROBE") -> list[str]:
                 problems.append(f"expected a constant zero pad, got {got!r}")
             continue
         stem = got.replace("gsu_dbg_", "").replace("gs_", "")
-        if got.startswith("{") and want == "flags_now":
+        # A field may legitimately be built as a nested concatenation of
+        # sub-fields (a packed flag word, a pair of counters).  Accept a brace
+        # term at those named positions; the sub-field order inside it is the
+        # RTL comment's job and is not checkable from here.
+        if got.startswith("{") and want in ("flags", "flags_now", "bsram", "state_pair"):
             continue
         if stem != want:
             problems.append(f"position mismatch: RTL {got!r} vs FIELDS {want!r}")
