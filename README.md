@@ -35,6 +35,11 @@ Three changes go beyond that, and each has a measurement behind it:
 ## Status
 
 - **Machine: working.** Retail boots, video and audio both correct.
+- **Boot screen:** with no cartridge loaded the core draws the same eight-bar
+  colour pattern as TinyNES and TinyGBC (white, yellow, cyan, green, magenta,
+  red, blue, black) across the full raster. Previously it showed an
+  uninitialised line-buffer ramp, which read as a fixed tile grid. Gated off in
+  every diagnostic build so those still show their own results.
 - **Tested cartridges:** Space Invaders (256 KiB, LoROM), Zelda: A Link to the
   Past (1 MiB, LoROM, ROM+RAM+battery), Super Mario Kart (512 KiB, HiROM,
   FastROM, ROM+RAM+battery, DSP-1). Mario Kart is the first HiROM and the first

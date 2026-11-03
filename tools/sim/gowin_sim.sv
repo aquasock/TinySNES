@@ -51,6 +51,15 @@ module PLL #(
     parameter CLKOUT0_DT_STEP   = 0,
     parameter CLKOUT0_PE_COARSE = 0,
     parameter CLKOUT0_PE_FINE   = 0,
+    // Both outputs carry the phase parameters the design may set: the 225-degree
+    // SDRAM-clock shift lived on CLKOUT2 until core-log entry 75 swapped the two
+    // outputs so that CLKOUT2 could reach the clock plane, and it has lived on
+    // CLKOUT1 since.  A model that knows only one of them refuses to elaborate
+    // against whichever arrangement the RTL is in -- which is what happened here:
+    // this bench could not build at all after that swap, so the project's only
+    // whole-machine simulation was silently unavailable.
+    parameter CLKOUT1_PE_COARSE = 0,
+    parameter CLKOUT1_PE_FINE   = 0,
     parameter CLKOUT2_PE_COARSE = 19,
     parameter CLKOUT2_PE_FINE   = 3
 ) (
@@ -125,15 +134,23 @@ module PLL #(
 
   reg c0 = 1'b0, c1 = 1'b0, c2 = 1'b0, c3 = 1'b0;
 
-  // CLKOUT2 is the same frequency as CLKOUT1 with a phase offset given in the
-  // vendor's coarse/fine units.  One coarse step is 22.5 degrees and one fine
-  // step is a further 22.5/8 degrees, which is how 19/3 lands on 225 degrees:
-  // 19*22.5 + 3*2.8125 = 427.5 + 8.4375 = 435.9 deg -- i.e. 225 plus one full
-  // turn, which is what the hardware does.  Expressed as a delay on the first
-  // edge, because that is what the capture logic downstream actually sees.
-  localparam real PHASE_DEG  = (CLKOUT2_PE_COARSE * 22.5) + (CLKOUT2_PE_FINE * 2.8125);
+  // The phase offset is given in the vendor's coarse/fine units.  One coarse
+  // step is 22.5 degrees and one fine step is a further 22.5/8 degrees, which is
+  // how 19/3 lands on 225 degrees: 19*22.5 + 3*2.8125 = 435.9 deg -- i.e. 225
+  // plus one full turn, which is what the hardware does.
+  //
+  // LIMITATION, stated rather than hidden: this model does not apply the offset
+  // to any waveform.  The value is computed and unused, which was true before
+  // entry 75 as well.  So the bench reproduces the PLL's frequencies and its
+  // enable gating but NOT the sub-cycle phase between CLKOUT1 and CLKOUT2.  That
+  // is sound for the question the bench is used for -- does the machine reach the
+  // cartridge, does `loaded` go high, does the PPU draw -- because the modelled
+  // SDRAM part is behavioural and does not depend on a capture edge.  It is not
+  // sound for anything that depends on the SDRAM capture window, so do not read a
+  // passing run here as evidence about that.
+  localparam real PHASE_DEG  = ((CLKOUT1_PE_COARSE * 22.5) + (CLKOUT1_PE_FINE * 2.8125)) +
+                               ((CLKOUT2_PE_COARSE * 22.5) + (CLKOUT2_PE_FINE * 2.8125));
   localparam real PHASE_NS   = (P2 > 0.0) ? (P2 * PHASE_DEG) / 360.0 : 0.0;
-  localparam real PHASE_NS_W = (PHASE_NS > P2) ? (PHASE_NS - P2) : PHASE_NS;
 
   initial begin
     if (P0 <= 0.0 || P1 <= 0.0) begin

@@ -3105,6 +3105,12 @@ snes2hdmi s2h(
     .bist_mask(16'hFFFF),
 `endif
     .pause_snes_for_frame_sync(pause_snes_for_frame_sync),
+    // The boot screen's gate: no cartridge image has landed in the SDRAM yet, so
+    // snes2hdmi draws the eight colour bars instead of the picture.  `loaded` is
+    // declared unconditionally above, so every build including the diagnostic
+    // ones can bind it; the diagnostic builds ignore it, because their own
+    // display defines suppress the boot screen inside snes2hdmi.
+    .rom_loaded(loaded),
     .dotclk(dotclk), .hblank(~hblankn),.vblank(~vblankn),.rgb5(rgb_out),
     .xs(x_out), .ys(y_out), 
     .overlay(overlay), .overlay_x(overlay_x), .overlay_y(overlay_y),

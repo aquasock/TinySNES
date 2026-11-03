@@ -86,6 +86,40 @@
   `define TINYSNES_BIST_BARS 1
 `endif
 
+// Any build that draws a display of its own in place of the picture must not
+// have the boot screen in front of it.  The memory self-tests are why this is
+// not merely tidy: they run at power-up with no cartridge loaded, which is
+// exactly the condition the boot screen covers, so an ungated boot screen would
+// hide the result the test exists to show.  Written as the nested form for the
+// reason recorded above -- `elsif A || B` resolves false when only B is defined.
+`ifdef TINYSNES_PROBE_BARS
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_BIST_BARS
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_PROBE_SPLIT
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_OVERLAY_ONLY
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_TEST_PATTERN
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_LOAD_COUNT
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_ROM_CHECK
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_LIVE_TESTPATTERN
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+`ifdef TINYSNES_SOLID_WHITE
+  `define TINYSNES_DIAG_DISPLAY 1
+`endif
+
 module snes2hdmi (
 	input clk,      // snes clock
 	input resetn,
@@ -110,6 +144,11 @@ module snes2hdmi (
 
     // frame-sync pause happens during snes_refresh
     input snes_refresh,
+
+    // No cartridge image in the SDRAM yet.  Comes from the top level's `loaded`
+    // on the machine clock and is synchronised into this unit's pixel clock, so
+    // a machine with no cartridge shows the boot screen instead of the picture.
+    input rom_loaded,
 
 	// video clocks
 	input clk_pixel,
@@ -693,8 +732,63 @@ assign linefill_dbg = lf_dbg;
     always @(posedge clk_pixel) ltp_cnt <= ltp_cnt + 24'd1;
 `endif
 
+`ifndef TINYSNES_DIAG_DISPLAY
+    // ------------------------------------------------------------ boot screen
+    //
+    // With no cartridge image in the SDRAM there is nothing to show, and the
+    // line buffer still holds the ramp its `initial` block fills it with, so the
+    // screen shows a fixed tile pattern instead of a boot screen.  TinyNES and
+    // TinyGBC draw eight equal vertical colour bars in exactly this state -- see
+    // `fpga/ae350_soc/video.sv` in either tree, where the output colour is
+    // `!en3 ? bars : picture` -- so this core draws the same thing, with the same
+    // bar order and the same levels.
+    //
+    // Two deliberate differences from the siblings.  The bars span the whole
+    // 1280-column active raster rather than only this core's 4:3 picture area,
+    // so the boot screen has no grey pillarbox around it.  And the active-area
+    // test is explicit here, because `cx` counts the whole 1650-column raster
+    // (the hdmi module's frame_width is the total, not the visible part), so
+    // without it the bars would run on into horizontal blanking.
+    //
+    // Order, as in both siblings: white, yellow, cyan, green, magenta, red,
+    // blue, black.  On is 0xC0 and off is 0x10, again as there.
+    localparam integer BOOT_BAR_W = FRAMEWIDTH / 8;
+
+    // `loaded` is produced on the machine clock, so it enters this domain
+    // through two flops.  It changes once per cartridge load, so the two clocks
+    // of latency cost nothing, and without them the bit that swaps the whole
+    // screen is the one bit sampled by a 74.25 MHz flop from an unrelated
+    // domain.
+    reg [1:0] rom_loaded_sync = 2'b00;
+    always @(posedge clk_pixel) rom_loaded_sync <= {rom_loaded_sync[0], rom_loaded};
+    wire boot_screen = ~rom_loaded_sync[1];
+
+    wire [2:0] boot_bar = cx < BOOT_BAR_W     ? 3'd0 :
+                          cx < BOOT_BAR_W * 2 ? 3'd1 :
+                          cx < BOOT_BAR_W * 3 ? 3'd2 :
+                          cx < BOOT_BAR_W * 4 ? 3'd3 :
+                          cx < BOOT_BAR_W * 5 ? 3'd4 :
+                          cx < BOOT_BAR_W * 6 ? 3'd5 :
+                          cx < BOOT_BAR_W * 7 ? 3'd6 : 3'd7;
+    wire boot_r = boot_bar == 3'd0 || boot_bar == 3'd1 ||
+                  boot_bar == 3'd4 || boot_bar == 3'd5;
+    wire boot_g = boot_bar == 3'd0 || boot_bar == 3'd1 ||
+                  boot_bar == 3'd2 || boot_bar == 3'd3;
+    wire boot_b = boot_bar == 3'd0 || boot_bar == 3'd2 ||
+                  boot_bar == 3'd4 || boot_bar == 3'd6;
+    wire [23:0] boot_rgb = {boot_r ? 8'hC0 : 8'h10,
+                            boot_g ? 8'hC0 : 8'h10,
+                            boot_b ? 8'hC0 : 8'h10};
+    wire boot_visible = boot_screen && cx < FRAMEWIDTH && cy < FRAMEHEIGHT;
+`endif
+
     // calc rgb value to hdmi
     always @(posedge clk_pixel) begin
+`ifndef TINYSNES_DIAG_DISPLAY
+        if (boot_visible) begin
+            rgb <= boot_rgb;
+        end else
+`endif
         if (active) begin
 `ifdef TINYSNES_PROBE_SPLIT
             // Diagnostic build: the machine's picture with the probe laid over

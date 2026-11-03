@@ -140,6 +140,9 @@ module video2_tb;
 
   snes2hdmi s2h (
     .clk(clk), .resetn(rst_n), .snes_refresh(SNES_REFRESH),
+    // This bench judges the picture path, so it is never a machine without a
+    // cartridge: hold the boot screen off and let the core's own output through.
+    .rom_loaded(1'b1),
     .dotclk(DOTCLK), .hblank(~HDE), .vblank(~VDE), .rgb5(RGB_OUT),
     .xs(X_OUT), .ys(Y_OUT),
     .overlay(1'b0), .overlay_x(ovl_x), .overlay_y(ovl_y), .overlay_color(15'h0000),
