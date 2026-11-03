@@ -97,6 +97,7 @@ rules:
 | Why does a sticky history bit always read as set? | TCL | TCL-013 |
 | How do I load a core in one-wire versus two-wire? | BRD | BRD-003 |
 | How does a core image or ROM get onto the card? | BRD | BRD-004 |
+| Can a cartridge coprocessor be used for sound, as on the Famicom? | EXT | EXT-013 |
 
 ---
 
@@ -119,7 +120,8 @@ TCL-019 the fastrom access window and the full-core bench ·
 BRD-005 placement, not timing, decides whether this netlist boots ·
 EXT-012 the APU handshake completes and a boot takes 30M clocks ·
 EXT-010 the opcode-commit point for instruction-level probes ·
-EXT-011 JSR/JSL/RTS/RTL microcode push and pull widths
+EXT-011 JSR/JSL/RTS/RTL microcode push and pull widths ·
+EXT-013 the cartridge DSP is math-only, so no cart expands audio
 EXT-003 TangCore ROM loader · BRD-003 one-wire and two-wire loading · BRD-004 console file transfer
 EXT-004 the SCPU debug port as a bench instrument · EXT-005 the APU port banks and IPL boot ·
 EXT-006 the IPL block-copy protocol · EXT-007 65816 WAI/STP halts and the status byte · EXT-008 the interrupt chain and IsBRKInterrupt ·
@@ -636,6 +638,20 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "This repository, tools/sim/snes_tb.sv: the APU link, PPU write and video logs"
     - "SNESTang commit 5f0ef19, src/smp.v: the CPUI/CPUO port banks and the IPL echo"
   verification: "Measured on 2026-11-01 (core-log entry 39) in the full-core bench: a 40 million clock run at cartridge latency 4 with slowrom timing reaches the displayed picture, with the SPC exit, the NMI enable and the `$2100` write each timestamped from the trace."
+
+- record_id: EXT-013
+  kind: EXTERNAL
+  topic_id: EXT
+  title: "The cartridge DSP (uPD77C25) is a fixed math coprocessor with no audio path, so no SNES title can use it to expand sound"
+  status: VERIFIED
+  verified_date: 2026-11-03
+  statement: "The SNES has two unrelated chips called DSP. The S-DSP is the audio chip inside the console, implemented here as `fpga/snes/src/dsp.v`; it has eight BRR voices and is present in every machine. The cartridge DSP is a NEC uPD77C25 microcontroller, implemented here as `fpga/snes/src/chip/DSP/DSPn.v`, whose microcode lives in mask ROM burned at manufacture and therefore cannot be reprogrammed by a game.  fullsnes lists its complete DSP-1 command set: 16-bit multiplication, inverse calculation, set attitude A/B/C, projection parameter setting, object-to-global and global-to-object coordinate conversion, trigonometric calculation, 3D angle rotation, vector size calculation and comparison, vector absolute value, raster data calculation, inner product with attitude, 2D and 3D coordinate rotation, screen-point coordinate calculation, and three test commands.  Every command is arithmetic; none addresses audio.  The titles that use it are correspondingly 3D and vector workloads -- Pilotwings, Super Mario Kart, Ballz 3D, Suzuka 8 Hours, the Genki racing games.  Structurally the path does not exist either: `DSPn.v` and `chip/GSU/GSUMap.v` declare no APU, ARAM or SMP port of any kind, and the only route between the 65816 and the sound side is the four-byte handshake at `$2140-$2143` recorded in EXT-005."
+  consequence: "So there is no SNES analogue of a Famicom cartridge adding sound channels, and the question 'which cartridge stresses the audio expansion' has no referent: the NES had almost no sound hardware and the cart had to supply it, whereas the SNES put a complete eight-voice sampler in the console and every cartridge gets identical hardware.  What varies between titles is only which S-DSP features a sound driver exercises, so audio coverage is obtained by choosing titles that stress distinct features -- echo with FIR feedback, the noise channel, pitch modulation, dense eight-voice mixing -- and not by hunting for special hardware.  The one genuine cartridge audio coprocessor is the MSU-1, which streams CD-quality audio and bypasses the S-DSP; it is homebrew-era hardware with no retail releases, so supporting it would mean implementing a new coprocessor rather than testing the existing one.  A programmable coprocessor could in principle compute samples and hand them to the 65816 to upload, and the SuperFX is a real CPU able to do so, but no title is known to do it and this project has no evidence that one does."
+  sources:
+    - "fullsnes (nocash), the SNES cart DSP-n/ST010/ST011 section: the uPD77C25 description, the full DSP1 command list and the list of DSP-1 titles"
+    - "This repository, fpga/snes/src/dsp.v (the S-DSP) and fpga/snes/src/chip/DSP/DSPn.v (the cartridge DSP), and their port lists"
+    - "This repository, fpga/snes/src/chip/GSU/GSUMap.v: no APU, ARAM or SMP port"
+  verification: "Read from fullsnes and checked against this tree's RTL on 2026-11-03 (core-log entry 82), while answering whether any cartridge could use the coprocessor for sound generation: a port search over DSPn.v and GSUMap.v returns no APU or ARAM connection, so the hardware path is absent independently of the command set."
 
 - record_id: BRD-003
   kind: BOARD
