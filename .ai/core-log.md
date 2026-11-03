@@ -2720,3 +2720,42 @@ None.
 - User Test: PASS
 
 ---
+
+## 85 COMMIT Unreleased 2026-11-03T13:31:45-07:00
+
+#### Coming From:
+
+Unreleased d761e70
+
+#### Purpose:
+
+Give this core a controller of its own by reading a Wii Classic Controller over I2C in fabric, so a game can be played rather than only booted.
+
+#### Outcome:
+
+The controller works: the user played Zelda past its intro on the build this cycle deployed, so for the first time a TinySNES core accepts input from a real pad rather than only from synthesised UART frames. The pad is a Wii Classic Controller in Adafruit's Wii Nunchuck Breakout Adapter on USB-A port 2, reached as I2C on that port's data pair with D+ as SDA (H13) and D- as SCL (G13), which is the same wiring TinyNES uses for its controller 1 on this board. `fpga/snes/src/wii_pad.sv` is a single-bus I2C master ported from TinyNES's `fpga/ae350_soc/wii_pads.sv` -- wake unencrypted, select data format 3, read the six-byte identity, then poll eight data bytes about once a millisecond -- with no AHB register interface and retimed for mclk at 21.477 MHz, where a quarter bit of 54 clocks is about 99 kHz. Its output is the same 12-bit word `controller_snes.v` produces, OR-ed into the existing `controller_adapter` beside the DS2, SNES-pad and BL616 sources, so nothing that worked before changed shape. The defect that cost the most was not in the I2C at all. `pad0.buttons` was assigned in two always blocks -- the sequencer writing zero on reset and on a failed transfer, and the decode block writing the real button word -- and synthesis reported `Driver-driver conflict for pad0.buttons [11]`. Simulation tolerates multiple drivers and runs the last write, so both benches saw plausible values while the bitstream produced a register that could not work: the pad identified perfectly, every transfer succeeded, `fails` stayed zero, and no button ever did anything. Every earlier build in this session had that shape. Two further fixes followed it. A single failed transfer used to clear presence and zero the buttons for 100 ms, which on a bus with one glitchy byte is indistinguishable from a dead pad, so it now takes eight consecutive failures before the pad is treated as gone. And a format-detection scheme was removed rather than fixed: it read identity byte 4, chose format 1 or format 3, varied the read length and retried the format write, which is not what the reference does -- TinyNES always forces format 3, always reads eight bytes and always decodes bytes 6 and 7, on this hardware with this controller -- and the extra states brought failure modes the reference does not have, which this bench caught as the pad going absent after its retries. Two benches now cover the path. `tools/tests/wii_pad_tb.sv` drives a modelled Classic Controller on the bus and checks every button's decoded bit, and `tools/tests/padpath_tb.sv` goes further and checks `controller_adapter` and the SNES serial protocol, so each button is required to reach its correct wire slot with the correct polarity; it failed on a mutation that swapped R and B. Between them the benches found the format mismatch, a slave model that acknowledged read bytes the master owns, and two of the writer's own wrong expectations, and the driver conflict itself was found by reading the yosys log rather than by either bench. Two facts about the board had to be established before any of this could be tested, and both had been wasting cycles. First, the pad cannot work in one-wire mode: the adapter is powered from USB-A's VBUS, and TinyNES's own record is that in one-wire nothing of TinyTang runs, so the pull-ups are dead and the pad is electrically invisible. Three of this session's hardware failures were that, not the RTL. Second, the BL616 link is not an alternative route: `iosys_bl616.v` implements receiving pad state as frame type `0x09` and `snestang_top` ORs `hid1`/`hid2` into the adapter, but TinyTang's firmware never sends that frame, so those nets are permanently zero -- and TinyGBA's README records that its own BL616 input "has not been exercised", so this path is unproven everywhere. The deployed artifact is `build/bb_s9`, SHA-256 `fd37857d5b034bc155e23d57ebf2823d95c68a3e21f3c68afcd0f9a257a591c5`, a border-probe build at seed 9 with every clock on a measured-good bridge pip. The probe was trimmed to three bits for a placement reason worth recording: an earlier form wired sixteen live pad signals into `snes2hdmi`'s `bist_mask` and thirteen seeds of it produced no placement with `fclk` on a measured-good pip, while the three-bit form landed on `SPINE18`+`SPINE28` at the first seed tried. The border read yellow, which is `{present, classic, |fails}` all asserted -- the healthy state, not a fault. `README.md` gained a Controller input status entry with the two-wire requirement and the BL616 warning, and its Known gaps section was corrected where it still claimed the GSU files were absent from the synthesis list and that input was untested. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 84 were not rewritten, and made no change to `core-reference.md` because the Wii adapter, its wiring and the format-3 protocol are already carried in TinyNES's WII records and this cycle only re-read them; validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-five-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Deploy the border-free build next, because the border was only ever a diagnostic: `build/prod2` carries identical logic at seed 7 with `fclk` on `SPINE18`+`SPINE28` and every clock on a measured-good pip, and it draws no frame around the picture. Then the OSD, which is the last untested surface and the largest product gap: `textdisp` is already instantiated in `iosys_bl616.v`, clocked and initialised from `font.vh` and `logo.vh`, with its output deliberately unused and `overlay` tied to zero, so it is a connected change rather than new IP. Do not re-test the pad in one-wire mode, and do not route input through the BL616 link without first establishing that some firmware sends the `0x09` frame, since nothing in TinyTang's tree does. Two things are worth carrying into that work. The `Driver-driver conflict` line in a yosys log is the only symptom of a register written from two always blocks, and no bench in this tree can see it, so it should be grepped for on any build rather than discovered late; a build that passes every gate and a simulation that agrees with itself are both compatible with a bitstream that cannot work. And the probe-versus-placement coupling is real: adding diagnostic logic changes what the placer optimises against, so a diagnostic build needs its own seed chosen against `tools/clock_plane_report.py` rather than inheriting the production seed. Separately, `tools/build_tinysnes.sh` gained `TINYSNES_PNR_EXTRA` this cycle while evaluating nextpnr's threading options, and the measurement is worth keeping: `--threads 8` reached the command line and still ran one thread, and `--parallel-refine` reached two only briefly, because placement is serial simulated annealing in this backend, so the router is one core per build and parallel builds are the only way to use the machine.
+
+#### Files Modified:
+
+- fpga/snes/src/wii_pad.sv
+- fpga/snes/src/snestang_top.v
+- fpga/snes/tinysnes.cst
+- fpga/snes/config.v
+- tools/build_tinysnes.sh
+- tools/tests/wii_pad_tb.sv
+- tools/tests/run_wii_pad_tb.sh
+- tools/tests/padpath_tb.sv
+- tools/tests/run_padpath_tb.sh
+- README.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

@@ -68,11 +68,14 @@ module snestang_top (
     output ds_cs2,
 `endif
 
-    // USB1 and USB2
-`ifdef USB1
+    // USB1 and USB2.  The ports are declared unconditionally on purpose: they
+    // are board pins, and whether anything is wired to them is a different
+    // question from whether the pin exists.  Leaving them behind `ifdef USB1
+    // made a build that referenced usb1_dp from a `WII_PAD block synthesise and
+    // pass every gate with the pins silently absent -- the CST then reports
+    // "Cell usb1_dp not found" at place and route, which is the only symptom.
     inout usb1_dp,
     inout usb1_dn,
-`endif
 `ifdef USB2
     inout usb2_dp,
     inout usb2_dn,
@@ -2888,10 +2891,59 @@ assign joy2_usb = 12'h0;
 assign led = 8'hff;
 `endif
 
+// ------------------------------------------------------- Wii Classic Controller
+// Player 1's pad may be a Wii Classic Controller on USB-A port 2's data pair,
+// reached as I2C through Adafruit's Wii Nunchuck Breakout Adapter: D+ is SDA and
+// D- is SCL, both open drain because the adapter only pulls them low.  This is
+// the same wiring TinyNES uses for controller 1 on this board, and the pins are
+// constrained in tinysnes.cst.  The pads are declared unconditionally -- they
+// are top-level inouts either way -- and only the master inside is optional.
+wire [11:0] wii_buttons;
+wire        pad_sda_low, pad_scl_low;
+wire        pad_present, pad_classic;
+wire [15:0] pad_reads;
+wire [7:0]  pad_fails;
+wire [15:0] pad_dbg_bytes;
+wire        pad_dbg_fmt3;
+
+`ifdef WII_PAD
+`ifndef USB1
+assign usb1_dp = pad_sda_low ? 1'b0 : 1'bz;
+assign usb1_dn = pad_scl_low ? 1'b0 : 1'bz;
+
+wii_pad #(
+    // mclk is 21.477 MHz.  54 quarter-steps of four clocks each is 10.06 us a
+    // bit, about 99 kHz, against the 100 kHz the controller expects.
+    .US_CLOCKS(21), .QUARTER(54), .CONVERT_US(200)
+) pad0 (
+    .clk(mclk), .resetn(resetn),
+    .sda_low(pad_sda_low), .scl_low(pad_scl_low),
+    .sda_in(usb1_dp), .scl_in(usb1_dn),
+    .present(pad_present), .classic(pad_classic),
+    .reads(pad_reads), .fails(pad_fails),
+    .buttons(wii_buttons),
+    .dbg_bytes(pad_dbg_bytes),
+    .dbg_format3(pad_dbg_fmt3)
+);
+`endif
+`else
+assign usb1_dp = 1'bz;
+assign usb1_dn = 1'bz;
+assign wii_buttons = 12'h000;
+assign pad_sda_low = 1'b0;
+assign pad_scl_low = 1'b0;
+assign pad_present = 1'b0;
+assign pad_classic = 1'b0;
+assign pad_reads = 16'd0;
+assign pad_fails = 8'd0;
+assign pad_dbg_bytes = 16'd0;
+assign pad_dbg_fmt3  = 1'b0;
+`endif
+
 // output button presses to SNES
 controller_adapter joy1_adapter (
     .clk(mclk), .snes_joy_strb(snes_joy_strb), 
-    .snes_buttons(joy1_btns_ds2 | joy1_btns_snes | hid1 | joy1_usb), .snes_joy_clk(snes_joy1_clk), .snes_joy_di(snes_joy1_di[0])
+    .snes_buttons(joy1_btns_ds2 | joy1_btns_snes | hid1 | joy1_usb | {4'b0, wii_buttons}), .snes_joy_clk(snes_joy1_clk), .snes_joy_di(snes_joy1_di[0])
 );
 controller_adapter joy2_adapter (
     .clk(mclk), .snes_joy_strb(snes_joy_strb), 
@@ -3094,7 +3146,19 @@ snes2hdmi s2h(
     .dbg(wram_bist_dbg),
     .bist_mask(wram_bist_mask),
 `else
-  `ifdef TINYSNES_DBG_MACHINE
+  `ifdef TINYSNES_PAD_PROBE
+    // Diagnostic build: is the Wii Classic Controller seen at all?  R = a pad
+    // is woken and answering, G = its identity was accepted as a Classic
+    // Controller, B = at least one transfer has failed.  Built with
+    // TINYSNES_DBG_BORDER so the border shows it, and the four combinations
+    // separate the failure modes: black means the bus never answers at all
+    // (no VBUS, wrong pins, or a line held low); blue means transfers are
+    // being NACKed, so the bus works but nothing is at 0x52 or the wake-up
+    // sequence is not reaching it; red means a device answered the address but
+    // its identity was not a Classic Controller's; yellow means the pad is
+    // present and identified, so any remaining fault is in the button decode.
+    .dbg({pad_present, pad_classic, |pad_fails}),
+  `elsif TINYSNES_DBG_MACHINE
     // Diagnostic build: why the machine is or is not running.  R = enable,
     // G = loaded, B = pause_snes_for_frame_sync.  enable is the gate into main,
     // and it needs ~pause, so green alone means the SNES is held off.
@@ -3102,7 +3166,30 @@ snes2hdmi s2h(
   `else
     .dbg({header_finished, loaded, loading}),
   `endif
+  `ifdef TINYSNES_PAD_PROBE
+    `ifdef TINYSNES_BIST_BARS
+    // The controller's own two button bytes, one bar per bit, red where the
+    // bit is set.  They are active low at rest, so an idle pad is sixteen red
+    // bars and pressing a button turns that bit's bar green.  If no bar ever
+    // changes the poll loop is not updating them and the fault is upstream of
+    // the decode; if they do change, the decode or the path into the SNES port
+    // is at fault.
+    //
+    // This is the expensive form, and only worth it when the bars are wanted:
+    // it wires sixteen live pad signals across to the video unit, which changes
+    // what the placer optimises against.  Thirteen seeds of this configuration
+    // were routed and not one put `fclk` on a measured-good pip, against
+    // production builds that found SPINE28/TOP2 readily.
+    .bist_mask(pad_dbg_bytes),
+    `else
+    // Border-only form: three bits of pad state and nothing else, so the
+    // placement stays close to a production build and the game still runs
+    // normally behind the border.
     .bist_mask(16'hFFFF),
+    `endif
+  `else
+    .bist_mask(16'hFFFF),
+  `endif
 `endif
     .pause_snes_for_frame_sync(pause_snes_for_frame_sync),
     // The boot screen's gate: no cartridge image has landed in the SDRAM yet, so

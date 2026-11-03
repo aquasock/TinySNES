@@ -63,9 +63,14 @@ Three changes go beyond that, and each has a measurement behind it:
   title and the DSP-1 title. The S-DSP is complete in this core -- BRR with all
   four filters, Gaussian interpolation, ADSR and the GAIN modes, pitch
   modulation, noise and echo with its FIR filter.
-- **Not tested:** the OSD. Controller input works: synthesised presses sent over
-  the one-wire UART drove a test suite's menu through START, A, B, X, SELECT and
-  DOWN.
+- **Controller input: working.** A Wii Classic Controller in Adafruit's Wii
+  Nunchuck Breakout Adapter on USB-A port 2, read as I2C by fabric on D+ (SDA)
+  and D- (SCL), drives the game. It needs two-wire mode: USB-A's VBUS is what
+  powers the adapter's pull-ups, so in one-wire mode the pad is electrically
+  invisible and reports absent. The BL616 link is not a second route -- `hid1`
+  and `hid2` are wired into the top level but TinyTang's firmware never sends the
+  `0x09` pad frame, so they stay zero.
+- **Not tested:** the OSD.
 - **No saves persist.** Nothing in the tree writes SRAM back to the card.
 
 ## Build
@@ -173,14 +178,10 @@ tools/              build, deploy, ROM loading, probes, frame analysis
 
 ## Known gaps
 
-- **SuperFX.** Yoshi's Island and Star Fox need the GSU coprocessor. The source
-  is present (`fpga/snes/src/chip/GSU/`, ~2,100 lines) and wired into `main.v`
-  behind `USE_GSU`, but `config.v` defines only `CHIP_DSPn` and the three GSU
-  files are not in the synthesis list in `build_tinysnes.sh`. Enabling it needs
-  those two changes plus its own placement seed and margin check.
-- **Controller input** arrives over the BL616 link and has not been exercised.
-  `config.v` sets no controller pads, so a game waiting at "press start" is
-  indistinguishable from a hang until this is tested.
+- **SuperFX.** Yoshi's Island, Star Fox and Vortex need the GSU coprocessor. It
+  is built and in the bitstream (`CHIP_GSU` in `config.v`, the three
+  `chip/GSU/` files in the synthesis list) but its cartridges draw a blank
+  picture; the two open candidates are in the Status section above.
 - **The OSD is tied off** (`iosys_bl616.v`). `overlay_reg` powers up asserted and
   `snes2hdmi` draws the overlay in preference to the picture while it is set; the
   menu is empty in one-wire mode, so the whole picture area is black by

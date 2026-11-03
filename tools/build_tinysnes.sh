@@ -36,6 +36,12 @@ seed="${TINYSNES_SEED:-1}"
 # and the Fmax gate below still enforces the clock periods afterwards.
 timing_fail=""
 [[ "${TINYSNES_ALLOW_HOLD:-0}" == 1 ]] && timing_fail="--timing-allow-fail"
+# Extra place-and-route arguments, passed straight to nextpnr.  Used to evaluate
+# its --threads and --parallel-refine options, which this script never passed:
+# every build so far has run the router single-threaded on one core, which is
+# why five parallel builds sit at 25 percent of a 28-core machine rather than
+# being able to use the cores inside one build.
+pnr_extra="${TINYSNES_PNR_EXTRA:-}"
 # Extra preprocessor defines for a diagnostic build, e.g. TINYSNES_DEFINES=-DTINYSNES_TEST_PATTERN
 defines="${TINYSNES_DEFINES:-}"
 # Which clock net nextpnr's global router takes first.  On this device a clock
@@ -156,6 +162,7 @@ sources=(
     "$src"/src/gowin_dpb_hoam.v
     "$src"/src/gowin_dpb_oam.v
     "$src"/src/controller_adapter.sv
+    "$src"/src/wii_pad.sv
     "$src"/src/iosys/gowin_dpb_menu.v
     "$src/src/iosys/iosys_bl616.v"
     "$src/src/iosys/uart_fractional.v"
@@ -285,6 +292,7 @@ export NPNR_GOWIN_CLK_FIRST="$clk_first"
     --report "$out/timing.json" \
     --seed "$seed" \
     ${timing_fail} \
+    ${pnr_extra} \
     >"$out/nextpnr.log" 2>&1 || {
         tail -60 "$out/nextpnr.log" >&2
         echo "place and route failed; see $out/nextpnr.log" >&2

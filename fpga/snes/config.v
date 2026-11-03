@@ -25,6 +25,12 @@
 `define CHIP_GSU
 `define MCU_BL616
 
+// The Wii Classic Controller on USB-A port 2's data pair, decoded to the same
+// 12-bit word controller_adapter already accepts.  Unlike CHIP_GSU this adds no
+// coprocessor: it is one I2C master, and without the define the core has no pad
+// of its own and takes input only over the BL616 link.
+`define WII_PAD
+
 package configPackage;
 
 localparam SDRAM_DATA_WIDTH = 16;

@@ -65,6 +65,17 @@ IO_PORT "UART_TXD" IO_TYPE=LVCMOS33;
 
 // USB1 and USB2 (usb1 is on the left)
 
+// usb1's data pair carries a Wii Classic Controller's I2C bus, through
+// Adafruit's Wii Nunchuck Breakout Adapter fed from this port's VBUS: D+ is
+// SDA (H13) and D- is SCL (G13), as TinyNES wires controller 1 on this same
+// board.  The adapter level-shifts and only pulls each line low, so both are
+// open drain and the pull-ups are what make them idle high.  Nothing else on
+// this board uses usb1.
+IO_LOC  "usb1_dp" H13;
+IO_PORT "usb1_dp" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+IO_LOC  "usb1_dn" G13;
+IO_PORT "usb1_dn" IO_TYPE=LVCMOS33 PULL_MODE=UP;
+
 // Joystick on pmod1
 
 
