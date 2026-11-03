@@ -1881,7 +1881,11 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
     .GSU_DBG_STOP_SEEN(gsu_dbg_stop_seen),
     .GSU_DBG_SFR_LO_LAST(gsu_dbg_sfr_lo_last), .GSU_DBG_SFR_LO_READ(gsu_dbg_sfr_lo_read),
     .GSU_DBG_SFR31_RD_WHILE_SET(gsu_dbg_sfr31_while_set),
-    .GSU_DBG_RESTART_AFTER(gsu_dbg_restart_after), .GSU_DBG_GO_WRITES(gsu_dbg_go_writes)
+    .GSU_DBG_RESTART_AFTER(gsu_dbg_restart_after), .GSU_DBG_GO_WRITES(gsu_dbg_go_writes),
+    .GSU_DBG_CF_ADDR(gsu_dbg_cf_addr),
+    .GSU_DBG_CF_B0(gsu_dbg_cf_b0), .GSU_DBG_CF_B1(gsu_dbg_cf_b1),
+    .GSU_DBG_CF_B2(gsu_dbg_cf_b2), .GSU_DBG_CF_B3(gsu_dbg_cf_b3),
+    .GSU_DBG_FIRST_OP(gsu_dbg_first_op)
 );
 `endif
 
@@ -2156,6 +2160,9 @@ wire [7:0]  gsu_dbg_sfr_lo_last;
 wire        gsu_dbg_sfr_lo_read;
 wire        gsu_dbg_sfr31_while_set, gsu_dbg_restart_after;
 wire [7:0]  gsu_dbg_go_writes;
+wire [7:0]  gsu_dbg_cf_addr;
+wire [7:0]  gsu_dbg_cf_b0, gsu_dbg_cf_b1, gsu_dbg_cf_b2, gsu_dbg_cf_b3;
+wire [7:0]  gsu_dbg_first_op;
 
 `ifdef TINYSNES_GSU_PROBE
 // Diagnostic build: on the board, is the GSU started, does its cache fill, and
@@ -2174,13 +2181,26 @@ wire [7:0]  gsu_dbg_go_writes;
 // the coprocessor.  Counting them is therefore a direct read of whether the GSU
 // is doing work, independent of what it puts on screen.
 //
-// probe_bus fields, low to high (all 16 bits):
-//   [15:0]  {10'b0, rom_seen, cache_mmio_seen, cache_fill_seen,
-//            stop_seen, flag_r_int, flag_go_int}
-//   [31:16] SFR as the 65816 reads it
-//   [47:32] sticky microcode-state history, one bit per STATE[3:0]
-//   [63:48] GO_CNT
-//   [79:64] {8-bit BSRAM read count, 8-bit BSRAM write count}, saturating
+// Round six.  Round five answered its question and answered it the wrong way
+// for the previous entry: the 65816 does read $3031, but only one GSU start
+// ever happens and it ends in OP_STOP with the interrupt never acknowledged.
+// OP_STOP is opcode $00-$03, which is exactly what a cache full of zeros
+// decodes to, so the next question narrows to the cache's contents: did the
+// line fill write the cartridge's bytes, or somebody else's?
+//
+// probe_bus fields, low to high:
+//   [7:0]   {sfr_lo_read, restart_after, sfr31_while_set, rom_seen,
+//            cache_fill_seen, stop_seen, sfr[15], flag_go_int}
+//   [15:8]  low byte of the fill address at the first cache write
+//   [39:16] the first four bytes written into the cache, in order
+//   [47:40] the first opcode decoded while FLAG_GO was set
+//   [63:48] sticky microcode-state history, one bit per STATE[3:0]
+//   [79:64] {8'd0, GO_CNT[7:0]}, saturating
+//
+// The four bytes are the test: four consecutive bytes at a known address either
+// appear in the cartridge image at that address or they do not.  If they do,
+// the ROM path is innocent and the fault is fetch or decode; if they do not,
+// the bytes in the cache never came from the cartridge.
 //
 // Band: R = the GSU ever completed a cache line, G = ever started, B = enable.
 reg [7:0]  gs_bsram_rd = 8'd0;
@@ -2209,11 +2229,15 @@ always @(posedge mclk) begin
 
         gs_refresh <= gs_refresh + 22'd1;
         if (gs_refresh[15:0] == 16'd0) begin
-            fp_bus <= {gsu_dbg_go_cnt,
+            fp_bus <= {gsu_dbg_go_cnt[7:0],
                        gsu_dbg_state_seen,
-                       gsu_dbg_sfr,
-                       {8'b0, gsu_dbg_go_writes},
-                       {8'b0, gsu_dbg_sfr_lo_read, gsu_dbg_restart_after,
+                       gsu_dbg_first_op,
+                       gsu_dbg_cf_b3,
+                       gsu_dbg_cf_b2,
+                       gsu_dbg_cf_b1,
+                       gsu_dbg_cf_b0,
+                       gsu_dbg_cf_addr,
+                       {gsu_dbg_sfr_lo_read, gsu_dbg_restart_after,
                         gsu_dbg_sfr31_while_set, gs_rom_seen, gs_cache_fill_seen,
                         gsu_dbg_stop_seen, gsu_dbg_sfr[15], gsu_dbg_flag_go_int}};
         end

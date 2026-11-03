@@ -81,6 +81,14 @@ module main (
 	output            GSU_DBG_FLAG_GO_INT,
 	output            GSU_DBG_FLAG_R_INT,
 	output            GSU_DBG_STOP_SEEN,
+	output [7:0]      GSU_DBG_CF_ADDR,
+	output [7:0]      GSU_DBG_CF_B0,
+	output [7:0]      GSU_DBG_CF_B1,
+	output [7:0]      GSU_DBG_CF_B2,
+	output [7:0]      GSU_DBG_CF_B3,
+	output [7:0]      GSU_DBG_FIRST_OP,
+	output            GSU_DBG_CACHE_EN,
+	output            GSU_DBG_FETCH_OP_SEEN,
 
 	input             BLEND,
 	input             PAL,
@@ -563,7 +571,13 @@ GSUMap GSUMap
 	.DBG_RESTART_AFTER(GSU_DBG_RESTART_AFTER), .DBG_GO_WRITES(GSU_DBG_GO_WRITES),
 	.DBG_SFR(GSU_DBG_SFR), .DBG_STATE_SEEN(GSU_DBG_STATE_SEEN),
 	.DBG_FLAG_GO_INT(GSU_DBG_FLAG_GO_INT), .DBG_FLAG_R_INT(GSU_DBG_FLAG_R_INT),
-	.DBG_STOP_SEEN(GSU_DBG_STOP_SEEN)
+	.DBG_STOP_SEEN(GSU_DBG_STOP_SEEN),
+	.DBG_CF_ADDR(GSU_DBG_CF_ADDR),
+	.DBG_CF_B0(GSU_DBG_CF_B0), .DBG_CF_B1(GSU_DBG_CF_B1),
+	.DBG_CF_B2(GSU_DBG_CF_B2), .DBG_CF_B3(GSU_DBG_CF_B3),
+	.DBG_FIRST_OP(GSU_DBG_FIRST_OP),
+	.DBG_CACHE_EN(GSU_DBG_CACHE_EN),
+	.DBG_FETCH_OP_SEEN(GSU_DBG_FETCH_OP_SEEN)
 );
 end else begin
 assign MAP_ACTIVE[2] = 0;
@@ -588,6 +602,14 @@ assign GSU_DBG_SFR_LO_READ = 1'b0;
 assign GSU_DBG_SFR31_RD_WHILE_SET = 1'b0;
 assign GSU_DBG_RESTART_AFTER = 1'b0;
 assign GSU_DBG_GO_WRITES = 8'd0;
+assign GSU_DBG_CF_ADDR = 8'h00;
+assign GSU_DBG_CF_B0 = 8'h00;
+assign GSU_DBG_CF_B1 = 8'h00;
+assign GSU_DBG_CF_B2 = 8'h00;
+assign GSU_DBG_CF_B3 = 8'h00;
+assign GSU_DBG_FIRST_OP = 8'h00;
+assign GSU_DBG_CACHE_EN = 1'b0;
+assign GSU_DBG_FETCH_OP_SEEN = 1'b0;
 end
 endgenerate
 

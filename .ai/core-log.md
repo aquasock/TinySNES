@@ -2272,3 +2272,40 @@ Confirm the mechanism with the instrument it requires, which is already built an
 - User Test: PASS
 
 ---
+
+## 71 COMMIT Unreleased 2026-11-02T20:25:00-07:00
+
+#### Coming From:
+
+Unreleased d4da515
+
+#### Purpose:
+
+Stop the simulation harness from reprinting its end-of-run report on every clock after the bench requests `$finish`, because that behaviour exhausted this machine's memory and forced a power-off.
+
+#### Outcome:
+
+The fault was a missing check, not a runaway simulation. `gsu_tb.sv` prints its summary inside the per-clock `always` block and calls `$finish` once `cyc` reaches `+cycles`, but `sim_main.cpp` drives Verilator by hand and never called `Verilated::gotFinish()`, so `$finish` was inert under this harness and the report re-fired on every subsequent clock, roughly six lines each time for as long as the process lived. A run whose output was redirected into a file under `/tmp` -- which is tmpfs, and therefore RAM, on this machine -- grew that file to ninety million lines, about six gigabytes, and the user powered the machine off as an emergency when memory spiked. Nothing in the design under test was involved and no hardware was touched. The fix is in two layers: the harness now checks `gotFinish()` and stops, and the bench latches a `reported` flag so the summary can print at most once even under a harness that ignores `$finish` again. Verification is direct: with `+cycles=2000` the run now exits promptly with exit status zero and exactly one report of forty-eight lines, where before it never terminated and printed without bound. A forty-million-clock run then completed in thirty-four seconds at seventy-eight megabytes peak RSS, producing the first sim reading that agrees with the board's shape -- `go_cnt` one, `stop_seen` one -- rather than the hundreds of starts earlier short runs reported. The run also showed the new cache-fill probe is not yet trustworthy, and that is recorded here so it is not mistaken for a validated instrument: it captured `00 00 f7 53` at fill address low byte `0x36`, a four-byte sequence that occurs nowhere in the one-megabyte image, while the cartridge holds `18 ac 03 94` at `0x0b336`; the accompanying monitor shows `ROM_Q` alternating between the requested byte and bytes from five addresses earlier, so the sampler is misaligned by at least one GSU cycle and its leading zeros are stale. An earlier conclusion that this probe had failed was drawn from a run that ended before the coprocessor starts at about twenty million clocks, so it proved nothing; the reading above is the first one taken after the fill actually occurred. The build script that had lived in `/tmp` and was lost to the crash is now `tools/sim/build_gsu_sdl.sh` in the repository, with the memory hazard documented in its header. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 70 were not rewritten, made no change to core-reference.md because a harness defect is not project state that file carries, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventy-one-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Do not flash the cache-fill probe: it has not been shown to read the cartridge correctly, and a flash would spend a hardware cycle on numbers that are already known to be misaligned. Fix the sampler by capturing the byte on the edge where `ROM_BUF` is loaded rather than on `ROM_CACHE_EN`, and re-validate the same way this cycle did -- against a sim run with a monitor that prints the ROM array's own byte at the matching address, because the probe's value cannot be checked against itself. The four bytes only mean something once they match the image at a known address, and until then the ROM path is neither confirmed nor cleared. Separately, the probe scaffolding committed here is inert in the production build, since every field is inside `ifdef TINYSNES_GSU_PROBE` and the disabled tie-offs in `main.v` keep the default configuration unchanged. Never redirect an unfiltered simulation's output into `/tmp` on this machine; pipe it through a filter into the build tree, and bound long runs with `+cycles`.
+
+#### Files Modified:
+
+- tools/sim/sim_main.cpp
+- tools/sim/gsu_tb.sv
+- tools/sim/build_gsu_sdl.sh
+- fpga/snes/src/chip/GSU/GSU.v
+- fpga/snes/src/chip/GSU/GSUMap.v
+- fpga/snes/src/main.v
+- fpga/snes/src/snestang_top.v
+- tools/probe_fields.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

@@ -125,6 +125,19 @@ int main(int argc, char **argv) {
         for (int n = 0; n < 2000000 && !frame_ready; n++) {
             tick();
 
+            // Honour the bench's own end-of-run.
+            //
+            // gsu_tb.sv calls $finish once it has printed its report at
+            // +cycles, but this harness drives Verilator by hand and never
+            // looked at gotFinish(), so $finish was inert here: the always
+            // block that prints the report kept firing on every clock.  One
+            // run redirected that to a tmpfs file and grew it to ninety
+            // million lines -- about six gigabytes of RAM -- until the machine
+            // had to be powered off.  Checking gotFinish() is the whole fix;
+            // the one-shot guard in the bench is the second lock on the same
+            // door.
+            if (Verilated::gotFinish()) { done = true; break; }
+
             // The bench drives reset/enable/rom_type off its own cycle counter,
             // so nothing here has to sequence the boot.
             // X_OUT is {OUT_X, DOT_CLK}: bit 0 is the dot clock and bits 8:1

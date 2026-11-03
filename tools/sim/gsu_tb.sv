@@ -66,6 +66,7 @@ module gsu_tb (
 
   // ---------------------------------------------------------------- options
   integer cycles_max = 400000;
+  reg     reported = 1'b0;
   reg [1023:0] hex_path, trace_path, vcd_path, frame_path;
 
   // ------------------------------------------------------------- cart header
@@ -129,6 +130,8 @@ module gsu_tb (
   wire        GSU_CACHE_FILL_SEEN, GSU_CACHE_MMIO_SEEN;
   wire [6:0]  GSU_ROMST_SEEN;
   wire        GSU_FLAG_GO_INT, GSU_FLAG_R_INT, GSU_STOP_SEEN;
+  wire [7:0]  GSU_CF_ADDR, GSU_CF_B0, GSU_CF_B1, GSU_CF_B2, GSU_CF_B3, GSU_FIRST_OP;
+  wire        GSU_CACHE_EN, GSU_FETCH_OP_SEEN;
 
   // ------------------------------------------------------------ ROM model
   // One byte per line, produced by run_sim.sh from the .sfc.
@@ -312,6 +315,25 @@ module gsu_tb (
   end
   assign BSRAM_Q = bsram_q_r;
 
+  // Instrument validation for the cache-fill probe.
+  //
+  // The probe's own four bytes cannot be checked against themselves: a sampler
+  // that reads the wrong edge still produces four plausible bytes.  The GSU
+  // exports its fill strobe, so at each one this prints three independent views
+  // -- the address the GSU walked to, the byte the model drives onto the bus,
+  // and the byte the ROM array holds at that address -- alongside the sampler's
+  // own capture.  The ROM array is the ground truth; the other two say where a
+  // disagreement comes from when there is one.
+  integer cf_dbg_n = 0;
+  always @(posedge clk) begin
+    if (rst_n && GSU_CACHE_EN && cf_dbg_n < 10) begin
+      $display("  [cffill] ROM_ADDR=%h rom[]=%h ROM_Q=%h | sampler addr=%h b=%h %h %h %h",
+               ROM_ADDR, rom[ROM_ADDR[19:0]], ROM_Q,
+               GSU_CF_ADDR, GSU_CF_B0, GSU_CF_B1, GSU_CF_B2, GSU_CF_B3);
+      cf_dbg_n <= cf_dbg_n + 1;
+    end
+  end
+
   // ------------------------------------------------------------- the machine
   // Parameter override rather than a CHIP_GSU define: snestang_top is the module
   // that maps the define to this parameter, and this bench instantiates main
@@ -356,7 +378,13 @@ module gsu_tb (
     .GSU_DBG_SFR(GSU_SFR), .GSU_DBG_STATE_SEEN(GSU_STATE_SEEN),
     .GSU_DBG_FLAG_GO_INT(GSU_FLAG_GO_INT),
     .GSU_DBG_FLAG_R_INT(GSU_FLAG_R_INT),
-    .GSU_DBG_STOP_SEEN(GSU_STOP_SEEN)
+    .GSU_DBG_STOP_SEEN(GSU_STOP_SEEN),
+    .GSU_DBG_CF_ADDR(GSU_CF_ADDR),
+    .GSU_DBG_CF_B0(GSU_CF_B0), .GSU_DBG_CF_B1(GSU_CF_B1),
+    .GSU_DBG_CF_B2(GSU_CF_B2), .GSU_DBG_CF_B3(GSU_CF_B3),
+    .GSU_DBG_FIRST_OP(GSU_FIRST_OP),
+    .GSU_DBG_CACHE_EN(GSU_CACHE_EN),
+    .GSU_DBG_FETCH_OP_SEEN(GSU_FETCH_OP_SEEN)
   );
 
   // ------------------------------------------------------------- reporting
@@ -486,7 +514,13 @@ module gsu_tb (
       last_go_cnt <= GSU_GO_CNT;
     end
 
-    if (cyc >= cycles_max) begin
+    // One shot.  $finish is a request the harness may ignore, and when this
+    // harness ignored it this block reprinted its whole report on every clock:
+    // six lines per clock for as long as the process lived.  The report is now
+    // latched off after the first print, so a harness that never stops still
+    // cannot produce more than one report.
+    if (cyc >= cycles_max && !reported) begin
+      reported <= 1'b1;
       $display("");
       $display("=== after %0d mclk ===", cyc);
       $display("  cpu  pbr:pc  %h:%h%h   p=%h   cartridge reads %0d   VRAM writes %0d",
@@ -500,6 +534,9 @@ module gsu_tb (
                GSU_SFR, GSU_STATE_SEEN, GSU_ROMST_SEEN);
       $display("  GSU cache fill_seen %b  mmio_seen %b  in_cache %b",
                GSU_CACHE_FILL_SEEN, GSU_CACHE_MMIO_SEEN, GSU_IN_CACHE);
+      $display("  GSU first cache fill at %h: %h %h %h %h   first_op %h (boundary seen %b)",
+               GSU_CF_ADDR, GSU_CF_B0, GSU_CF_B1, GSU_CF_B2, GSU_CF_B3,
+               GSU_FIRST_OP, GSU_FETCH_OP_SEEN);
       $display("  BSRAM writes %0d, dropped %0d (bwlat=%0d)", bw_writes, bw_dropped, bwlat);
       $display("  ROM requests %0d, lost to toggle collapse %0d (rtog=%0d)", rtog_seen, rtog_lost, rtog);
       $display("  frame: %0d pixels captured (full frame = 57344)", fb_captured);

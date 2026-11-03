@@ -32,12 +32,16 @@ Usage:
 
 # (name, width) pairs, LOW bit first.
 FIELDS = [
-    ("flags", 16),   # {7'b0, sfr30_read, restart_after, sfr31_while_set,
-                     #  rom_seen, cache_fill, stop_seen, flag_irq, flag_go}
-    ("go_writes", 16),
-    ("sfr", 16),
+    ("flags", 8),    # {sfr30_read, restart_after, sfr31_while_set, rom_seen,
+                     #  cache_fill, stop_seen, flag_irq, flag_go}
+    ("cf_addr", 8),     # ROM_A[7:0] at the first cache write
+    ("cf_b0", 8),       # first four bytes written into the cache, in order
+    ("cf_b1", 8),
+    ("cf_b2", 8),
+    ("cf_b3", 8),
+    ("first_op", 8),    # first opcode decoded while FLAG_GO was set
     ("state_seen", 16),
-    ("go_cnt", 16),
+    ("go_cnt", 8),      # saturating; the question is "one" versus "many"
 ]
 
 BUS_WIDTH = 80
@@ -119,12 +123,27 @@ def verify_rtl(path: str, marker: str = "TINYSNES_GSU_PROBE") -> list[str]:
     if len(terms) != len(expected):
         problems.append(
             f"RTL concat has {len(terms)} terms, FIELDS has {len(expected)} fields")
-    for got, want in zip(terms, expected):
+    for i, (got, want) in enumerate(zip(terms, expected)):
         if want == "pad":
             if not re.match(r"^\d+'b0$", got):
                 problems.append(f"expected a constant zero pad, got {got!r}")
             continue
         stem = got.replace("gsu_dbg_", "").replace("gs_", "")
+        # A sliced term names the same field, but the slice also states a width.
+        # Cutting one field down to fit while another keeps its full width leaves
+        # the concatenation the right total width and every field after it in the
+        # wrong place, which is the exact corruption this module exists to stop,
+        # so the slice width is checked against the declaration rather than
+        # stripped and ignored.
+        m_slice = re.match(r"^(.*?)\[(\d+):(\d+)\]$", stem)
+        if m_slice:
+            stem = m_slice.group(1)
+            width = int(m_slice.group(2)) - int(m_slice.group(3)) + 1
+            want_width = [w for n, w in FIELDS if n == want]
+            if want_width and width != want_width[0]:
+                problems.append(
+                    f"slice width mismatch at {want!r}: RTL term {got!r} is "
+                    f"{width} bits, FIELDS declares {want_width[0]}")
         # A field may legitimately be built as a nested concatenation of
         # sub-fields (a packed flag word, a pair of counters).  Accept a brace
         # term at those named positions; the sub-field order inside it is the

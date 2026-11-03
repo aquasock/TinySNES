@@ -57,7 +57,15 @@ module GSUMap(
     output [15:0] DBG_STATE_SEEN,
     output        DBG_FLAG_GO_INT,
     output        DBG_FLAG_R_INT,
-    output        DBG_STOP_SEEN
+    output        DBG_STOP_SEEN,
+    output [7:0]  DBG_CF_ADDR,
+    output [7:0]  DBG_CF_B0,
+    output [7:0]  DBG_CF_B1,
+    output [7:0]  DBG_CF_B2,
+    output [7:0]  DBG_CF_B3,
+    output [7:0]  DBG_FIRST_OP,
+    output        DBG_CACHE_EN,
+    output        DBG_FETCH_OP_SEEN
 );
 
 wire [20:0] ROM_A;
@@ -88,7 +96,13 @@ GSU GSU(
     .DBG_RESTART_AFTER(DBG_RESTART_AFTER), .DBG_GO_WRITES(DBG_GO_WRITES),
     .DBG_SFR(DBG_SFR), .DBG_STATE_SEEN(DBG_STATE_SEEN),
     .DBG_FLAG_GO_INT(DBG_FLAG_GO_INT), .DBG_FLAG_R_INT(DBG_FLAG_R_INT),
-    .DBG_STOP_SEEN(DBG_STOP_SEEN)
+    .DBG_STOP_SEEN(DBG_STOP_SEEN),
+    .DBG_CF_ADDR(DBG_CF_ADDR),
+    .DBG_CF_B0(DBG_CF_B0), .DBG_CF_B1(DBG_CF_B1),
+    .DBG_CF_B2(DBG_CF_B2), .DBG_CF_B3(DBG_CF_B3),
+    .DBG_FIRST_OP(DBG_FIRST_OP),
+    .DBG_CACHE_EN(DBG_CACHE_EN),
+    .DBG_FETCH_OP_SEEN(DBG_FETCH_OP_SEEN)
 );
 
 assign ROM_ADDR = ({2'b00,ROM_A}) & ROM_MASK[22:0];

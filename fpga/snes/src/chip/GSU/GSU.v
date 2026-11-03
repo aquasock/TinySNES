@@ -68,7 +68,28 @@ module GSU(
     // at $3031 does not return what the core holds; these separate the two.
     output        DBG_FLAG_GO_INT,
     output        DBG_FLAG_R_INT,
-    output        DBG_STOP_SEEN
+    output        DBG_STOP_SEEN,
+    // Sixth round: what the line fill actually put in the cache, and the first
+    // opcode the core decoded from it.  The 65816 never acks the interrupt
+    // ($3030 was read, $3031 never read while IRQ set), so the coprocessor runs
+    // once, executes an OP_STOP and is never restarted.  An OP_STOP is opcode
+    // $00-$03, which is what an empty or zeroed cache decodes to, so the
+    // question is whether the fill wrote the cartridge's bytes or somebody
+    // else's.  Four consecutive fill bytes plus the address they came from can
+    // be looked up in the image: bytes that are not in the ROM at that address
+    // put the fault between the cartridge and the cache, and bytes that are
+    // put it in fetch and decode.
+    output [7:0]  DBG_CF_ADDR,
+    output [7:0]  DBG_CF_B0,
+    output [7:0]  DBG_CF_B1,
+    output [7:0]  DBG_CF_B2,
+    output [7:0]  DBG_CF_B3,
+    output [7:0]  DBG_FIRST_OP,
+    // The fill write strobe, exported so a bench can sample the cartidge byte
+    // it is driving at the same edge the sampler above captures.  Without an
+    // independent view the sampler can only be checked against itself.
+    output        DBG_CACHE_EN,
+    output        DBG_FETCH_OP_SEEN
 );
 
 // CPU Registers
@@ -1653,5 +1674,68 @@ end
 assign DBG_SFR31_RD_WHILE_SET = sfr31_while_set_r;
 assign DBG_RESTART_AFTER      = restart_after_r;
 assign DBG_GO_WRITES          = go_writes_r;
+
+// What the line fill actually put in the cache.
+//
+// ROM_BUF is captured at the posedge that finishes a ROMST_CACHE address, and
+// ROM_CACHE_EN goes high one cycle later, so at the posedge where the byte is
+// written ROM_CACHE_EN is high and ROM_BUF holds that byte.  Sampling the two
+// together here therefore samples the same write the cache sees, rather than
+// trusting a comment about the order.  ROM_A is the address the fill walked to.
+//
+// Four bytes are kept because a single byte occurs everywhere in a 1 MiB image
+// and proves nothing; four consecutive bytes at a known address either exist in
+// the cartridge or do not.
+reg [7:0] cf_addr_r = 8'h00;
+reg [7:0] cf_b0_r = 8'h00, cf_b1_r = 8'h00, cf_b2_r = 8'h00, cf_b3_r = 8'h00;
+reg [1:0] cf_idx_r = 2'd0;
+
+always @(posedge CLK) begin
+    if (~RST_N) begin
+        cf_addr_r <= 8'h00;
+        cf_b0_r <= 8'h00; cf_b1_r <= 8'h00; cf_b2_r <= 8'h00; cf_b3_r <= 8'h00;
+        cf_idx_r <= 2'd0;
+    end else if (ROM_CACHE_EN) begin
+        case (cf_idx_r)
+        2'd0: begin cf_addr_r <= ROM_A[7:0]; cf_b0_r <= ROM_BUF; cf_idx_r <= 2'd1; end
+        2'd1: begin cf_b1_r <= ROM_BUF; cf_idx_r <= 2'd2; end
+        2'd2: begin cf_b2_r <= ROM_BUF; cf_idx_r <= 2'd3; end
+        default: cf_b3_r <= ROM_BUF;
+        endcase
+    end
+end
+
+assign DBG_CF_ADDR = cf_addr_r;
+assign DBG_CF_B0   = cf_b0_r;
+assign DBG_CF_B1   = cf_b1_r;
+assign DBG_CF_B2   = cf_b2_r;
+assign DBG_CF_B3   = cf_b3_r;
+
+// The first instruction the coprocessor actually started.
+//
+// Latching on "FLAG_GO is high" alone reads a destroyed value: OPCODE is reset
+// to $01 by an OP_STOP and is only replaced once a fetch completes, so on the
+// first cycle of a job it still holds that NOP and the reading is guaranteed to
+// be $01 no matter what the job was.  The sample point is therefore the first
+// instruction boundary inside a running job -- MC.LAST_CYCLE with the core
+// enabled and either a ROM fetch in flight or the cache selected -- which is
+// exactly where OPCODE has just been loaded from the fetched byte.
+reg [7:0] first_op_r = 8'h00;
+reg       first_op_seen_r = 1'b0;
+
+always @(posedge CLK) begin
+    if (~RST_N) begin
+        first_op_r <= 8'h00;
+        first_op_seen_r <= 1'b0;
+    end else if (~first_op_seen_r && CPU_EN && FLAG_GO && MC.LAST_CYCLE
+                 && (ROM_FETCH_EN || IN_CACHE)) begin
+        first_op_r <= OPCODE;
+        first_op_seen_r <= 1'b1;
+    end
+end
+
+assign DBG_FIRST_OP = first_op_r;
+assign DBG_CACHE_EN = ROM_CACHE_EN;
+assign DBG_FETCH_OP_SEEN = first_op_seen_r;
 
 endmodule
