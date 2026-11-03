@@ -2502,3 +2502,33 @@ Two threads are open and the user decides which, if either, continues. The copro
 - User Test: PASS
 
 ---
+
+## 78 COMMIT Unreleased 2026-11-03T00:58:47-07:00
+
+#### Coming From:
+
+Unreleased ffb2541
+
+#### Purpose:
+
+Record the first board run of Star Fox on a bitstream that actually contains the SuperFX, and hand the project off with the coprocessor fault narrowed and the machine's clock plan repaired.
+
+#### Outcome:
+
+Star Fox draws grey pillarbox bars around a blank picture, which is the project's recorded coprocessor failure and is now attributable rather than ambiguous. The grey bars are the decisive part of the reading: `snes2hdmi` paints them outside the 4:3 area only when the transmitter is in sync and the core is drawing, so the bar pattern proves the bitstream loaded, the HDMI chain locked and the core is running; `tools/frame_stats.py` classes exactly this appearance as `blank`, "the bars are there and the picture area is one flat colour", which distinguishes it from `no-signal` and from a machine that is drawing wrong. The same bitstream, `build/spine75/tinysnes.fs` with SHA-256 `f0bc89a1050a41ed113eb0d53cf99a9e8045c702e7e786760a6d965d9c830738` at seed 9, had already run two control cartridges to a confirmed picture in the two cycles before this one: Zelda (LoROM, 1 MiB, ROM+RAM+battery, SHA-256 `66871d66be19ad2c34c927d6b14cd8eb6fc3181965b6e517cb361f7316009cfb`) and Super Mario Kart (HiROM, fastrom, DSP-1, SHA-256 `2ada8919688087be60a6a48cace8f877add60c45d2e5d09e2442faa55be62a49`). That ordering matters and is the reason this run means something: the machine, the video path, the SDRAM path, the HiROM path, the fastrom path and the cartridge DSP are all proven on this exact artifact, so the failure is confined to the SuperFX and is not a regression from the clock-plane work of entry 75. The cartridge is Star Fox (USA) (Rev 2), 1 MiB, map byte `$20` LoROM, rom type `$13` SuperFX, reset vector `$FF9C`, SHA-256 `82e39dfbb3e4fe5c28044e80878392070c618b298dd5a267e5ea53c8f72cc548`, streamed in 5.9 seconds at 195 KB/s. The bench prediction was right about the outcome and wrong about the cure, and both halves are worth separating for the next agent. The board-level bench of entries 73 and 75 predicted this failure from BSRAM starvation -- 90,075 request toggles against 25,061 acknowledges, 72 percent lost, with no acknowledge input on `GSUMap` -- and Star Fox does indeed fail, so the simulation reproduced the board rather than diverging from it. What the bench could not anticipate is that the spine repair might fix it, because `fclk`'s physical distribution is a routing fact no simulation in this tree models; the repair was made, it was confirmed good by two control cartridges, and the failure survived it unchanged. So the starvation is either independent of the clock plan or the clock plan was never its cause. That is a real narrowing in one direction and a closed door in another: the coprocessor fault is not explained by `fclk` having been off the plane, and the bench's BSRAM measurement now stands as the leading surviving mechanism rather than one of two equal candidates. Nothing was built or flashed this cycle; the artifact under test is the one entry 76 deployed, and the machine's clock plan is unchanged from the state Zelda and Mario Kart passed on. The `README.md` status section written in entry 77 says the SuperFX is built and does not yet run, which this run confirms rather than contradicts, so no document needed changing. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 77 were not rewritten, and made no change to core-reference.md because this cycle established a project-state result rather than an externally defined fact and the bench's BSRAM measurement is already carried in the log. Validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventy-eight-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Resume on the coprocessor with the machine and the clock plan treated as settled, because that is what three control cartridges on one artifact have bought: do not re-open the `fclk` spine repair, the `CHIP_GSU`/`CHIP_DSPn` configuration fix, or the `--single-unit` build change, all of which are measured and recorded, and do not re-measure the HiROM, fastrom or DSP-1 paths, which Mario Kart confirmed. Two candidate faults survive and the clock-plane gate now names the first of them explicitly: `main.genblk5.GSUMap.GSU.cache.0.0_CLKB` is the only clock in the build with no spine tap, 23 flip-flop clock inputs driven by a `LUT1` inverter off `iosys.clk`, because `GSU.v` declares `reg [7:0] cache [512]` with port A on `negedge CLK` and port B on `posedge CLK` and synthesis cannot map that mixture to a dual-port block RAM; the GSU's program is fetched from that cache, so a cache whose clock is a lookup table on general routing is the cheapest remaining explanation for fills that work in the bench and not on the board, and the repair to test is making the cache a true dual-port block RAM by removing the negedge, which touches `GSU.v` and therefore needs the user's decision because that file is upstream's. The second candidate is the arbiter itself: the BSRAM toggle collapse measured in entry 73 is real and 72 percent of requests are lost, and `GSUMap` has no way to wait, so a durable fix likely means either giving the coprocessor a stall path or moving its work RAM out of shared SDRAM into block RAM, and both are larger than anything attempted here. Use `tools/sim/run_board_sim.sh` for any hypothesis before a flash: it instantiates `snestang_top` with the real `sdram_cl2_2ch` and boots Star Fox through the real controller, so it can test a change to `GSU.v` without spending a board cycle. Read `build/spine75/tinysnes-routed.json` with `tools/clock_plane_report.py` after any build to confirm a change did not move a clock off its measured pip. Do not flash without asking. Two operational facts for the next agent: OBS holds `/dev/video0` for the user's own capture, so the project's `tools/frame_stats.py` path is unavailable while it runs and picture results come from the user; and the board was left running the spine build with Star Fox loaded.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: FAIL
+
+---
