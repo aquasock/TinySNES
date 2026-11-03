@@ -134,20 +134,26 @@ gowin_pll_snes pll_snes (
 );
 
 `elsif VERILATOR
-// Simulated clocks for verilator
-reg [2:0] clk_cnt = 3'b0;       // 0 1 2 3 4 5
-reg mclk_buf;                   // 0 0 0 1 1 1
-assign fclk = clk_cnt[0];       // 0 1 0 1 0 1
-assign mclk = mclk_buf;
-always @(posedge sys_clk) begin
-    clk_cnt <= clk_cnt + 3'b1; 
-    if (clk_cnt == 3'd5) begin
-        clk_cnt <= 0;
-        mclk_buf <= 0;
-    end
-    if (clk_cnt == 3'd2)
-        mclk_buf <= 1;
-end
+// Simulated clocks for verilator.
+//
+// This branch used to divide sys_clk by counters, which produced fclk 25 MHz
+// and mclk 8.33 MHz against the board's 64.516 and 21.505, and left fclk_p
+// -- the phase-shifted clock that drives O_sdram_clk, and therefore the only
+// clock the SDRAM part ever sees -- completely unassigned.  A bench built on
+// that had no SDRAM part clock at all: the controller issued its initialisation
+// sequence and the model saw none of it, because O_sdram_clk never toggled.
+//
+// The Gowin primitives are modelled in tools/sim/gowin_sim.sv, so the same PLL
+// wrapper the board uses can be elaborated here and the bench gets the board's
+// real frequencies and the real 225-degree relationship between the controller's
+// clock and the part's.  This requires Verilator's --timing, because the model
+// expresses frequency and phase as delays; see run_board_sim.sh.
+gowin_pll_snes pll_snes (
+    .clkout0(mclk),
+    .clkout1(fclk),
+    .clkout2(fclk_p),
+    .clkin(sys_clk)
+);
 
 `else
 // Mega 138K: mclk=21.5054, fclk=64.5161
@@ -2897,6 +2903,7 @@ wire [7:0] overlay_y;
 
 wire [7:0] dbg_dat_out_loader;
 
+
 `ifdef TINYSNES_LINEFILL_PROBE
 wire [79:0] lf_bus_top;
 wire  [2:0] lf_dbg_top;
@@ -3161,6 +3168,44 @@ always @(posedge mclk) begin    // halt SNES during snes dram refresh on line 2
             end
         end else if (y_out[7:0] == 8'd200)
             test_sync_done <= 0;
+    end
+end
+
+// ------------------------------------------------ board-bench observation
+//
+// Guarded by `ifdef VERILATOR, which no synthesis path defines, so the shipped
+// bitstream is untouched.  It lives here rather than in the testbench because
+// every signal it needs is in this scope.
+//
+// It CONSUMES the sampler above rather than driving the debug port itself.  The
+// first version of this block drove dbg_sel and dbg_reg from its own always
+// block, which made it a second driver of registers the unconditional sampler
+// at the top of this file already owns -- and it reported a program counter
+// frozen at $0002 through an entire boot, which is a plausible-looking reading
+// produced by an instrument fighting itself.  The registers below are the
+// project's existing, hardware-validated sampler (EXT-004): pc_lo_r/pc_hi_r
+// re-read the program counter around a carry, rom_acc counts genuine ROMSEL
+// falling edges rather than clock ticks (see the comment beside it), and
+// flags_r is DBG_REG 0x15, which packs the 65816's WAI/STP/status bits.
+integer sim_sample = 0;
+integer sim_n_rise = 0;
+reg     sim_dot_prev = 1'b0;
+
+always @(posedge mclk) begin
+    // DOT_CLK_CE is the SDRAM controller's clkref; if it stops, the controller
+    // freezes including init, so it is counted separately from everything else.
+    if (DOT_CLK_CE && ~sim_dot_prev) sim_n_rise <= sim_n_rise + 1;
+    sim_dot_prev <= DOT_CLK_CE;
+
+    sim_sample <= sim_sample + 1;
+    if (sim_sample == 215_000) begin
+        sim_sample <= 0;
+        $display("[board] %0t | pc=%04X sp=%04X p=%02X | loaded=%b hdr=%b enable=%b | rom_acc=%0d dot_ce=%0d busy=%b | gsu go=%0d sfr=%04X states=%04X stop=%b cf=%b",
+                 $time, pc_now, sp_r, flags_r,
+                 loaded, header_finished, enable, rom_acc, sim_n_rise, sdram_busy,
+                 gsu_dbg_go_cnt, gsu_dbg_sfr, gsu_dbg_state_seen,
+                 gsu_dbg_stop_seen, gsu_dbg_cache_fill_seen);
+        $fflush();
     end
 end
 

@@ -209,11 +209,43 @@ fi
 
 yosys -Q -T -q -l "$out/synth.log" -p "
     read_verilog -lib $shim/cells_xtra_gw5a.v
-    read_slang --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 -I $src/src/chip/DSP ${hdmi_slang[*]} ${sources[*]}
+    read_slang --single-unit --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 -I $src/src/chip/DSP ${hdmi_slang[*]} ${sources[*]}
     $synth_cmds
     write_json $out/tinysnes.json
 " || { echo "synthesis failed; see $out/synth.log" >&2; exit 1; }
 echo "netlist: $out/tinysnes.json ($(du -h "$out/tinysnes.json" | cut -f1))"
+
+# ------------------------------------------------- netlist instance assertion
+#
+# A configuration macro that never reaches the RTL is silent: the generate
+# block that instantiates a chip elaborates to nothing and the build passes
+# every gate with the chip absent.  That is what happened before core-log entry
+# 73 -- read_slang compiles each input file as its own compilation unit unless
+# --single-unit is given, so the `define`s in fpga/snes/config.v never crossed
+# into snestang_top.v, which then read USE_DSPn=0 and USE_GSU=0 from its
+# `ifdef CHIP_* defaults.  Every coprocessor build in the log that worked had
+# its defines injected on the command line through TINYSNES_DEFINES, so the
+# committed tree could not reproduce any of them.  Check the netlist, not the
+# command line: a cell name proves the logic survived elaboration and synthesis.
+require_cell() {  # require_cell <label> <cell-name-substring> <min-count>
+    local label="$1" needle="$2" want="$3" got
+    got=$(grep -o "$needle" "$out/tinysnes.json" | wc -l)
+    if (( got < want )); then
+        echo "netlist assertion FAILED: $label -- expected at least $want occurrence(s)" >&2
+        echo "  of '$needle' in $out/tinysnes.json, found $got" >&2
+        echo "  the chip is absent from the synthesised netlist; check that its" >&2
+        echo "  CHIP_* define actually reaches snestang_top.v" >&2
+        return 1
+    fi
+    echo "    $label present ($got cell-name matches)"
+}
+assert_ok=1
+require_cell "SuperFX (GSU)"  'GSUMap'       1 || assert_ok=0
+require_cell "cartridge DSP"   'DSP_LHRomMap' 1 || assert_ok=0
+(( assert_ok == 1 )) || {
+    echo "netlist assertions failed; refusing to place a netlist that is missing a configured chip" >&2
+    exit 1
+}
 else
 echo "=== 1. synthesis (cached) ==="
 fi
