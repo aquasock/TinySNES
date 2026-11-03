@@ -2379,3 +2379,33 @@ Resume the coprocessor thread only when the user asks, and start from the one me
 - User Test: NOT RUN
 
 ---
+
+## 74 COMMIT Unreleased 2026-11-02T23:48:27-07:00
+
+#### Coming From:
+
+Unreleased 43d04b6
+
+#### Purpose:
+
+Correct entry 73's statement that no flashable FX bitstream existed, which conflated the timing gate with the clock-plane measurement gate and would have stopped the next agent from trying something this project has already shipped.
+
+#### Outcome:
+
+Entry 73 ended by saying eight seeds were refused and that a placement must be found whose master clock stays on measured-good paths, which reads as though the coprocessor build could not be produced. It can, and this cycle produced it. `build/p0b` was built at seed 9 with `CHIP_GSU` enabled and passes every timing check: fclk 217.865 MHz against a 64.516 MHz constraint, hclk 134.138 against 74.250, iosys.clk 28.752 against 21.505, and the coprocessor's own cache clock, `main.genblk5.GSUMap.GSU.cache.0.0_CLKB`, 289.855 against 65.000. It has zero hold/min violations, and the only entries matching `FAIL` in its `nextpnr.log` are the benign "Failed to route ... using dedicated routing" warnings that TCL-009 records, since the build that produced a synced picture carries the same four. Packing it succeeded and produced `tinysnes.fs` with SHA-256 `70a4ed87ba90bcb8f9b4ecea51f5a88f5427537b1471f38d38424d1ffcf8b997` and `tinysnes.bin` with SHA-256 `de851ec34f720d05df650aea68edd22d002b45d64784ee0483acaeef391acb35`, and the routed netlist carries 4,890 cells under `main.genblk5.GSUMap.GSU`, so the coprocessor is in the artifact rather than only in the source. The confusion was between two unrelated checks. The timing gate asks whether each clock meets its period, and this build passes it by wide margins. The clock-plane gate asks something else entirely: whether each clock's net leaves the spine through a bridge pip that has been empirically shown to distribute a clock on this specific board, and it refuses when any pip is unmeasured. The build was refused by that second gate during place and route, before the bitstream was packed, and the pack stage does not re-run it, which is why the artifact exists now. What makes the earlier framing wrong rather than merely loose is that the builds actually deployed and confirmed on hardware have the same clock-plane profile. Running `tools/clock_plane_report.py` against `build/lp_s9/tinysnes-routed.json`, the probe build that entry 69 records as deployed and read from the board, reports `SPINE0/CBRIDGEOUT_TOP0=unmeasured, SPINE16/CBRIDGEOUT_TOP0=good, SPINE24/CBRIDGEOUT_TOP0=unmeasured, SPINE25/CBRIDGEOUT_TOP1=unmeasured` for `iosys.clk` plus one extra measured-good pip, and one clock on pips never measured. `build/ack_s5`, `build/bf_s5` and `build/qp_s9` report the same signature. The newly packed FX build reports exactly that same unmeasured set with no extra measured-good spine, so its clock-plane profile is no worse than a build that ran on the board and returned valid coprocessor readouts. The gate is therefore overridable through `TINYSNES_ALLOW_UNMEASURED_CLOCKS=1`, which is how those builds were made, and the honest position is that unmeasured pip selection is the normal state of this design rather than a new blocker introduced by enabling the coprocessor. Nothing was flashed this cycle and the board is untouched, because the user's instruction to wait before deploying still stands; what changed is that the artifact now exists and its provenance is recorded. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 73 were not rewritten, made no change to core-reference.md because DEV-004 already carries the pip measurements and this cycle only re-read them, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventy-four-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Decide, with the user, whether to deploy `build/p0b/tinysnes.fs`, since the artifact now exists, passes timing and hold, contains the coprocessor, and carries a clock-plane profile identical to the build that last ran on the board; the open question is not whether it can be built but whether an unmeasured pip selection is acceptable for a coprocessor test, and the existing evidence says this board has run such placements and returned valid measurements. If it is deployed, run Zelda and Super Mario Kart first as controls, because those exercise the plain LoROM path and the cartridge DSP and must still pass before any coprocessor reading is believed, then Star Fox. Do not restate the clock-plane gate as a build blocker; it is a separate measurement question and this entry corrects that. The coprocessor fault itself is unchanged and still parked: the simulation predicts failure at the GSU with 72 percent of BSRAM requests lost to the toggle collapse and no acknowledge input on `GSUMap`, so a hardware run of this bitstream would test that prediction rather than settle the fix.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---
