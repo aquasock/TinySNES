@@ -2660,3 +2660,33 @@ The audio question the user actually wants answered is whether emulation is corr
 - User Test: PASS
 
 ---
+
+## 83 COMMIT Unreleased 2026-11-03T08:25:24-07:00
+
+#### Coming From:
+
+Unreleased 2d3557f
+
+#### Purpose:
+
+Establish whether any retail cartridge uses the MSU-1 to supply its own sound, because EXT-013 had described it only as homebrew-era hardware and left it ambiguous whether any of that silicon had ever shipped.
+
+#### Outcome:
+
+No retail cartridge uses the MSU-1, and none can: it has never existed as physical silicon. SnesLab describes it as `a homemade enhancement chip made by Near/Byuu for the SNES`, emulated by bsnes and supported by sd2snes, and fullsnes carries it in its own I/O map as `2000h-2007h MSU1: Media Streaming Unit (homebrew)`. Its identity is Media Streaming Unit revision 1, it registers at `$2000-$2007` and identifies as `S-MSU1`, and it streams up to 4 GB plus CD-quality stereo audio from a `.msu` data file sitting beside the ROM, which is why it exists only in emulators and flashcart firmware rather than in a cartridge. The more useful finding is one this cycle was not looking for and which bears directly on the question that prompted it: the SNES cartridge slot does carry a stereo audio input that the console mixes into its output, so the hardware provision for a cartridge to supply its own sound did exist. fullsnes records that pin as used only by the SGB and the MSU1, which makes the Super Game Boy the one retail cartridge that used it -- and it passes an entire second console's audio through the SNES mixer rather than adding channels to the SNES. So the nearest retail analogue to a Famicom sound-expansion cartridge is an adapter that mixes in a Game Boy, not a SNES title with extra voices, and the answer to the original question is that cartridge audio expansion is an emulation-scene and homebrew phenomenon on this platform. EXT-013 was revised in place rather than left as written: its statement now names the chip's origin and status instead of calling it `homebrew-era hardware with no retail releases`, its consequence records that the MSU-1 bypasses the S-DSP rather than exercising it and is therefore not an audio test for this core at all, and its verification ends with a Revised note naming this cycle, with SnesLab and the fullsnes audio-mixer note added to its sources. Neither the SGB nor the MSU-1 is supported here, and `main.v` carries commented-out `MSU_TRACK_NUM`, `MSU_TRACK_REQUEST`, `MSU_TRACK_MOUNTING`, `MSU_TRACK_MISSING` and `MSU_VOLUME` ports left unconnected from upstream, which is worth knowing before anyone reads those names as evidence of support. No source outside the reference library was changed and nothing was built or flashed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 82 were not rewritten and that EXT-013 was revised in place with a `Revised` line naming this cycle rather than duplicated or rewritten, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-three-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+The audio-coverage question EXT-013 now settles has a concrete consequence for what to test next, and it is not a hardware hunt. If the user wants coverage rather than a compatibility claim, the titles should be chosen to stress distinct S-DSP features -- Super Metroid or Chrono Trigger for echo and FIR feedback, Contra III or Axelay for the noise channel, Plok for a demanding soundtrack -- and none of them is expected to exercise anything outside `src/dsp.v`. If the user wants the stronger claim that sound emulation is correct rather than merely pleasant, the work is unchanged from entry 82: capture `AUDIO_L` and `AUDIO_R` in a bench for a deterministic sequence, write a WAV, and diff spectrum and envelope against a reference emulator, which still begins by installing one because mednafen, bsnes, snes9x, ares and retroarch are all absent from this machine; `tools/sim/gsu_tb.sv` already wires those signals and nothing consumes them. Do not treat MSU-1 support as audio testing, since it bypasses the S-DSP, and do not read the commented-out `MSU_TRACK_*` ports in `main.v` as partial support. Separately the OSD remains the only untested surface and the largest product gap, and it is a connected change rather than new IP because `textdisp` is already instantiated in `iosys_bl616.v`, clocked and initialised from `font.vh` and `logo.vh`, with its output deliberately unused and `overlay` tied to zero.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
