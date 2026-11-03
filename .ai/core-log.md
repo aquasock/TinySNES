@@ -2759,3 +2759,33 @@ Deploy the border-free build next, because the border was only ever a diagnostic
 - User Test: PASS
 
 ---
+
+## 86 COMMIT Unreleased 2026-11-03T13:38:02-07:00
+
+#### Coming From:
+
+Unreleased 61485c7
+
+#### Purpose:
+
+Deploy the border-free build and settle whether cartridge SRAM saves survive anything, because a save appearing to persist would otherwise be recorded as a feature.
+
+#### Outcome:
+
+The border-free build is deployed and the picture is correct, and the save question is answered with two measurements that disagree for a reason. `build/prod2/tinysnes.bin`, SHA-256 `f204412abe2a0f5727d48dddfb0d18e9bb3351488c5eabb751265c4eab0ef5e2`, carries exactly the input logic of entry 85's diagnostic build with no `TINYSNES_DBG_BORDER`, at seed 7 with `fclk` on `SPINE18`+`SPINE28` and every clock on a measured-good bridge pip; the user reported the border perfect, so this is the shipping configuration and the yellow frame from `build/bb_s9` was only ever the diagnostic. On saves, the mechanic works and persistence does not exist, and the two are easy to confuse. The user saved Zelda, the file appeared at the file select, and it was still there after `tangload` reprogrammed the FPGA: that is the same build, the same card and the same SDRAM part, with the SDRAM left unrefreshed for the several seconds the reprogramming takes, and the controller is already characterized as lacking self-refresh, so what was observed is DRAM cell retention across an unrefreshed gap rather than a save path. The user then rebooted the board, the core was loaded again from the same card, and the save was gone, which is the expected result and the one that settles it. So the accurate statement is that a game writes its save to the cartridge SRAM and reads it back correctly within a session, that nothing in this tree writes that SRAM out to the card, and that a power cycle loses it -- and the reload result is recorded rather than dropped because a future reader who sees a save survive one `tangload` could reasonably conclude persistence had been implemented. `README.md`'s Status section carried `No saves persist` as a bare line, which is ambiguous in the direction that matters: it reads as though saving fails, when in fact saving succeeds and only the card writeback is absent. It now states both halves, names the reload measurement and says plainly that cell retention is not a save path; the Known gaps section had already been corrected in entry 85 where it claimed the GSU files were missing from the synthesis list and that controller input was untested. No engineering file changed this cycle: the build was made in the previous one and this one deployed and measured it. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 85 were not rewritten, and made no change to `core-reference.md` because nothing this cycle established an externally defined fact -- the SDRAM part and its lack of self-refresh in this controller are project state that the code already shows; validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-six-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Saves are the obvious next feature, and the shape is known rather than speculative: read the cartridge SRAM out through the debug port once the machine is idle, write it to the card as a `.srm` beside the cartridge, and load it back on launch. TinyNES's player already does exactly this for NVRAM on this board -- it prints `TinyNES NVRAM WANT` and is handed the file -- so there is a working model to follow and no need to invent a protocol. The work is bounded: BSRAM is one bank of the SDRAM controller, its region is already addressed by `BSRAM_ADDR`, and `TINYSNES_...` diagnostic builds already read SDRAM through the debug port, so the missing pieces are a capture after the last write and a handover through the loader rather than new hardware. Two cautions for whoever builds it. The misleading signal is documented above and will recur: a save surviving one `tangload` proves nothing, so any test of this feature must power cycle rather than reload. And the OSD remains the last untested surface and the largest product gap -- `textdisp` is instantiated in `iosys_bl616.v`, clocked and initialised from `font.vh` and `logo.vh`, with its output deliberately unused and `overlay` tied to zero -- so a save UI and the OSD are the same body of work if the user wants them together. Nothing is parked that blocks either: the SuperFX fault keeps its two named candidates, and Tales of Phantasia still waits on the `smc_parser` mode decode and an ExHiROM image.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: PASS
+
+---

@@ -71,7 +71,15 @@ Three changes go beyond that, and each has a measurement behind it:
   and `hid2` are wired into the top level but TinyTang's firmware never sends the
   `0x09` pad frame, so they stay zero.
 - **Not tested:** the OSD.
-- **No saves persist.** Nothing in the tree writes SRAM back to the card.
+- **Saves: the mechanic works, persistence does not exist.** A game writes its
+  save to the cartridge SRAM in SDRAM and reads it back correctly, so saving and
+  loading inside a session both work. Nothing in the tree writes that SRAM out to
+  the card, so there is no save file, and a power cycle loses it. One measurement
+  is worth keeping because it is easy to mistake for persistence: a save survived
+  a core reload, for the several seconds `tangload` takes to reprogram the FPGA
+  with the SDRAM left unrefreshed, and was gone after a reboot on the same card
+  and the same build. Cell retention across an unrefreshed gap is not a save
+  path; do not read it as one.
 
 ## Build
 
