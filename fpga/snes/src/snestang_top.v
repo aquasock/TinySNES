@@ -150,18 +150,21 @@ gowin_pll_snes pll_snes (
 // expresses frequency and phase as delays; see run_board_sim.sh.
 gowin_pll_snes pll_snes (
     .clkout0(mclk),
-    .clkout1(fclk),
-    .clkout2(fclk_p),
+    .clkout1(fclk_p),
+    .clkout2(fclk),
     .clkin(sys_clk)
 );
 
 `else
 // Mega 138K: mclk=21.5054, fclk=64.5161
 // Primer 25K: mclk=21.4844, fclk=85.9375
+// TinySNES: clkout1 carries the 225-degree shifted clock and clkout2 the SDRAM
+// controller clock, swapped from upstream so that fclk lands on a PLL output
+// that has a clock-plane wire.  See fpga/snes/pll/gowin_pll_snes.v.
 gowin_pll_snes pll_snes (
     .clkout0(mclk),             // 21.4844
-    .clkout1(fclk),
-    .clkout2(fclk_p),
+    .clkout1(fclk_p),           // 225-degree shifted, drives O_sdram_clk
+    .clkout2(fclk),             // SDRAM controller clock, now on the clock plane
     .clkin(sys_clk)             // 50 Mhz input
 );
 

@@ -2,8 +2,26 @@
 //
 // SNESTang's clock trio, from the 50 MHz crystal:
 //   clkout0 50 * 40 / 93 = 21.505 MHz  SNES master clock (mclk)
-//   clkout1 50 * 40 / 31 = 64.516 MHz  SDRAM clock (fclk)
-//   clkout2 as clkout1, phase-shifted 225 degrees (fclk_p, drives O_sdram_clk)
+//   clkout1 50 * 40 / 31 = 64.516 MHz, phase-shifted 225 degrees (fclk_p,
+//           drives O_sdram_clk)
+//   clkout2 50 * 40 / 31 = 64.516 MHz  SDRAM controller clock (fclk)
+//
+// TinySNES: clkout1 and clkout2 are swapped from upstream's arrangement, and
+// the reason is the clock plane rather than the clock arithmetic.  apicula's
+// `_gw5a_pll_clk_wires` table for GW5AST-138C carries exactly three PLL-to-
+// plane wires: CLKOUT0 on the left edge (TLPLL0CLK0), CLKOUT0 on the right edge
+// (TRPLL0CLK0), and CLKOUT2 on the left edge only (TLPLL0CLK2).  CLKOUT1 has no
+// plane wire on this device at all.  Upstream put fclk -- which clocks the
+// entire SDRAM controller, the design's widest fast domain -- on CLKOUT1, so it
+// never reached the global clock spine and was routed point to point across
+// 18,400 characters of interconnect with no spine tap.  Measured on the routed
+// netlist: `iosys.clk` (mclk, CLKOUT0) enters the plane through TRPLL0CLK0
+// while `fclk` carries no bridge pip of any kind.  Moving fclk onto CLKOUT2 and
+// placing this PLL at PLL_L[0] gives it TLPLL0CLK2, which TinyGBA measured
+// against the vendor flow on 2026-10-31 (its core-log entry 4) as reaching the
+// plane and clocking 48 GB00 sinks.  The 225-degree shift therefore moves to
+// CLKOUT1, which drives one pin and needs no plane access.  See core-log entry
+// 75 and TCL-015.
 //
 // Hand-written instantiation of the PLL primitive, carried over from TinyTang's
 // fpga/desktop/pll/gowin_pll_nes.v, whose parameters are identical.  The Gowin
@@ -57,8 +75,14 @@ PLL #(
     .CLKOUT0_DT_STEP(0),
     .CLKOUT0_PE_COARSE(0),
     .CLKOUT0_PE_FINE(0),
-    .CLKOUT2_PE_COARSE(19),
-    .CLKOUT2_PE_FINE(3)
+    // 225 degrees of shift, moved from CLKOUT2 to CLKOUT1 with the swap above.
+    // 19 coarse steps of 22.5 degrees plus 3 fine steps of 2.8125 degrees is
+    // 435.9 degrees, i.e. 225 plus one full turn, which is the figure the
+    // previous arrangement produced and the capture points were tuned against.
+    .CLKOUT1_PE_COARSE(19),
+    .CLKOUT1_PE_FINE(3),
+    .CLKOUT2_PE_COARSE(0),
+    .CLKOUT2_PE_FINE(0)
 ) PLL_inst (
     .LOCK(lock),
     .CLKOUT0(clkout0),

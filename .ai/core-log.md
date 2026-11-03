@@ -2409,3 +2409,36 @@ None.
 - User Test: NOT RUN
 
 ---
+
+## 75 COMMIT Unreleased 2026-11-03T00:14:22-07:00
+
+#### Coming From:
+
+Unreleased 986f0f4
+
+#### Purpose:
+
+Act on the user's observation that the sibling projects on this board all follow a clock spine, by finding out which clocks in this design reach the global clock network and which do not.
+
+#### Outcome:
+
+The observation was right and it located a defect that every gate in this project had been unable to see. Reading `fclk`'s route in the routed netlist showed it carried no clock-plane bridge pip of any kind and 18,400 characters of point-to-point interconnect, while `iosys.clk` entered the plane through `TRPLL0CLK0`. `fclk` is the SDRAM controller's clock and the design's widest fast domain, so the SDRAM controller had been clocked through general routing with no spine tap for its entire history on this board, and neither the hold check nor the Fmax gate could report it: both evaluate a domain that never entered the network, and a point-to-point clock still meets its period on paper while its skew is interconnect delay. The cause is the device's clock-plane table, which apicula carries as `_gw5a_pll_clk_wires` with exactly three entries for GW5AST-138C, `(0, CLKOUT0)` to `TLPLL0CLK0`, `(4, CLKOUT0)` to `TRPLL0CLK0` and `(0, CLKOUT2)` to `TLPLL0CLK2`. CLKOUT1 has no plane wire anywhere on the device, and upstream put `fclk` on CLKOUT1. The right-edge site additionally offers only CLKOUT0, and `pll_snes` was pinned at `PLL_R[0]`, so the design had one plane-capable output for two clocks that both need the plane. The fix copies what TinyGBA did rather than inventing anything: `pll_snes` moves to `PLL_L[0]`, which owns both `TLPLL0CLK0` and `TLPLL0CLK2`, `fclk` moves from CLKOUT1 to CLKOUT2 so it reaches `TLPLL0CLK2`, and the 225-degree shift moves from CLKOUT2 to CLKOUT1, which drives only `O_sdram_clk` and needs no plane access. The shift value is unchanged at 19 coarse and 3 fine steps, so the phase relation the capture points were tuned against is preserved. Measured on the rebuilt routed netlist at seed 9: `fclk` now enters through `TLPLL0CLK2` and crosses `SPINE18/CBRIDGEOUT_TOP2` and `SPINE28/CBRIDGEOUT_TOP2`, with the route down from 18,400 characters to 8,606, and the build passes timing at fclk 272.480 MHz against 64.516, hclk 129.853 against 74.250, iosys.clk 28.655 against 21.505 and the coprocessor's cache clock 326.371 against 65.000. The two pips `fclk` now uses are unmeasured rather than dead, so this is progress from "no plane access" to "plane access on a pip nothing has tested yet", and it is not yet a proven configuration. Two gate defects were fixed so this class cannot stay invisible: `tools/clock_plane_report.py` could only examine clocks that already crossed a bridge pip, because it enumerated clocks from their routing, so a clock with no plane access was silently skipped; it now also enumerates every net that drives a flip-flop clock input, reports those with no bridge pip as a distinct failure, and refuses the build unless `TINYSNES_ALLOW_UNMEASURED_CLOCKS=1`. Run against the pre-fix netlist the new check immediately reports `fclk` at 193 flip-flop clock inputs and a second clock, `main.genblk5.GSUMap.GSU.cache.0.0_CLKB`, at 23, both with no spine tap. That second clock is a finding in its own right and belongs to the parked coprocessor thread: `GSU.v` declares its cache as `reg [7:0] cache [512]` with port A on `negedge CLK` and port B on `posedge CLK`, which synthesis cannot map to a dual-port block RAM, so it emits a `LUT1` inverter driven by `iosys.clk` to produce the negedge for one port. The coprocessor's cache therefore takes its clock through a lookup table on general routing, shared by 23 flip-flops, and the same LUT is present in the build made before this cycle, so it is not a consequence of the spine change. That is exactly the shape of a cache fill that works sometimes and not others. Nothing was deployed: the user's instruction not to deploy was given during this cycle and is respected, and the board still runs an older bitstream. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 74 were not rewritten, and made no change to core-reference.md because DEV-004 and TCL-015 already carry the pip measurements and this cycle only extended the tool that reads them; the two new pip measurements belong in DEV-004 and are named in Next Steps rather than written blind. Validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventy-five-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Do not deploy without the user's word; the instruction given this cycle was explicit and the board has not been touched. When deployment is authorised, the build to use is `build/spine75/tinysnes.fs` at seed 9, and the first thing to run is a control cartridge rather than Star Fox, because Zelda and Super Mario Kart must still pass before any coprocessor reading is believed and this cycle changed the clock that feeds the SDRAM controller. The immediate open question is whether `SPINE18/CBRIDGEOUT_TOP2` and `SPINE28/CBRIDGEOUT_TOP2` actually distribute `fclk` on this board; TinyGBA measured `TLPLL0CLK2` reaching 48 GB00 sinks in a vendor build, but that was at a different site and nothing here has measured these two pips, so DEV-004 should gain both as measured entries once the board settles them, and a stuck or silent result on that path should be read as this measurement and not as a new machine fault. Separately, and when the coprocessor thread resumes, the cache clock through a LUT is the first thing to examine, since the GSU's program comes from that cache and its clock is not on the global network; the likely repair is to stop mixing `negedge` and `posedge` on one inferred array so synthesis can use a real dual-port block RAM, which changes `GSU.v` and needs the user's decision because that file is upstream's.
+
+#### Files Modified:
+
+- fpga/snes/pll/gowin_pll_snes.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/tinysnes.cst
+- tools/clock_plane_report.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

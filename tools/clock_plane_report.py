@@ -84,6 +84,37 @@ OWN_MEASURED = {
 }
 
 
+def clock_net_sinks(top):
+    """Map every net that drives a flip-flop clock input to its sink count.
+
+    `clocks_of` can only see clocks that cross a bridge pip, which makes the
+    worst case invisible: a clock routed point to point reaches the global
+    network not at all, carries no bridge pip, and is therefore never examined.
+    That is exactly the state `fclk` was in -- the SDRAM controller's clock,
+    18,400 characters of interconnect and no spine tap -- while every gate this
+    project ran reported success.  Finding clocks by their flip-flop clock pins
+    instead of by their routing means the absent case is reported rather than
+    skipped.  (TinyGBA's BRD-004 records the same blindness from the other side:
+    "Both the hold check and the Fmax gate passed on all four.")
+    """
+    bit2net = {}
+    for name, info in top.get("netnames", {}).items():
+        for bit in info.get("bits", []):
+            bit2net[bit] = name
+    sinks = {}
+    for cell in top.get("cells", {}).values():
+        ports = cell.get("port_directions") or {}
+        bits_map = cell.get("connections") or {}
+        for port, direction in ports.items():
+            if direction != "input" or port not in ("CLK", "CLKB"):
+                continue
+            for bit in bits_map.get(port, []):
+                net = bit2net.get(bit)
+                if net is not None:
+                    sinks[net] = sinks.get(net, 0) + 1
+    return sinks
+
+
 def clocks_of(top):
     """Yield (net_name, {(spine, bridge)}) for every clock net in the netlist."""
     netnames = top.get("netnames", {})
@@ -143,7 +174,35 @@ def main():
             good.append((name, line))
         print(line)
 
-    if not found:
+    # A clock that reaches no bridge pip never entered the global clock network.
+    # Report it explicitly, because it is the failure mode that is silent.
+    plumbed = {name for name, _ in clocks_of(top)}
+    sinks = clock_net_sinks(top)
+    no_plane = []
+    for name, n in sorted(sinks.items(), key=lambda kv: -kv[1]):
+        if name in plumbed:
+            continue
+        if n < 8:
+            continue          # a gate-level clock, not a domain
+        no_plane.append((name, n))
+    if no_plane:
+        print()
+        print("Clocks that drive flip-flops but reach NO clock-plane bridge pip:")
+        for name, n in no_plane:
+            print(f"  {name:22s} {n:6d} flip-flop clock inputs, no spine tap")
+        print("These are routed point to point.  Every sink gets the clock, but the")
+        print("skew between them is interconnect delay rather than a balanced")
+        print("network, so paths are marginal rather than broken and the failure")
+        print("point moves between boots.  Neither the hold check nor the Fmax gate")
+        print("can see this: both read a domain that never entered the network.")
+        print("Fix by moving the clock onto a PLL output that owns a plane wire --")
+        print("on GW5AST-138C that is CLKOUT0 at either edge, and CLKOUT2 at the")
+        print("left edge only (apicula _gw5a_pll_clk_wires).")
+        no_plane_bad = True
+    else:
+        no_plane_bad = False
+
+    if not found and not no_plane:
         print("no clock net crosses a bridge pip; nothing to check")
         return 0
 
@@ -155,6 +214,14 @@ def main():
         print("This clock will not reach the flip-flops on those branches; they hold",
               file=sys.stderr)
         print("power-up 0 (TinyNES core-reference DEV-009, DEV-017).", file=sys.stderr)
+        return 1
+
+    if no_plane_bad and not args.allow_unmeasured:
+        print()
+        print("Refusing the build: a clock above never reaches the clock spine.",
+              file=sys.stderr)
+        print("Set TINYSNES_ALLOW_UNMEASURED_CLOCKS=1 to proceed anyway.",
+              file=sys.stderr)
         return 1
 
     if unmeasured:
