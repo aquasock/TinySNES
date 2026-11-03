@@ -2532,3 +2532,33 @@ None.
 - User Test: FAIL
 
 ---
+
+## 79 COMMIT Unreleased 2026-11-03T01:03:06-07:00
+
+#### Coming From:
+
+Unreleased c897236
+
+#### Purpose:
+
+Test whether the coprocessor failure depends on the cartridge by running two more SuperFX titles of different size and silicon generation, so that the fault is narrowed by elimination rather than by another instrument.
+
+#### Outcome:
+
+Three SuperFX cartridges across two silicon generations and three ROM sizes all fail identically, which removes the cartridge as a variable and leaves the coprocessor path itself as the fault. Vortex (USA) is 524,288 bytes, LoROM, rom type `$14`, reset vector `$FD1B`, SHA-256 `41b5561de9e4984276e52987ea46c5f4fa8526d8141c70c738875a9eb9fe9d70`, streamed in 3.2 seconds; Super Mario World 2: Yoshi's Island (USA) (Rev 1) is 2,097,152 bytes, LoROM, rom type `$15`, reset vector `$8000`, SHA-256 `bd763c1a56365c244be92e6cffefd318780a2a19eda7d5baf1c6d5bd6c1b3e06`, streamed in 11.1 seconds; and Star Fox (USA) (Rev 2) from entry 78 is 1,048,576 bytes, LoROM, rom type `$13`, reset vector `$FF9C`. All three draw the grey pillarbox bars around a blank picture, the `blank` class of `tools/frame_stats.py`, so in each case the transmitter was in sync and the core was drawing and the cartridge simply did not render. The elimination is worth stating precisely because each axis was chosen to separate a hypothesis and each one failed to. ROM size spans 512 KiB, 1 MiB and 2 MiB, so a fetch boundary, an address-width limit, or the 1 MiB mask in the LoROM mapping are not the fault, and the 2 MiB case additionally exercises `rom_mask` at a size no other tested cartridge reaches. Rom type spans `$13`, `$14` and `$15`, which `smc_parser` decodes as GSU and which correspond to the GSU-1 and GSU-2 generations, so a variant-specific microcode or register difference is not the fault either; note that the header byte is the only record this project has of the generation and nothing here verifies which silicon a title actually shipped on, so that axis is inferred from the header rather than measured. Reset vectors differ, at `$FD1B`, `$8000` and `$FF9C`, and map bytes are `$20` throughout, so the LoROM mapping that Zelda and Star Fox use to reach their own reset code is exercised identically and works. One operational fact is recorded because it changed the procedure: the user rebooted the console between the Vortex attempts, which clears the FPGA's SRAM configuration, so the bitstream had to be re-flashed and the cartridge re-streamed; the second attempt used the same artifact, `build/spine75/tinysnes.fs` with SHA-256 `f0bc89a1050a41ed113eb0d53cf99a9e8045c702e7e786760a6d965d9c830738`, and `openFPGALoader` reported Done and DONE again, which restates BRD-003's rule that a reboot costs a flash and a stream and that a board which boots nothing after a reboot is most likely unconfigured rather than broken. No source was changed this cycle and nothing was built. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 78 were not rewritten, and made no change to core-reference.md because these are cartridge results for this tree rather than externally defined facts, and the SuperFX header bytes are already recorded in the decoder's own source. Validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventy-nine-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Stop running FX cartridges on the board; three titles spanning the tested axes have now said the same thing, and a fourth would cost a flash and a stream to answer a question already settled. The next work is the coprocessor path, and the cheapest hypothesis is the one the clock-plane gate names: `main.genblk5.GSUMap.GSU.cache.0.0_CLKB` is the only clock in the build with no spine tap, 23 flip-flop clock inputs driven by a `LUT1` inverter off `iosys.clk`, because `GSU.v` declares `reg [7:0] cache [512]` with port A on `negedge CLK` and port B on `posedge CLK` so synthesis cannot infer a dual-port block RAM. Every FX cartridge depends on that cache for its program and nothing else in the machine does, which matches a failure that is total across carts and absent from every non-FX title. Test it in `tools/sim/run_board_sim.sh` first rather than on the board: that bench instantiates `snestang_top` with the real `sdram_cl2_2ch`, boots Star Fox through the real controller, and reported the GSU cache clock at 23 clock inputs with no spine tap, so a change to the cache can be judged without a flash. The change itself touches `GSU.v`, which is upstream's file, so it needs the user's decision before it is made; the shape to try is removing the `negedge` port and giving both ports the same edge so the array infers as a real dual-port block RAM, which is a behaviour change to the coprocessor and must be checked against `gsu_tb.sv` before any board work. If that is not the fault, the surviving candidate is the BSRAM toggle collapse measured in entry 73, and the durable repair there is larger: either give `GSUMap` a stall path so the coprocessor waits for its work RAM, or move BSRAM out of shared SDRAM. Do not re-open the clock plan, the `CHIP_GSU`/`CHIP_DSPn` configuration fix or the `--single-unit` change, all of which are measured, and do not re-measure HiROM, fastrom or DSP-1, which Mario Kart confirmed.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: PASS
+- User Test: FAIL
+
+---
