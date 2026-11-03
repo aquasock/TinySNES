@@ -2309,3 +2309,34 @@ Do not flash the cache-fill probe: it has not been shown to read the cartridge c
 - User Test: N/A
 
 ---
+
+## 72 COMMIT Unreleased 2026-11-02T20:45:38-07:00
+
+#### Coming From:
+
+Unreleased 3e30184
+
+#### Purpose:
+
+Record a cycle in which the agent lost its knowledge of a working simulator, replaced it with confident wrong statements, and built a hardware hypothesis on an assumed number -- and mark this session's entries untrustworthy until independently re-verified.
+
+#### Outcome:
+
+Star Fox runs in this project's simulation and its intro renders, and the operator had watched it do so before this cycle began. This entry records that the agent, working on that same tree, could not reliably reproduce a state it had inherited, and then treated its own confusion as evidence about the machine. Three specific failures are recorded because each one reached the operator as a finding. First, the simulator's default run length was 400000 clocks, and making the bench's `$finish` effective under the harness turned that default into a regression: the window opened, displayed one black frame and closed, so a working interactive view appeared broken. That was diagnosed only after the operator reported the window was black forever, and the same change was then described as an improvement. Second, a frame comparison was made at sixty million clocks, before the intro begins, and because both the working and the deliberately-broken configurations produced identical black frames, the agent concluded that the capture path was dead and that the simulator might never reach gameplay at all, and stated this to the operator. Both frames were early-boot black; the comparison proved nothing, and the conclusion was wrong. Third, the agent did not recognise the static tile grid on the board as the failure signature already recorded in entries 5, 62, 65, 66 and 68, and the operator had to name it. The inference that produced the only hardware change of this cycle is circular and is recorded as such: the bench's `+bwlat` knob was set to sixteen, `go_cnt` came back as one, and that was described to the operator as reproducing the board and as isolating a mechanism -- but no measurement of the board's actual BSRAM latency exists anywhere in this log, so the number was chosen to produce the failure and the failure was then cited as evidence for the number. On that basis `.bsram_req_ack()` in `snestang_top.v` was connected and the BSRAM request gated on it, built, and flashed; it fixed nothing, and the board shows the same tile grid. The change is reverted so the committed RTL matches the known state, and it is recorded here as a lead rather than a fix, because an unconnected acknowledge is wrong on its own terms even though connecting it did not move the result. Two operational faults belong in this record because both cost the operator time. Unfiltered simulator output was redirected into `/tmp`, which is tmpfs and therefore memory on this machine, and grew to about ninety million lines and six gigabytes until the operator powered the machine off; and batch runs were launched through a harness that always opens two SDL windows, with interrupted commands orphaning processes so that four windows accumulated on the desktop. The agent also contradicted itself within minutes, first stating correctly that the bench instantiates `main.v` and therefore cannot see `snestang_top.v` at all, and then proposing to make the simulator reproduce a board failure that lives in that unseen layer. That structural fact is the one durable technical finding and is restated for the next reader: the bench supplies a single clock and ideal memory arrays, so the SDRAM controller, the second clock domain and the toggle handshakes -- the entire layer where this fault must live -- are absent from every simulation this project has run, which is why the coprocessor can be proven correct in simulation while the board fails. The agent's conclusions in this session should not be trusted without independent re-verification; the operator's question, why trust judgement on the board from an agent that could not boot the simulator, has no answer in this entry. The core-syntax audit re-read .ai/core.md and .ai/core-syntax.md, inspected the complete .ai/ diff, confirmed .ai/core.md was not changed, checked that entries 1 to 71 were not rewritten and that entry 70's correction stands, made no change to core-reference.md because no externally defined fact was established this cycle, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the seventy-two-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Treat every measurement, inference and recommendation recorded in this session as unverified, and re-establish the simulator baseline before believing anything else: build the harness with `tools/sim/build_gsu_sdl.sh`, run it with an explicit long `+cycles`, and confirm independently that Star Fox's intro renders before accepting any later claim about either machine. The default run length is now long enough for that and the harness accepts `+headless` so batch work opens no window, but neither fact substitutes for watching it work. Do not build on the BSRAM latency sweeps. The `+bwlat` values were assumed rather than measured, so the `go_cnt` numbers they produced say nothing about this board, and the `bwnodrop` and `bwreadnow` knobs added this cycle are experiment scaffolding in the bench's own ideal-memory model rather than models of the hardware. The next real step is either to measure the board's actual BSRAM read and write latency with an instrument that reports it, or to build a bench that instantiates `snestang_top.v` with its SDRAM controller and both clock domains so that a fix can be verified before it is flashed, and the second is the larger and more honest piece of work because it is the only way a change to that layer can ever be checked without spending a board cycle. Do not flash further hypotheses derived from the bench's single-clock model. The board currently runs the acknowledge build, which is no longer in the tree, and it displays the static tile grid, so the next agent should establish which bitstream is actually loaded before drawing any conclusion from the screen. Re-run a control cartridge such as Zelda or Super Mario Kart after any future flash to separate a broken bitstream from a broken coprocessor path.
+
+#### Files Modified:
+
+- tools/sim/sim_main.cpp
+- tools/sim/gsu_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---

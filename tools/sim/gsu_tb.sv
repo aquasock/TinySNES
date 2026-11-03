@@ -65,7 +65,17 @@ module gsu_tb (
   reg enable = 1'b0;
 
   // ---------------------------------------------------------------- options
-  integer cycles_max = 400000;
+  //
+  // The default is deliberately long.  This bench is watched as a live window
+  // as well as run in batch, and the PPU does not put Star Fox's intro on
+  // screen until roughly two hundred million clocks -- the coprocessor's first
+  // start is near twenty million and the title sequence follows it.  A short
+  // default makes the window a black rectangle that closes: that is exactly
+  // what happened when $finish was first made to work here, at 400000.  Batch
+  // runs pass +cycles explicitly, so this only governs the interactive case,
+  // and one billion clocks is about sixteen minutes of wall time -- longer than
+  // anyone watches, and still bounded rather than running forever.
+  integer cycles_max = 1000000000;
   reg     reported = 1'b0;
   reg [1023:0] hex_path, trace_path, vcd_path, frame_path;
 
@@ -149,6 +159,8 @@ module gsu_tb (
     void'($value$plusargs("lat=%d", rom_lat));
     void'($value$plusargs("glat=%d", gsu_lat));
     void'($value$plusargs("bwlat=%d", bwlat));
+    void'($value$plusargs("bwreadnow=%d", bwreadnow));
+    void'($value$plusargs("bwnodrop=%d", bwnodrop));
     void'($value$plusargs("rtog=%d", rtog));
     if (gsu_lat > 8) gsu_lat = 8;
     if (rom_lat > 8) rom_lat = 8;
@@ -293,6 +305,8 @@ module gsu_tb (
   // instantly and can never show the race, which is why the coprocessor looked
   // healthy in simulation and not on the board.
   integer bwlat = 0;
+  integer bwreadnow = 0;
+  integer bwnodrop = 0;
   integer bw_busy = 0;
   integer bw_dropped = 0;
   integer bw_writes = 0;
@@ -303,14 +317,26 @@ module gsu_tb (
     if (bw_busy > 0) bw_busy <= bw_busy - 1;
     if (!BSRAM_CE_N && !BSRAM_WE_N) begin
       bw_writes <= bw_writes + 1;
-      if (bw_busy > 0) begin
+      // +bwnodrop applies the latency but never loses a request, so a run can
+      // separate "slow memory" from "the toggle pair swallowed the access".
+      // The two are conflated under plain +bwlat and the distinction decides
+      // the fix: slow memory is answered by waiting longer, a swallowed
+      // request is answered by not issuing it until the previous one is acked.
+      if (bw_busy > 0 && !bwnodrop) begin
         bw_dropped <= bw_dropped + 1;      // the toggle pair collapsed
       end else begin
-        bsram[BSRAM_ADDR] <= BSRAM_D;
         bw_busy <= bwlat;
+        bsram[BSRAM_ADDR] <= BSRAM_D;
       end
     end
-    if (bwlat == 0) bsram_q_r <= bsram[BSRAM_ADDR];
+    // +bwreadnow removes the write-busy gate on reads, so a read always gets
+    // the array's current contents regardless of an outstanding write.  This is
+    // a modelling experiment, not a claim about the hardware: it separates "the
+    // memory is slow" from "reads starve behind a continuous write stream".
+    // Under the gated model bw_busy is re-armed by every write, so with the GSU
+    // writing its plot buffer every few cycles bw_busy never reaches zero and
+    // no read ever sees fresh data, however long the core waits.
+    if (bwlat == 0 || bwreadnow) bsram_q_r <= bsram[BSRAM_ADDR];
     else if (bw_busy == 0) bsram_q_r <= bsram[BSRAM_ADDR];
   end
   assign BSRAM_Q = bsram_q_r;

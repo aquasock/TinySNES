@@ -44,17 +44,32 @@ int main(int argc, char **argv) {
         return 2;
     }
 
+    // Headless mode.
+    //
+    // Without this the program always opened two SDL windows -- the picture and
+    // a "GSU state" panel -- so a batch run could not be made invisible, and
+    // every run whose caller was interrupted left its windows on screen.  Four
+    // of them accumulated during one debugging session because the driver
+    // command timed out while the process lived on.  A headless run does the
+    // same work: it steps the same clocks and writes the same PPM; it simply
+    // creates no window and never blocks on events.
+    bool headless = false;
+    for (int i = 1; i < argc; i++)
+        if (strncmp(argv[i], "+headless", 9) == 0) headless = true;
+
     Vgsu_tb *dut = new Vgsu_tb;
 
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+    if (headless ? false : (SDL_Init(SDL_INIT_VIDEO) < 0)) {
         fprintf(stderr, "SDL init failed: %s\n", SDL_GetError());
         return 1;
     }
 
-    SDL_Window   *win  = SDL_CreateWindow("TinySNES Sim",
+    SDL_Window   *win  = headless ? nullptr :
+                         SDL_CreateWindow("TinySNES Sim",
                                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                           H_RES * SCALE, V_RES * SCALE, SDL_WINDOW_SHOWN);
-    SDL_Renderer *ren  = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
+    SDL_Renderer *ren  = headless ? nullptr :
+                         SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
     // The pixel format must match the byte order of `struct Pixel`, which is
     // {r,g,b,a}.  SDL_PIXELFORMAT_RGBA8888 packs A into bits 31:24, so on a
     // little-endian host the bytes in memory are a,b,g,r -- the reverse.  Using
@@ -62,16 +77,18 @@ int main(int argc, char **argv) {
     // i.e. a solid red screen, while the PPM written from the same buffer was
     // correctly black.  TinyGBA's harness avoids this by declaring its Pixel as
     // {a,b,g,r}; ABGR8888 is the format that matches our struct instead.
-    SDL_Texture  *tex  = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888,
+    SDL_Texture  *tex  = headless ? nullptr :
+                         SDL_CreateTexture(ren, SDL_PIXELFORMAT_ABGR8888,
                                            SDL_TEXTUREACCESS_STREAMING, H_RES, V_RES);
-    if (!win || !ren || !tex) {
+    if (!headless && (!win || !ren || !tex)) {
         fprintf(stderr, "SDL window/texture failed: %s\n", SDL_GetError());
         return 1;
     }
 
     // A second window for GSU state.  Text only, redrawn when it changes, so a
     // human reading it during a run can say what the coprocessor was doing.
-    SDL_Window *win2 = SDL_CreateWindow("GSU state",
+    SDL_Window *win2 = headless ? nullptr :
+                       SDL_CreateWindow("GSU state",
                                         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                         640, 260, SDL_WINDOW_SHOWN);
 
@@ -107,7 +124,7 @@ int main(int argc, char **argv) {
     while (!done) {
         // Events
         SDL_Event e;
-        while (SDL_PollEvent(&e)) {
+        while (!headless && SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) done = true;
             if (e.type == SDL_KEYDOWN) {
                 switch (e.key.keysym.sym) {
@@ -169,10 +186,12 @@ int main(int argc, char **argv) {
             }
         }
 
-        SDL_UpdateTexture(tex, nullptr, fb.data(), H_RES * sizeof(Pixel));
-        SDL_RenderClear(ren);
-        SDL_RenderCopy(ren, tex, nullptr, nullptr);
-        SDL_RenderPresent(ren);
+        if (!headless) {
+            SDL_UpdateTexture(tex, nullptr, fb.data(), H_RES * sizeof(Pixel));
+            SDL_RenderClear(ren);
+            SDL_RenderCopy(ren, tex, nullptr, nullptr);
+            SDL_RenderPresent(ren);
+        }
         frames++;
 
         if (win2) {
@@ -211,10 +230,12 @@ int main(int argc, char **argv) {
 
     write_shot();
     delete dut;
-    SDL_DestroyTexture(tex);
-    SDL_DestroyRenderer(ren);
-    SDL_DestroyWindow(win);
-    if (win2) SDL_DestroyWindow(win2);
-    SDL_Quit();
+    if (!headless) {
+        SDL_DestroyTexture(tex);
+        SDL_DestroyRenderer(ren);
+        SDL_DestroyWindow(win);
+        if (win2) SDL_DestroyWindow(win2);
+        SDL_Quit();
+    }
     return 0;
 }
