@@ -17,6 +17,8 @@ module GSU(
     output [20:0] ROM_A,
     input [7:0] ROM_DI,
     output reg ROM_RD_N,
+    // TinySNES: high when ROM_DI holds the byte at ROM_A.  See "ROM ready".
+    input ROM_RDY,
     output [16:0] RAM_A,
     input [7:0] RAM_DI,
     output [7:0] RAM_DO,
@@ -100,7 +102,7 @@ module GSU(
     //           src 1 cache, 2 ROM fetch, 3 RAM fetch
     //   DBG_MM  S-CPU MMIO:  {valid, write, 7'b0, ADDR[15:0], value}
     //           value is DI for a write and DO for a read
-    // DBG_ROM_CYCLES overrides ROM_CYCLES when it is 1..13; 0 keeps the built-in 9.
+    // DBG_ROM_CYCLES overrides ROM_CYCLES when it is 1..13; 0 keeps the built-in 1.
     output [23:0] DBG_PC,
     output [34:0] DBG_RL,
     output [34:0] DBG_OP,
@@ -1020,26 +1022,22 @@ always @(posedge CLK) begin
         end
       //			GSU_ROM_RD <= '0';
         if (EN) begin
-            // TinySNES: 3 at 10.7 MHz and 9 at 21.4 MHz, rather than upstream's
-            // 1 and 3 (2 for TURBO).  The GSU latches ROM_DI after counting
-            // ROM_CYCLES of RON with no ready handshake.  This board's
-            // cartridge lives in SDRAM and answers about four mclk after the
-            // address (TCL-019), plus a register in main.v.  With CLS=0 a GSU
-            // cycle is two mclk because CLK_CE toggles, so 3 is 6 mclk: on the
-            // board 2 and 3 latch every byte of Star Fox correctly, 1 hangs
-            // it, and the old 9 ran it at half speed.  With CLS=1 a GSU cycle
-            // is one mclk; Yoshi's Island, Stunt Race FX and Dirt Trax FX all
-            // hang at 3, and Yoshi's Island also hangs at 6 though every ROM
-            // byte it latched was correct, so 9 stays until that is found.
+            // TinySNES: ROM ready.  Upstream latches ROM_DI after a fixed
+            // ROM_CYCLES of RON (1 and 3, 2 for TURBO), which assumes a
+            // cartridge that answers in fixed time.  This board's cartridge is
+            // SDRAM behind a request/acknowledge port in snestang_top.v that
+            // answers in a variable six to ten mclk, and no fixed count fits
+            // both clock speeds: at 21.4 MHz instruction-cache fills read
+            // stale bytes at 6.  So LOAD, FETCH and CACHE now latch only once
+            // ROM_RDY says the word for ROM_A has arrived, and ROM_CYCLES is
+            // just the minimum count before that, kept at 1 as a floor.
             // DBG_ROM_CYCLES is a runtime override from the debug endpoint.
             // 13 is the ceiling because the LOAD path counts ROM_CYCLES + 2 in
             // ROM_ACCESS_CNT's four bits.
             if (DBG_ROM_CYCLES != 4'd0 && DBG_ROM_CYCLES <= 4'd13)
                 ROM_CYCLES <= DBG_ROM_CYCLES;
-            else if (SPEED || TURBO)
-                ROM_CYCLES <= 4'd9;
             else
-                ROM_CYCLES <= 4'd3;
+                ROM_CYCLES <= 4'd1;
 
             R14_CHANGE_LATCH <= 1'b0;
             if (CPU_EN && R14_CHANGE) 
@@ -1071,8 +1069,9 @@ always @(posedge CLK) begin
 
             ROMST_LOAD : 
                 if (RON) begin
-                    ROM_ACCESS_CNT <= ROM_ACCESS_CNT - 1;
-                    if (ROM_ACCESS_CNT == 0) begin
+                    if (ROM_ACCESS_CNT != 0)
+                        ROM_ACCESS_CNT <= ROM_ACCESS_CNT - 1;
+                    else if (ROM_RDY) begin
                     ROMDR <= ROM_DI;
                     FLAG_R <= 1'b0;
                     ROM_LOAD_END <= 1'b1;
@@ -1083,8 +1082,9 @@ always @(posedge CLK) begin
             
             ROMST_FETCH : 
                 if (RON) begin
-                    ROM_ACCESS_CNT <= ROM_ACCESS_CNT - 1;
-                    if (ROM_ACCESS_CNT == 0) begin
+                    if (ROM_ACCESS_CNT != 0)
+                        ROM_ACCESS_CNT <= ROM_ACCESS_CNT - 1;
+                    else if (ROM_RDY) begin
                     ROM_BUF <= ROM_DI;
                     ROM_FETCH_END <= 1'b1;
                     ROMST <= ROMST_FETCH_DONE;
@@ -1097,8 +1097,9 @@ always @(posedge CLK) begin
 
             ROMST_CACHE : 
                 if (RON) begin
-                    ROM_ACCESS_CNT <= ROM_ACCESS_CNT - 1;
-                    if (ROM_ACCESS_CNT == 4'd0) begin
+                    if (ROM_ACCESS_CNT != 4'd0)
+                        ROM_ACCESS_CNT <= ROM_ACCESS_CNT - 1;
+                    else if (ROM_RDY) begin
                         ROM_BUF <= ROM_DI;
                         ROMST <= ROMST_CACHE_DONE;
                     end
@@ -1143,8 +1144,11 @@ always @(posedge CLK) begin
     end
 end
 
+// TinySNES: CACHE_DONE keeps the fill address on the bus.  Upstream shows
+// PBR:R15 there, which on this board posts an SDRAM read between every two
+// cache bytes that the next byte then has to wait behind.
 assign INT_ROM_A =  ~GSU_ROM_ACCESS ? ADDR : 
-                    ROMST == ROMST_CACHE ? CACHE_SRC_ADDR : 
+                    (ROMST == ROMST_CACHE || ROMST == ROMST_CACHE_DONE) ? CACHE_SRC_ADDR : 
                     ROMST == ROMST_LOAD ? {ROMBR,R[14]} : 
                     {PBR,R[15]};
 

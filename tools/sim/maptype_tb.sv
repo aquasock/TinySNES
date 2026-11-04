@@ -56,7 +56,7 @@ module maptype_tb;
     .ROMSEL_N(1'b0), .RAMSEL_N(1'b1),
     .SYSCLKF_CE(1'b1), .SYSCLKR_CE(1'b1), .REFRESH(1'b0),
     .IRQ_N(),
-    .ROM_ADDR(ROM_ADDR), .ROM_Q(16'h0000),
+    .ROM_ADDR(ROM_ADDR), .ROM_Q(16'h0000), .ROM_RDY(1'b1),
     .ROM_CE_N(), .ROM_OE_N(), .ROM_WORD(),
     .BSRAM_ADDR(), .BSRAM_D(), .BSRAM_Q(8'h00),
     .BSRAM_CE_N(), .BSRAM_OE_N(), .BSRAM_WE_N(),

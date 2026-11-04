@@ -15,6 +15,7 @@ module GSU(
     output [20:0] ROM_A,
     input [7:0] ROM_DI,
     output ROM_RD_N,
+    input ROM_RDY,          // unused: the reference latches after its own count
     output [16:0] RAM_A,
     input [7:0] RAM_DI,
     output [7:0] RAM_DO,

@@ -254,6 +254,24 @@ module gsu_tb (
   wire [7:0] rom_q_final = (rtog == 0) ? (gsu_active ? rom_q_gsu : rom_q_slow)
                                        : (gsu_active ? rom_q_held : rom_q_slow);
   assign ROM_Q = {8'h00, rom_q_final};
+  // ROM_RDY models the board's rom_ready: the byte for ROM_ADDR is on ROM_Q.
+  // rom_pipe[k] holds the byte for an address once it has been stable for k
+  // clocks after the first edge that saw it, so ready is that count reaching
+  // the latency in use.  +nordy ties it high, the old blind count.
+  integer rdy_cnt = 0;
+  reg [23:0] rdy_addr = 24'hFFFFFF;
+  reg nordy = 0;
+  initial nordy = $test$plusargs("nordy");
+  always @(posedge clk) begin
+    if (ROM_ADDR != rdy_addr) begin
+      rdy_addr <= ROM_ADDR;
+      rdy_cnt <= 0;
+    end else if (rdy_cnt < 15)
+      rdy_cnt <= rdy_cnt + 1;
+  end
+  wire ROM_RDY = nordy || (rtog == 0 && ROM_ADDR == rdy_addr
+                 && rdy_cnt >= ((gsu_active && gsu_lat >= 0) ? gsu_lat : rom_lat))
+                 || (rtog != 0 && ROM_ADDR == rtog_addr_q && rtog_busy == 0 && rdy_cnt >= 1);
 
   // ----------------------------------------------------------- WRAM model
   reg [7:0] wram [0:131071];
@@ -545,7 +563,7 @@ module gsu_tb (
     .MCLK(clk), .RESET_N(rst_n), .ENABLE(enable),
     .SYSCLKF_CE(SYSCLKF_CE), .SYSCLKR_CE(SYSCLKR_CE), .REFRESH(REFRESH),
     .ROM_TYPE(ROM_TYPE), .ROM_MASK(ROM_MASK), .RAM_MASK(RAM_MASK),
-    .ROM_ADDR(ROM_ADDR), .ROM_D(ROM_D), .ROM_Q(ROM_Q),
+    .ROM_ADDR(ROM_ADDR), .ROM_D(ROM_D), .ROM_Q(ROM_Q), .ROM_RDY(ROM_RDY),
     .ROM_CE_N(ROM_CE_N), .ROM_OE_N(ROM_OE_N), .ROM_WE_N(ROM_WE_N), .ROM_WORD(ROM_WORD),
     .BSRAM_ADDR(BSRAM_ADDR), .BSRAM_D(BSRAM_D), .BSRAM_Q(BSRAM_Q),
     .BSRAM_CE_N(BSRAM_CE_N), .BSRAM_OE_N(BSRAM_OE_N), .BSRAM_WE_N(BSRAM_WE_N),

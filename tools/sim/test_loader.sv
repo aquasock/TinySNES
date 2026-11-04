@@ -42,7 +42,7 @@ module test_loader (
 
   // The largest image this project loads is 1 MiB; Star Fox is 1 MiB and Zelda
   // is 1 MiB, so the array is sized once rather than per run.
-  localparam integer MAXLEN = 1024 * 1024;
+  localparam integer MAXLEN = 4 * 1024 * 1024;   // the largest cart the board loads
 
   reg [7:0] img [0:MAXLEN-1];
 

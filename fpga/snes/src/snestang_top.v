@@ -211,6 +211,7 @@ wire cpu_ack;                 // the controller's acknowledge of the CPU-port re
 wire mem_wait;
 wire [15:0] ROM_D;
 wire [15:0] ROM_Q;
+wire        rom_ready;      // see "Cartridge ROM ready"
 assign      ROM_Q = (ROM_WORD || ~ROM_ADDR[0]) ? cpu_port0 : { cpu_port0[7:0], cpu_port0[15:8] };
 
 wire [16:0] WRAM_ADDR;
@@ -1854,7 +1855,7 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
 
     .ROM_TYPE(rom_type), .ROM_MASK(rom_mask), .RAM_MASK(ram_mask),
 
-    .ROM_ADDR(ROM_ADDR), .ROM_D(ROM_D), .ROM_Q(ROM_Q),
+    .ROM_ADDR(ROM_ADDR), .ROM_D(ROM_D), .ROM_Q(ROM_Q), .ROM_RDY(rom_ready),
     .ROM_CE_N(ROM_CE_N), .ROM_OE_N(ROM_OE_N), .ROM_WE_N(ROM_WE_N),
     .ROM_WORD(ROM_WORD),
 
@@ -2048,6 +2049,22 @@ reg        sd_dout_hold  = 1'b0;
 reg  [2:0] sd_tog_sr     = 3'd0;
 reg  [5:0] sd_wait_age   = 6'd0;
 wire       sd_dout_arrived = sd_tog_sr[2] ^ sd_tog_sr[1];
+wire       rom_post = ~loading && ~ROM_CE_N && rom_addr_sd != rom_addr && cpu_port_idle;
+
+// Cartridge ROM ready.  The GSU latches ROM_DI after its own count, so it is
+// told when the word for the address now on the bus has arrived.  The
+// controller acknowledges a read at cycle[1] and registers its word at
+// cycle[4], so after synchronisation the port reads idle a mclk or two before
+// the arrival is seen, and the next address can be posted while the previous
+// word is still on its way.  A single pending flag would then take the old
+// arrival for the new read, so rom_rd_out counts posted reads whose arrival
+// has not been seen; reads complete in order, so at zero the word for
+// rom_addr_sd is in cpu_port0, already stable for the two mclk the toggle
+// spent in sd_tog_sr.  The address compare covers the clocks between an
+// address change and its post.  Nothing times this out: a lost toggle stops
+// the GSU in a WAIT state, which the debug endpoint shows.
+reg  [1:0] rom_rd_out = 2'd0;
+assign     rom_ready = rom_rd_out == 2'd0 && rom_addr_sd == rom_addr && ~loading;
 
 // Generate SDRAM signals
 always @(posedge mclk) begin
@@ -2067,8 +2084,14 @@ always @(posedge mclk) begin
         // it has taken the first cancels both and neither address is read.
         // rom_addr_sd is left alone until the read is posted, so the changed
         // address is posted as soon as the port is free.
+        if (loading)
+            rom_rd_out <= 2'd0;
+        else if (rom_post && ~(sd_dout_arrived && rom_rd_out != 2'd0))
+            rom_rd_out <= rom_rd_out + 2'd1;
+        else if (~rom_post && sd_dout_arrived && rom_rd_out != 2'd0)
+            rom_rd_out <= rom_rd_out - 2'd1;
         if (loading && loader_do_valid && header_finished && loader_addr[0] 
-            || ~loading && ~ROM_CE_N && rom_addr_sd != rom_addr && cpu_port_idle) begin
+            || rom_post) begin
             rom_addr_sd <= rom_addr;
             cpu_addr <= rom_addr;
             cpu_req <= ~cpu_req;
@@ -2098,7 +2121,9 @@ always @(posedge mclk) begin
     end else begin
         sd_tog_sr     <= {sd_tog_sr[1:0], cpu_dout_tog};
         cpu_ack_sync  <= {cpu_ack_sync[0], cpu_ack};
-        if (~sd_rd_pending)
+        // Restart on every post too: back-to-back reads keep sd_rd_pending
+        // high, and the age must time one read, not the whole burst.
+        if (~sd_rd_pending || rom_post)
             sd_wait_age <= 6'd0;
         else if (sd_wait_age != 6'd63)
             sd_wait_age <= sd_wait_age + 6'd1;

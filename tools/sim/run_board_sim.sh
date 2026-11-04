@@ -10,6 +10,8 @@
 #   --frames N     stop after N rendered frames and write a PPM (default 60)
 #   --maxcyc N     hard bound in sys_clk (50 MHz) cycles (default 100000000 = 2 s)
 #   --out DIR      output directory (default build/boardsim)
+#   --arg +X       pass a plusarg to the bench, e.g. --arg +byteclk=4 to load
+#                  27x faster than the board's ~2 Mbaud (repeatable)
 #
 # Why this exists: every earlier bench in this project instantiates `main` or
 # `SNES` with ideal memory arrays, so the SDRAM controller, the second clock
@@ -29,17 +31,19 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 src="$root/fpga/snes"
 
-rom="${1:?usage: run_board_sim.sh <rom.sfc> [--frames N] [--maxcyc N] [--out DIR]}"
+rom="${1:?usage: run_board_sim.sh <rom.sfc> [--frames N] [--maxcyc N] [--out DIR] [--arg +X]...}"
 shift || true
 
 frames=60
 maxcyc=100000000
 out="$root/build/boardsim"
+extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --frames) frames="$2"; shift 2 ;;
         --maxcyc) maxcyc="$2"; shift 2 ;;
         --out)    out="$2"; shift 2 ;;
+        --arg)    extra+=("$2"); shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -120,7 +124,7 @@ echo "=== running ==="
 ./obj_dir/board_sim \
     "+hex=$hex" "+romlen=$romlen" \
     "+stopframes=$frames" "+maxcycles=$maxcyc" \
-    "+ppm=$out/frames.ppm" "+tracedump=$out/trace" 2>&1 | tee "$out/run.log"
+    "+ppm=$out/frames.ppm" "+tracedump=$out/trace" "${extra[@]}" 2>&1 | tee "$out/run.log"
 
 echo
 echo "picture: $out/frames.ppm"

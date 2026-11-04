@@ -18,6 +18,7 @@ module main (
 	output reg [23:0] ROM_ADDR,
 	output reg [15:0] ROM_D,
 	input      [15:0] ROM_Q,
+	input             ROM_RDY,    // the word for ROM_ADDR has arrived; GSU only
 	output reg        ROM_CE_N,
 	output reg        ROM_OE_N,
 	output reg        ROM_WE_N,
@@ -549,6 +550,7 @@ GSUMap GSUMap
 
 	.ROM_ADDR(GSU_ROM_ADDR),
 	.ROM_Q(ROM_Q),
+	.ROM_RDY(ROM_RDY),
 	.ROM_CE_N(GSU_ROM_CE_N),
 	.ROM_OE_N(GSU_ROM_OE_N),
 	.ROM_WORD(GSU_ROM_WORD),

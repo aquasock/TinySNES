@@ -108,11 +108,10 @@ module sdram_snes
     input      [1:0]  rv_ds,
     output reg [15:0] rv_dout,
     input             rv_req,
-    // TinySNES: kept as a port so snestang_top needs no edit, but this
-    // controller is otherwise upstream's.  It reports when a CPU-port read has
-    // registered its word, which only the wait-state machinery reads; that
-    // machinery is unused in the default build, so this is tied low and the
-    // timing of every capture below is SNESTang's.
+    // TinySNES: toggles on the fclk edge that registers a CPU-port read's
+    // word into cpu_port0/1.  snestang_top's rom_ready counts these to tell
+    // the GSU its ROM byte has arrived.  It is the only change to upstream's
+    // timing-relevant logic here, and it moves no other signal.
     output reg        cpu_dout_tog,
     output reg        rv_req_ack,   // ready for new requests. read data available on NEXT mclk
     input             rv_we,
@@ -378,7 +377,10 @@ always @(posedge clk) begin
             // ROM, WRAM, BSRAM and RV
             if (cycle[4] && oe_latch[0]) begin
                 case (port[0])
-                PORT_CPU:   if (cpu_port) cpu_port1 <= dq_in; else cpu_port0 <= dq_in;
+                PORT_CPU: begin
+                    if (cpu_port) cpu_port1 <= dq_in; else cpu_port0 <= dq_in;
+                    cpu_dout_tog <= ~cpu_dout_tog;
+                end
                 PORT_BSRAM: bsram_dout_reg <= ds[0][0] ? dq_in[7:0] : dq_in[15:8];
                 PORT_RV:    rv_dout <= dq_in;
                 default: ;

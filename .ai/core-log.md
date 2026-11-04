@@ -27,3 +27,45 @@ None.
 - User Test: N/A
 
 ---
+
+## 2 COMMIT Unreleased 2026-11-04T12:36:23-07:00
+
+#### Coming From:
+
+Unreleased 101160a
+
+#### Purpose:
+
+Replace the GSU's blind ROM wait count with a ready signal from the cartridge port so each GSU ROM read waits for its own SDRAM word.
+
+#### Outcome:
+
+`GSU.v` gains a `ROM_RDY` input, plumbed through `GSUMap.v` and `main.v` from `rom_ready` in `snestang_top.v`; its LOAD, FETCH and CACHE states latch `ROM_DI` only once a minimum count, now 1 at both speeds and still overridable by the debug knob, has run out and `ROM_RDY` is high, and the 3-or-9 `CLS`/`TURBO` split is gone. The work found that the controller's arrival toggle `cpu_dout_tog` in `sdram_cl2_2ch.v` was never driven, so it now toggles on the `cycle[4]` edge that registers a CPU-port read, the only change to that controller. Because the controller acknowledges at `cycle[1]` but registers the word at `cycle[4]`, the port can post the next address before the previous word's arrival is seen, so `rom_ready` counts posted reads not yet arrived in `rom_rd_out` and is high only when that count is zero, `rom_addr_sd` equals `rom_addr` and no load is running; nothing times this out, so a lost toggle would hold the GSU in a wait state. Two further defects were fixed: `GSU.v` drove `PBR:R15` onto the ROM bus in `ROMST_CACHE_DONE`, costing a wasted SDRAM read between cache bytes, and now keeps the fill address there, and `sd_wait_age` now restarts on every post so the debug ROM timeout counter times single reads during bursts. `tools/sim/gsu_tb.sv` models `ROM_RDY` from a stable address for the configured latency, with `+nordy` for the old behaviour; the other benches and reference-GSU wrappers gained the port, `tools/sim/run_board_sim.sh` gained `--arg`, `tools/sim/test_loader.sv` holds 4 MiB so Yoshi's Island loads, and `tools/tinysnes_dbg.py` describes the new knob default. In 300M-cycle bench runs at latency 4 against the old counts of 3 and 9, GSU busy time per job fell about 10% in both Star Fox and Yoshi's Island, Star Fox completing 1723 jobs to 1648 in the same 843 frames and Yoshi's Island ending on an identical frame; the board-level bench with the real controller ran Star Fox with all 1024 traced ROM latches and cache opcodes matching the cartridge and no ROM timeouts, while Yoshi's Island never started its GSU there with or without this change, a bench limitation. The seed-2 build `build/rdy1` passed timing with dbg.clk at 30.6 MHz against 21.5, fclk 255.3 against 64.5, hclk 131.3 against 74.25 and the GSU cache clock 172.3 against 65, passed the clock-edge check with no driver conflicts, and `build/rdy1/tinysnes.bin`, SHA-256 `5f205939fabf59470f17ea94e2b6384c0dc25290ec3ef402f65dc9caf0a15191`, was deployed as `/root/cores/console138k/tinysnes-dbg.bin`. The user passed Star Fox, Yoshi's Island with perfect graphics, Stunt Race FX, Dirt Trax FX and Super Mario Kart on the board, the debug endpoint showing no ROM timeouts and no GSU stuck waiting; the remaining faults are audio only, with small pops in every game that grow with sound complexity, Dirt Trax FX's simple intro music sounding clean, and Yoshi's Island's chimes and coins sounding like a buzzing "brrrt", its coin sounds lagging and some channels missing. The core-syntax audit re-read `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, and validated this entry as entry 2 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, permitted Status values, no self-referencing hash and a count of two against the 100-entry limit.
+
+#### Next Steps:
+
+Investigate the general audio path, starting with the pops that grow with sound complexity and Yoshi's Island's buzzing chimes and coins, lagging coin sounds and missing channels, which persist after this change and so do not come from the GSU's ROM timing. Optional GSU follow-ups are reusing the 16-bit word already fetched when the next ROM byte shares it, which needs the user's approval, and finding why Yoshi's Island never starts its GSU in the board-level bench. Smaller open items are Yoshi's Island's minor glitches, its black text box, the GSU stall once seen at `09:FEFE` and clearing the debug counters on cartridge load. Larger parked items are the on-screen menu, save persistence to the card, the ExHiROM decode in `smc_parser.v` and the missing coprocessors.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- fpga/snes/src/chip/GSU/GSUMap.v
+- fpga/snes/src/main.v
+- fpga/snes/src/sdram_cl2_2ch.v
+- fpga/snes/src/snestang_top.v
+- tools/sim/gsu_ref/gsu_port_wrap.v
+- tools/sim/gsu_ref/gsu_ref_wrap.v
+- tools/sim/gsu_tb.sv
+- tools/sim/maptype_tb.sv
+- tools/sim/run_board_sim.sh
+- tools/sim/test_loader.sv
+- tools/tests/main_hde_tb.sv
+- tools/tinysnes_dbg.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
