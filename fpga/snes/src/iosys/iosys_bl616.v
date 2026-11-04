@@ -47,6 +47,16 @@ module iosys_bl616 #(
     
     output reg [31:0] core_config,
 
+    // TinySNES: debug register endpoint, frame type 0x10, served by
+    // tinysnes_dbg.v.  debug_address is set from the request before the CRC
+    // arrives, so debug_rdata has six character times (~600 clk) to settle;
+    // debug_valid pulses only for a request whose CRC and version check.
+    output reg [31:0] debug_address,
+    output reg [31:0] debug_wdata,
+    output reg        debug_valid,
+    output reg        debug_write,
+    input      [31:0] debug_rdata,
+
     // UART interface
     input  uart_rx,
     output uart_tx
@@ -61,6 +71,34 @@ localparam [8*STR_LEN-1:0] CONF_STR = "Tangcores;-;O12,OSD key,Right+Select,Sele
 // Remove SPI parameters and add UART parameters
 localparam CLK_FREQ = FREQ;
 localparam BAUD_RATE = 2_000_000;
+
+// The extended request TinyTang's firmware sends for `fpgar` (fpga_ext_read32
+// in ports/bl616/tang_fpga_uart.c), and the same endpoint Tang-Phosphor serves:
+//
+//   request  0x10 version opcode seq[15:0] addr[31:0] value[31:0] crc[15:0]
+//   reply    0x10 version opcode|0x80 status seq[15:0] addr[31:0] value[31:0] crc[15:0]
+//
+// CRC-16/CCITT-FALSE (poly 0x1021, init 0xffff) over the type byte and the
+// twelve bytes before the CRC.  Opcode 0 is capabilities, 1 read32, 2 write32.
+// Status 0 ok, 1 bad version, 2 bad opcode, 3 bad CRC.
+localparam [7:0] EXT_COMMAND = 8'h10;
+localparam [7:0] EXT_VERSION = 8'h01;
+localparam [7:0] EXT_CAPABILITIES = 8'h00;
+localparam [7:0] EXT_READ32 = 8'h01;
+localparam [7:0] EXT_WRITE32 = 8'h02;
+
+function [15:0] crc16_byte;
+    input [15:0] crc;
+    input [7:0] data;
+    integer bit_index;
+    reg [15:0] value;
+    begin
+        value = crc ^ {data, 8'b0};
+        for (bit_index = 0; bit_index < 8; bit_index = bit_index + 1)
+            value = value[15] ? (value << 1) ^ 16'h1021 : value << 1;
+        crc16_byte = value;
+    end
+endfunction
 
 // The on-screen display is removed from this build.
 //
@@ -156,8 +194,22 @@ reg [7:0] cursor_x;
 reg [7:0] cursor_y;
 
 reg [7:0] response_type;
-reg response_req;
-reg response_ack;
+reg response_req = 1'b0;          // power-up values, which the FPGA gives them anyway;
+reg response_ack = 1'b0;          // explicit so a simulator does not start at X
+
+// Extended request fields and its reply.
+reg [7:0]  ext_version;
+reg [7:0]  ext_opcode;
+reg [15:0] ext_sequence;
+reg [31:0] ext_address;
+reg [31:0] ext_value;
+reg [15:0] ext_crc;
+reg [7:0]  ext_crc_hi;
+reg [7:0]  response_opcode;
+reg [7:0]  response_status;
+reg [15:0] response_sequence;
+reg [31:0] response_address;
+reg [31:0] response_data;
 
 // mgmt_* multiplex
 reg mgmt_rx;
@@ -192,6 +244,7 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // 0x0b addr[15:0] data[15:0] write to disk management interface (mgmt_address and mgmt_writedata)
 // 0x0c <scancode>            send PS/2 scancode (len specified by frame header)
 // 0x0d <string>              debug printf. core ignores this.
+// 0x10 <extended request>    TinySNES: debug register read/write with CRC-16
 //
 // Response payloads from FPGA to BL616:
 // 0x01 core_id[7:0]          core ID
@@ -199,6 +252,7 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // 0x03 joy1[15:0] joy2[15:0] every 20ms, send DS2/SNES joypad state to BL616
 // 0x04 lba[15:0] <data_512>  write a sector to disk
 // 0x05 lba[15:0]             read a sector from disk (followed by command 0x0a)
+// 0x10 <extended response>   TinySNES: debug register reply with CRC-16
 
 // UART RX: command processing
 always @(posedge clk) begin
@@ -223,6 +277,8 @@ always @(posedge clk) begin
         fdd_read_finish <= 0;
         mgmt_rx <= 0;
         kbd_data_valid <= 0;
+        debug_valid <= 0;
+        debug_write <= 0;
 
         case (recv_state)
 
@@ -245,6 +301,7 @@ always @(posedge clk) begin
 
             RECV_CMD: if (rx_valid) begin
                 cmd_reg <= rx_data;
+                ext_crc <= crc16_byte(16'hffff, rx_data);
                 if (rx_data == 1 || rx_data == 2) 
                     recv_state <= RECV_RESPONSE_REQ;    // request sending core id / config string
                 else if (len_reg > 1)
@@ -332,6 +389,60 @@ always @(posedge clk) begin
                         kbd_data <= rx_data;
                         kbd_data_valid <= 1;
                     end
+                    EXT_COMMAND: begin
+                        if (data_cnt < 12)
+                            ext_crc <= crc16_byte(ext_crc, rx_data);
+                        case (data_cnt)
+                            0: ext_version <= rx_data;
+                            1: ext_opcode <= rx_data;
+                            2: ext_sequence[15:8] <= rx_data;
+                            3: ext_sequence[7:0] <= rx_data;
+                            4: ext_address[31:24] <= rx_data;
+                            5: ext_address[23:16] <= rx_data;
+                            6: ext_address[15:8] <= rx_data;
+                            7: begin
+                                ext_address[7:0] <= rx_data;
+                                debug_address <= {ext_address[31:8], rx_data};
+                            end
+                            8: ext_value[31:24] <= rx_data;
+                            9: ext_value[23:16] <= rx_data;
+                            10: ext_value[15:8] <= rx_data;
+                            11: begin
+                                ext_value[7:0] <= rx_data;
+                                debug_wdata <= {ext_value[31:8], rx_data};
+                            end
+                            12: ext_crc_hi <= rx_data;
+                            13: if (len_reg == 16'd15) begin
+                                response_opcode <= ext_opcode;
+                                response_sequence <= ext_sequence;
+                                response_address <= ext_address;
+                                if (ext_crc != {ext_crc_hi, rx_data}) begin
+                                    response_status <= 8'd3;
+                                    response_data <= 0;
+                                end else if (ext_version != EXT_VERSION) begin
+                                    response_status <= 8'd1;
+                                    response_data <= 0;
+                                end else if (ext_opcode == EXT_CAPABILITIES) begin
+                                    response_status <= 0;
+                                    response_data <= 32'h0000_0007;
+                                end else if (ext_opcode == EXT_READ32) begin
+                                    response_status <= 0;
+                                    response_data <= debug_rdata;
+                                    debug_valid <= 1;
+                                end else if (ext_opcode == EXT_WRITE32) begin
+                                    response_status <= 0;
+                                    response_data <= ext_value;
+                                    debug_valid <= 1;
+                                    debug_write <= 1;
+                                end else begin
+                                    response_status <= 8'd2;
+                                    response_data <= 0;
+                                end
+                                recv_state <= RECV_RESPONSE_REQ;
+                            end
+                            default: ;
+                        endcase
+                    end
                     default: begin
                         // unknown command: consume all data and return
                     end
@@ -340,7 +451,7 @@ always @(posedge clk) begin
 
             RECV_RESPONSE_REQ:                      // request to send config string
                 case (cmd_reg)
-                    1,2: begin                      // 1: core ID, 2: config string
+                    1,2,EXT_COMMAND: begin          // 1: core ID, 2: config string, 0x10: debug reply
                         response_type <= cmd_reg;
                         response_req ^= 1;
                         recv_state <= RECV_RESPONSE_ACK;
@@ -368,13 +479,35 @@ localparam SEND_FDD_READ = 5;
 
 localparam SEND_HEADER = 6;
 localparam SEND_DONE = 7;
+localparam SEND_DEBUG = 8;          // header type byte is EXT_COMMAND, not the state
 
-reg [2:0] send_state, send_state_next;
+reg [3:0] send_state, send_state_next;
 reg [$clog2(STR_LEN+1)-1:0] send_idx;
+reg [15:0] tx_crc;
+reg [7:0] debug_tx_byte;
+always @* begin
+    case (send_idx[3:0])
+        0: debug_tx_byte = EXT_VERSION;
+        1: debug_tx_byte = response_opcode | 8'h80;
+        2: debug_tx_byte = response_status;
+        3: debug_tx_byte = response_sequence[15:8];
+        4: debug_tx_byte = response_sequence[7:0];
+        5: debug_tx_byte = response_address[31:24];
+        6: debug_tx_byte = response_address[23:16];
+        7: debug_tx_byte = response_address[15:8];
+        8: debug_tx_byte = response_address[7:0];
+        9: debug_tx_byte = response_data[31:24];
+        10: debug_tx_byte = response_data[23:16];
+        11: debug_tx_byte = response_data[15:8];
+        12: debug_tx_byte = response_data[7:0];
+        13: debug_tx_byte = tx_crc[15:8];
+        default: debug_tx_byte = tx_crc[7:0];
+    endcase
+end
 localparam JOY_UPDATE_INTERVAL = 50_000_000 / 50; // 20ms interval for 50Hz
 reg [$clog2(JOY_UPDATE_INTERVAL+1)-1:0] joy_timer;
-reg [15:0] joy1_reg;
-reg [15:0] joy2_reg;
+reg [15:0] joy1_reg = 16'd0;
+reg [15:0] joy2_reg = 16'd0;
 reg [15:0] resp_frame_len;
 
 // UART TX: command responses, joystick updates and FDD requests
@@ -413,7 +546,11 @@ always @(posedge clk) begin
                     mgmt_address_tx <= 16'hf200;    // read {drive, sector}
                     resp_frame_len <= 3;
                 end else if (response_req != response_ack) begin
-                    if (response_type == 2) begin
+                    if (response_type == EXT_COMMAND) begin
+                        send_state_next <= SEND_DEBUG;
+                        send_state <= SEND_HEADER;
+                        resp_frame_len <= 16;
+                    end else if (response_type == 2) begin
                         send_state_next <= SEND_CONFIG_STRING;
                         send_state <= SEND_HEADER;
                         resp_frame_len <= STR_LEN + 1;
@@ -434,12 +571,30 @@ always @(posedge clk) begin
                         1: tx_data <= resp_frame_len[15:8];
                         2: tx_data <= resp_frame_len[7:0];
                         3: begin
-                            tx_data <= send_state_next;
+                            tx_data <= send_state_next == SEND_DEBUG ? EXT_COMMAND
+                                                                     : {4'b0, send_state_next};
+                            tx_crc <= crc16_byte(16'hffff, EXT_COMMAND);
                             send_state <= send_state_next;
                             send_idx <= 0;
                         end
                         default: ;
                     endcase
+                end
+            end
+
+            // The reply CRC is folded one byte per transmitted byte rather than
+            // computed over all thirteen at once, so it adds no long XOR path.
+            SEND_DEBUG: begin
+                if (tx_ready && ~tx_valid) begin
+                    tx_data <= debug_tx_byte;
+                    if (send_idx <= 12)
+                        tx_crc <= crc16_byte(tx_crc, debug_tx_byte);
+                    tx_valid <= 1;
+                    send_idx <= send_idx + 1;
+                    if (send_idx == 14) begin
+                        send_state <= SEND_IDLE;
+                        response_ack <= response_req;
+                    end
                 end
             end
 
@@ -475,10 +630,11 @@ always @(posedge clk) begin
                     endcase
                     tx_valid <= 1;
                     send_idx <= send_idx + 1;
-                    if (send_idx == 3) begin
+                    // TinySNES: no response_ack here.  A joypad frame is not
+                    // a reply, and acking on it dropped whatever reply was
+                    // pending when a button changed -- a debug read included.
+                    if (send_idx == 3)
                         send_state <= SEND_IDLE;
-                        response_ack <= response_req;
-                    end
                 end
             end
 

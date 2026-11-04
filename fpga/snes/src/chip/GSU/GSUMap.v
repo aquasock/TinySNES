@@ -65,7 +65,13 @@ module GSUMap(
     output [7:0]  DBG_CF_B3,
     output [7:0]  DBG_FIRST_OP,
     output        DBG_CACHE_EN,
-    output        DBG_FETCH_OP_SEEN
+    output        DBG_FETCH_OP_SEEN,
+    // Debug endpoint taps; layouts are documented at GSU.v's port list.
+    output [23:0] DBG_PC,
+    output [34:0] DBG_RL,
+    output [34:0] DBG_OP,
+    output [32:0] DBG_MM,
+    input  [3:0]  DBG_ROM_CYCLES
 );
 
 wire [20:0] ROM_A;
@@ -102,7 +108,9 @@ GSU GSU(
     .DBG_CF_B2(DBG_CF_B2), .DBG_CF_B3(DBG_CF_B3),
     .DBG_FIRST_OP(DBG_FIRST_OP),
     .DBG_CACHE_EN(DBG_CACHE_EN),
-    .DBG_FETCH_OP_SEEN(DBG_FETCH_OP_SEEN)
+    .DBG_FETCH_OP_SEEN(DBG_FETCH_OP_SEEN),
+    .DBG_PC(DBG_PC), .DBG_RL(DBG_RL), .DBG_OP(DBG_OP), .DBG_MM(DBG_MM),
+    .DBG_ROM_CYCLES(DBG_ROM_CYCLES)
 );
 
 assign ROM_ADDR = ({2'b00,ROM_A}) & ROM_MASK[22:0];

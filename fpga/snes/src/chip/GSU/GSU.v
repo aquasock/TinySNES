@@ -89,7 +89,23 @@ module GSU(
     // it is driving at the same edge the sampler above captures.  Without an
     // independent view the sampler can only be checked against itself.
     output        DBG_CACHE_EN,
-    output        DBG_FETCH_OP_SEEN
+    output        DBG_FETCH_OP_SEEN,
+    // TinySNES: taps for the board's debug register endpoint (tinysnes_dbg.v).
+    // Each event bus carries its valid bit on top and is sampled by the trace
+    // on the same posedge CLK the GSU itself acts on.
+    //   DBG_PC  {PBR, R15}
+    //   DBG_RL  ROM latch:   {valid, kind[1:0], 3'b0, ROM_A[20:0], ROM_DI}
+    //           kind 1 LOAD (GETB/R14), 2 FETCH (code outside cache), 3 CACHE fill
+    //   DBG_OP  opcode:      {valid, src[1:0], PBR, R15, byte}
+    //           src 1 cache, 2 ROM fetch, 3 RAM fetch
+    //   DBG_MM  S-CPU MMIO:  {valid, write, 7'b0, ADDR[15:0], value}
+    //           value is DI for a write and DO for a read
+    // DBG_ROM_CYCLES overrides ROM_CYCLES when it is 1..13; 0 keeps the built-in 9.
+    output [23:0] DBG_PC,
+    output [34:0] DBG_RL,
+    output [34:0] DBG_OP,
+    output [32:0] DBG_MM,
+    input  [3:0]  DBG_ROM_CYCLES
 );
 
 // CPU Registers
@@ -447,8 +463,20 @@ end
 
 // GSU uses both positive and negative edges because of high frequency (10.7Mhz) 
 // of original design
+// TinySNES: the reset is there for the open flow, not for function.  On GW5A
+// yosys keeps only a plain negedge flop as a true DFFN; every negedge flop
+// with an enable or reset becomes a posedge DFFRE behind a LUT1 clock
+// inverter, which reaches the flops on fabric routing a few ns late.  Without
+// the reset EN was the one true DFFN, so the ROM/RAM PEND and WAIT flops
+// sampled it on a later edge than it changed on, nextpnr did not time that
+// crossing, and on the board WAIT set without PEND: the GSU stopped on its
+// first ROM load (Star Fox, R14 at 01:b30d).  With the reset EN shares the
+// inverted clock.  tools/build_tinysnes.sh refuses a netlist that mixes them.
 always @(negedge CLK) begin
-    EN <= ENABLE & FLAG_GO & CLK_CE;
+    if (~RST_N)
+        EN <= 1'b0;
+    else
+        EN <= ENABLE & FLAG_GO & CLK_CE;
 end
 
 assign CPU_EN = EN &  ~ROM_LOAD_WAIT &  ~ROM_FETCH_WAIT &  ~ROM_CACHE_WAIT &  
@@ -1002,7 +1030,12 @@ always @(posedge CLK) begin
             // +lat=0..2 and none at all at +lat=3..4, which is exactly the
             // signature the board showed.  5 is the largest value whose
             // +2 for the LOAD path still fits ROM_ACCESS_CNT's three bits.
-            if (TURBO) 
+            // DBG_ROM_CYCLES is a runtime override from the debug endpoint.
+            // 13 is the ceiling because the LOAD path counts ROM_CYCLES + 2 in
+            // ROM_ACCESS_CNT's four bits.
+            if (DBG_ROM_CYCLES != 4'd0 && DBG_ROM_CYCLES <= 4'd13)
+                ROM_CYCLES <= DBG_ROM_CYCLES;
+            else if (TURBO) 
                 ROM_CYCLES <= 4'd9;
             else if (SPEED == 1'b0) 
                 ROM_CYCLES <= 4'd9;
@@ -1737,5 +1770,24 @@ end
 assign DBG_FIRST_OP = first_op_r;
 assign DBG_CACHE_EN = ROM_CACHE_EN;
 assign DBG_FETCH_OP_SEEN = first_op_seen_r;
+
+// Debug endpoint taps.  Each condition is the one the state machine above acts
+// on at this posedge, so the payload is the byte the GSU takes, not a later view.
+assign DBG_PC = {PBR, R[15]};
+
+wire       dbg_rl_hit = EN && RON && ROM_ACCESS_CNT == 4'd0 &&
+                        (ROMST == ROMST_LOAD || ROMST == ROMST_FETCH || ROMST == ROMST_CACHE);
+wire [1:0] dbg_rl_kind = ROMST == ROMST_LOAD  ? 2'd1 :
+                         ROMST == ROMST_FETCH ? 2'd2 : 2'd3;
+assign DBG_RL = {dbg_rl_hit, dbg_rl_kind, 3'b000, ROM_A, ROM_DI};
+
+wire       dbg_op_hit = CPU_EN && MC.LAST_CYCLE && OP.OP != OP_STOP &&
+                        (IN_CACHE || ROM_FETCH_EN || RAM_FETCH_EN);
+wire [1:0] dbg_op_src = IN_CACHE ? 2'd1 : ROM_FETCH_EN ? 2'd2 : 2'd3;
+wire [7:0] dbg_op_byte = IN_CACHE ? BRAM_CACHE_Q_A : ROM_FETCH_EN ? ROM_BUF : RAM_BUF;
+assign DBG_OP = {dbg_op_hit, dbg_op_src, PBR, R[15], dbg_op_byte};
+
+wire       dbg_mm_hit = (MMIO_SEL | MMIO_REG_SEL | MMIO_CACHE_SEL) & SYSCLKF_CE & (~WR_N | ~RD_N);
+assign DBG_MM = {dbg_mm_hit, ~WR_N, 7'b0, ADDR[15:0], ~WR_N ? DI : DO};
 
 endmodule

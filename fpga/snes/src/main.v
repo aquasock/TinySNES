@@ -89,6 +89,12 @@ module main (
 	output [7:0]      GSU_DBG_FIRST_OP,
 	output            GSU_DBG_CACHE_EN,
 	output            GSU_DBG_FETCH_OP_SEEN,
+	// Debug endpoint taps; layouts are documented at GSU.v's port list.
+	output [23:0]     GSU_DBG_PC,
+	output [34:0]     GSU_DBG_RL,
+	output [34:0]     GSU_DBG_OP,
+	output [32:0]     GSU_DBG_MM,
+	input  [3:0]      GSU_DBG_ROM_CYCLES,
 
 	input             BLEND,
 	input             PAL,
@@ -577,7 +583,9 @@ GSUMap GSUMap
 	.DBG_CF_B2(GSU_DBG_CF_B2), .DBG_CF_B3(GSU_DBG_CF_B3),
 	.DBG_FIRST_OP(GSU_DBG_FIRST_OP),
 	.DBG_CACHE_EN(GSU_DBG_CACHE_EN),
-	.DBG_FETCH_OP_SEEN(GSU_DBG_FETCH_OP_SEEN)
+	.DBG_FETCH_OP_SEEN(GSU_DBG_FETCH_OP_SEEN),
+	.DBG_PC(GSU_DBG_PC), .DBG_RL(GSU_DBG_RL), .DBG_OP(GSU_DBG_OP), .DBG_MM(GSU_DBG_MM),
+	.DBG_ROM_CYCLES(GSU_DBG_ROM_CYCLES)
 );
 end else begin
 assign MAP_ACTIVE[2] = 0;
@@ -610,6 +618,10 @@ assign GSU_DBG_CF_B3 = 8'h00;
 assign GSU_DBG_FIRST_OP = 8'h00;
 assign GSU_DBG_CACHE_EN = 1'b0;
 assign GSU_DBG_FETCH_OP_SEEN = 1'b0;
+assign GSU_DBG_PC = 24'd0;
+assign GSU_DBG_RL = 35'd0;
+assign GSU_DBG_OP = 35'd0;
+assign GSU_DBG_MM = 33'd0;
 end
 endgenerate
 

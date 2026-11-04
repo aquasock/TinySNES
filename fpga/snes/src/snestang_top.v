@@ -218,7 +218,7 @@ wire        WRAM_CE_N;
 wire        WRAM_OE_N;
 wire        WRAM_RD_N;
 wire        WRAM_WE_N;
-wire  [7:0] WRAM_SD_Q = WRAM_ADDR[0] ? cpu_port1[15:8] : cpu_port1[7:0];
+wire  [7:0] WRAM_SD_Q;                  // block RAM, see "WRAM is block RAM"
 wire  [7:0] WRAM_Q;
 wire  [7:0] WRAM_D;
 wire        wram_rd = ~WRAM_CE_N & ~WRAM_RD_N;
@@ -229,7 +229,7 @@ wire        BSRAM_CE_N;
 wire        BSRAM_OE_N;
 wire        BSRAM_WE_N;
 wire        BSRAM_RD_N;
-wire  [7:0] BSRAM_Q = bsram_dout;
+wire  [7:0] BSRAM_Q;              // block RAM, see the BSRAM section below
 wire  [7:0] BSRAM_D;
 
 wire [15:0] VRAM1_ADDR;
@@ -1841,6 +1841,12 @@ parameter USE_GSU=0;
 // parameter USE_GSU=1;
 // `endif
 
+// GSU taps and knob for tinysnes_dbg (see "debug register bank").
+wire [23:0] gsu_dbg_pc;
+wire [34:0] gsu_dbg_rl, gsu_dbg_op;
+wire [32:0] gsu_dbg_mm;
+wire [3:0]  gsu_dbg_rom_cycles;
+
 `ifndef DISABLE_SNES
 main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
     .MCLK(mclk), .RESET_N(resetn & ~loading), .ENABLE(enable),
@@ -1900,7 +1906,9 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
     .GSU_DBG_CF_ADDR(gsu_dbg_cf_addr),
     .GSU_DBG_CF_B0(gsu_dbg_cf_b0), .GSU_DBG_CF_B1(gsu_dbg_cf_b1),
     .GSU_DBG_CF_B2(gsu_dbg_cf_b2), .GSU_DBG_CF_B3(gsu_dbg_cf_b3),
-    .GSU_DBG_FIRST_OP(gsu_dbg_first_op)
+    .GSU_DBG_FIRST_OP(gsu_dbg_first_op),
+    .GSU_DBG_PC(gsu_dbg_pc), .GSU_DBG_RL(gsu_dbg_rl), .GSU_DBG_OP(gsu_dbg_op),
+    .GSU_DBG_MM(gsu_dbg_mm), .GSU_DBG_ROM_CYCLES(gsu_dbg_rom_cycles)
 );
 `endif
 
@@ -1918,35 +1926,68 @@ reg         cpu_we;
 wire [22:0] rom_addr = loading ? loader_addr : ROM_ADDR[22:0];
 reg [22:0]  rom_addr_sd;
 
-reg [16:0]  wram_addr_sd;
-reg         wram_wr_r, wram_rd_r;
+reg         wram_wr_r;
 
-reg         bsram_req, bsram_we;
-reg [19:0]  bsram_addr;
-reg [7:0]   bsram_din;
-wire [7:0]  bsram_dout;
-// TinySNES: a BSRAM read is a read whichever master asked for it.
+// TinySNES: WRAM is block RAM, not SDRAM.
 //
-// This was `~BSRAM_CE_N & (~BSRAM_RD_N || rom_type[7:4] == 4'hC)`, and
-// BSRAM_RD_N is CPURD_CYC_N -- the 65816's own read strobe, `~P65_R_WN` out of
-// cpu.v.  So a GSU-initiated BSRAM read only reached the SDRAM controller when
-// the CPU happened to be reading on that same clock, and returned stale data
-// otherwise.  BSRAM is the GSU's only writable memory -- its work RAM, pixel
-// cache and plot buffer all live there -- which is why writes always landed
-// (`bsram_wr` uses the port's own strobe) while reads silently depended on what
-// the 65816 was doing.
+// It shared the CPU port of sdram_cl2_2ch with the cartridge, one req/ack
+// toggle and one address register for both, with the WRAM branch of the
+// request logic written after the ROM branch so it won a same-mclk collision.
+// Upstream never collides: the 65816 has one bus, so a ROM read and a WRAM read
+// are never pending together.  The GSU breaks that.  While it runs, the CPU
+// executes from WRAM and the GSU fetches from ROM on its own bus through
+// GSUMap, and the two change address on the same mclk often enough.  board_tb
+// (core-log entry 88) caught GSU job 1's first fetch, 01:b301, posted on the
+// same mclk as the CPU's WRAM read of 7e:4efd: the WRAM branch took cpu_addr,
+// cpu_port and the toggle, rom_addr_sd still took b301, so the ROM read was
+// never issued.  GSU.v latches ROM_DI after a fixed ROM_CYCLES with no ready
+// input, so it took the stale word on cpu_port0 (05 b0, left by the CPU's read
+// of 00:301e) as a BRA and went on to execute garbage until it hung in a cache
+// fill.  Two toggles inside the controller's accept window also collapse into
+// none, which is the CPU handshake loss board_tb has always counted.
 //
-// `~BSRAM_OE_N` is the port's own output-enable: GSUMap drives it from the
-// GSU's read strobe and DSP_LHRomMap drives it from the CPU's, so it is low for
-// any read regardless of master.  The `rom_type[7:4] == 4'hC` term is for OBC1,
-// whose mapper reads through this window without driving OE, and is kept.
+// With WRAM here the CPU port carries only the cartridge bus, which GSUMap
+// already muxes between the CPU and the GSU, so there is one requester again.
+// A write lands on the rising edge of wram_wr with that edge's address and
+// data, which is what the SDRAM path did; a read answers on the next mclk,
+// earlier than SDRAM ever did.
 //
-// No bench in this project can show this: the simulations model BSRAM as a
-// plain array that always answers, which is the same blind spot as an undriven
-// wire -- the model is correct and the bitstream is not.
-wire        bsram_rd = ~BSRAM_CE_N & (~BSRAM_OE_N | rom_type[7:4] == 4'hC);
+// No debug peek port here: yosys maps a second read port beside the write by
+// duplicating the array (64 more blocks each for WRAM and BSRAM, 340/340).
+reg  [7:0]  wram_mem [0:131071];
+reg  [7:0]  wram_dout;
+always @(posedge mclk) begin
+    wram_wr_r <= wram_wr;
+    if (wram_wr & ~wram_wr_r) wram_mem[WRAM_ADDR] <= WRAM_D;
+    wram_dout <= wram_mem[WRAM_ADDR];
+end
+assign      WRAM_SD_Q = wram_dout;
+
+// TinySNES: BSRAM is block RAM, not SDRAM.
+//
+// It used to be a port of sdram_cl2_2ch behind a req/ack toggle, which suits
+// the 65816 (it reads SRAM late in a slow cycle) but not the GSU, whose work
+// RAM, pixel cache and plot buffer live here.  GSU.v waits a fixed RAM_CYCLES
+// (1 or 3 GSU clocks) and then takes BSRAM_Q, and has no stall input, while
+// the SDRAM port served BSRAM behind the CPU at a variable latency with its
+// ack unconnected.  board_tb (core-log entry 73) measured 72% of BSRAM
+// requests lost to back-to-back toggles collapsing; reads that survived could
+// return the previous word, and `bsram_we` was sampled live when the slot came
+// up, so a late write could turn into a read.  The GSU then read garbage from
+// its own work RAM, which is the one-job-then-STOP the board probes showed.
+//
+// A synchronous array answers on the next mclk.  That is exactly gsu_tb's
+// BSRAM model at +bwlat=0, the bench where Star Fox renders.  128 KB covers
+// the GSU's 64 KB window and ordinary cartridge SRAM; higher address bits
+// wrap.
 wire        bsram_wr = ~BSRAM_CE_N & ~BSRAM_WE_N;
-reg         bsram_rd_r, bsram_wr_r;
+reg  [7:0]  bsram_mem [0:131071];
+reg  [7:0]  bsram_dout;
+always @(posedge mclk) begin
+    if (bsram_wr) bsram_mem[BSRAM_ADDR[16:0]] <= BSRAM_D;
+    bsram_dout <= bsram_mem[BSRAM_ADDR[16:0]];
+end
+assign      BSRAM_Q = bsram_dout;
 
 wire        aram_rd = ~ARAM_CE_N & ~ARAM_OE_N;
 wire        aram_wr = ~ARAM_CE_N & ~ARAM_WE_N;
@@ -2021,8 +2062,13 @@ always @(posedge mclk) begin
         sd_dout_hold <= sd_dout_arrived & sd_rd_pending;
         
         // ROM read and load
+        // TinySNES: a read waits for cpu_port_idle.  The controller takes a
+        // request when cpu_req differs from its ack, so a second toggle before
+        // it has taken the first cancels both and neither address is read.
+        // rom_addr_sd is left alone until the read is posted, so the changed
+        // address is posted as soon as the port is free.
         if (loading && loader_do_valid && header_finished && loader_addr[0] 
-            || ~loading && ~ROM_CE_N && rom_addr_sd != rom_addr) begin
+            || ~loading && ~ROM_CE_N && rom_addr_sd != rom_addr && cpu_port_idle) begin
             rom_addr_sd <= rom_addr;
             cpu_addr <= rom_addr;
             cpu_req <= ~cpu_req;
@@ -2033,26 +2079,7 @@ always @(posedge mclk) begin
             sd_rd_pending <= ~loading;              // a cartridge access is a read
         end
         
-        // WRAM read/write
-        wram_rd_r <= wram_rd; wram_wr_r <= wram_wr;
-        if ((wram_rd && WRAM_ADDR[16:1] != wram_addr_sd[16:1]) || (wram_rd & ~wram_rd_r) || (wram_wr & ~wram_wr_r)) begin
-            wram_addr_sd <= WRAM_ADDR;
-            cpu_req <= ~cpu_req;
-            cpu_addr <= {6'b111_111, WRAM_ADDR[16:0]};  // 7E,7F:0000-FFFF, total 128KB
-            cpu_we <= wram_wr;
-            cpu_ds <= {WRAM_ADDR[0], ~WRAM_ADDR[0]};
-            cpu_din <= {WRAM_D, WRAM_D};        
-            cpu_port <= 1;
-            if (~wram_wr) sd_rd_pending <= 1'b1;    // reads wait for the data; writes do not
-        end 
-
-        // BSRAM read/write
-        bsram_rd_r <= bsram_rd; bsram_wr_r <= bsram_wr;
-        if (bsram_rd && BSRAM_ADDR != bsram_addr || (bsram_wr & ~bsram_wr_r) || (bsram_rd & ~bsram_rd_r)) begin
-            bsram_addr <= BSRAM_ADDR;
-            bsram_req <= ~bsram_req;
-            bsram_din <= BSRAM_D;
-        end
+        // WRAM is block RAM; see "WRAM is block RAM".
 
         // ARAM read/write
         aram_rd_r <= aram_rd; aram_wr_r <= aram_wr;
@@ -2077,6 +2104,44 @@ always @(posedge mclk) begin
             sd_wait_age <= sd_wait_age + 6'd1;
     end
 end
+
+// ------------------------------------------------------ debug register bank
+// tinysnes_dbg answers the BL616's frame 0x10 through iosys: live GSU and
+// machine state, three trace buffers (GSU ROM latches, GSU opcodes, S-CPU
+// accesses to the GSU's registers), and a runtime GSU ROM_CYCLES knob.  The
+// BSRAM/WRAM peek inputs are tied off; see "No debug peek port here".
+// tools/tinysnes_dbg.py drives it.  The bus is idle in
+// the board bench, where board_tb reads the trace buffers directly.
+wire        rom_want   = ~loading && ~ROM_CE_N && rom_addr_sd != rom_addr;
+reg         rom_defer_r = 1'b0, bsram_wr_r = 1'b0, vblankn_r = 1'b1;
+always @(posedge mclk) begin
+    rom_defer_r <= rom_want & ~cpu_port_idle;
+    bsram_wr_r  <= bsram_wr;
+    vblankn_r   <= vblankn;
+end
+
+wire [31:0] dbg_bus_addr, dbg_bus_wdata, dbg_bus_rdata;
+wire        dbg_bus_valid, dbg_bus_write;
+
+tinysnes_dbg #(.TRACE_AW(10)) dbg (
+    .clk(mclk), .resetn(resetn),
+    .bus_addr(dbg_bus_addr), .bus_wdata(dbg_bus_wdata),
+    .bus_valid(dbg_bus_valid), .bus_write(dbg_bus_write), .bus_rdata(dbg_bus_rdata),
+    .status({4'b0, USE_GSU != 0, enable, loaded, loading}),
+    .ev_frame(vblankn_r & ~vblankn),
+    .ev_bsram_wr(bsram_wr & ~bsram_wr_r),
+    .ev_rom_req(rom_want & cpu_port_idle),
+    .ev_rom_defer(rom_want & ~cpu_port_idle & ~rom_defer_r),
+    .ev_rom_timeout(sd_rd_pending && sd_wait_age == 6'd63),
+    .gsu_go_cnt(gsu_dbg_go_cnt), .gsu_sfr(gsu_dbg_sfr), .gsu_flag_go(gsu_dbg_flag_go),
+    .gsu_pc(gsu_dbg_pc), .gsu_state_seen(gsu_dbg_state_seen),
+    .gsu_romst_seen(gsu_dbg_romst_seen), .gsu_romst(gsu_dbg_romst), .gsu_en(gsu_dbg_en),
+    .gsu_in_cache(gsu_dbg_in_cache), .gsu_rom_cache_wait(gsu_dbg_rom_cache_wait),
+    .gsu_rom_load_wait(gsu_dbg_rom_load_wait), .gsu_cache_any(gsu_dbg_cache_any),
+    .gsu_rl(gsu_dbg_rl), .gsu_op(gsu_dbg_op), .gsu_mm(gsu_dbg_mm),
+    .gsu_rom_cycles(gsu_dbg_rom_cycles),
+    .peek_addr(), .bsram_q(8'd0), .wram_q(8'd0)
+);
 
 `ifdef TINYSNES_CART_WAIT
 assign mem_wait = (sd_rd_pending | sd_dout_hold) & enable;
@@ -2667,8 +2732,9 @@ sdram_snes sdram(
 `endif
 
     // BSRAM accesses
-    .bsram_addr(bsram_addr), .bsram_dout(bsram_dout), .bsram_din(bsram_din),
-    .bsram_req(bsram_req), .bsram_req_ack(), .bsram_we(bsram_wr),
+    // TinySNES: BSRAM is block RAM in this file; the port is tied off.
+    .bsram_addr(20'd0), .bsram_dout(), .bsram_din(8'd0),
+    .bsram_req(1'b0), .bsram_req_ack(), .bsram_we(1'b0),
 
     // ARAM accesses
 `ifdef TINYSNES_ARAM_TEST
@@ -3233,10 +3299,17 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
     .overlay_color(overlay_color),
     .joy1(joy1_btns_ds2 | joy1_btns_snes | joy1_usb), .joy2(joy2_btns_ds2 | joy2_btns_snes | joy2_usb), .hid1(hid1), .hid2(hid2),
     .uart_tx(UART_TXD), .uart_rx(UART_RXD),
-    .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid)
+    .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid),
+    .debug_address(dbg_bus_addr), .debug_wdata(dbg_bus_wdata),
+    .debug_valid(dbg_bus_valid), .debug_write(dbg_bus_write), .debug_rdata(dbg_bus_rdata)
 );
 
 `else       // VERILATOR
+
+assign dbg_bus_addr  = 32'd0;
+assign dbg_bus_wdata = 32'd0;
+assign dbg_bus_valid = 1'b0;
+assign dbg_bus_write = 1'b0;
 
 // test loader with embedded rom
 test_loader test_loader (

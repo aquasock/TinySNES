@@ -410,7 +410,9 @@ module gsu_tb (
     .GSU_DBG_CF_B2(GSU_CF_B2), .GSU_DBG_CF_B3(GSU_CF_B3),
     .GSU_DBG_FIRST_OP(GSU_FIRST_OP),
     .GSU_DBG_CACHE_EN(GSU_CACHE_EN),
-    .GSU_DBG_FETCH_OP_SEEN(GSU_FETCH_OP_SEEN)
+    .GSU_DBG_FETCH_OP_SEEN(GSU_FETCH_OP_SEEN),
+    .GSU_DBG_PC(), .GSU_DBG_RL(), .GSU_DBG_OP(), .GSU_DBG_MM(),
+    .GSU_DBG_ROM_CYCLES(4'd0)
   );
 
   // ------------------------------------------------------------- reporting

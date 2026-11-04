@@ -118,9 +118,9 @@ module board_tb;
     cyc <= cyc + 1;
     if (cyc == max_cycles) begin
       $display("board_tb: reached the run bound at %0d sys_clk cycles", cyc);
-      $display("board_tb: handshakes -- CPU req=%0d ack=%0d (lost %0d) | BSRAM req=%0d ack=%0d (lost %0d) | ARAM req=%0d ack=%0d (lost %0d)",
+      $display("board_tb: handshakes -- CPU req=%0d ack=%0d (lost %0d) | BSRAM (block RAM) writes=%0d | ARAM req=%0d ack=%0d (lost %0d)",
                cpu_req_t, cpu_ack_t, cpu_req_t - cpu_ack_t,
-               bs_req_t,  bs_ack_t,  bs_req_t  - bs_ack_t,
+               bs_wr_t,
                ar_req_t,  ar_ack_t,  ar_req_t  - ar_ack_t);
       $display("board_tb: sdram clk edges=%0d cs_low=%0d cke_low=%0d",
                sdram.n_clk, sdram.n_cs_low, sdram.n_cke_low);
@@ -133,6 +133,36 @@ module board_tb;
       $display("board_tb: sdram commands seen -- activate=%0d read=%0d write=%0d refresh=%0d mrs=%0d",
                sdram.n_act, sdram.n_read, sdram.n_write, sdram.n_ref, sdram.n_mrs);
       $finish;
+    end
+  end
+
+  // +tracedump=base writes tinysnes_dbg's three trace buffers and its
+  // counters in the form tools/tinysnes_dbg.py reads from the board, so
+  // `tinysnes_dbg.py analyze --dump base --rom game.sfc` checks the bench
+  // and the board with the same code.
+  final begin : dbg_dump
+    string base;
+    integer fd;
+    if ($value$plusargs("tracedump=%s", base)) begin
+      $writememh({base, "_rl.hex"}, dut.dbg.trace[0].ram.m);
+      $writememh({base, "_op.hex"}, dut.dbg.trace[1].ram.m);
+      $writememh({base, "_mm.hex"}, dut.dbg.trace[2].ram.m);
+      fd = $fopen({base, "_meta.txt"}, "w");
+      $fdisplay(fd, "ctrl %0d", dut.dbg.ctrl);
+      $fdisplay(fd, "wp %0d %0d %0d", dut.dbg.wp[0], dut.dbg.wp[1], dut.dbg.wp[2]);
+      $fdisplay(fd, "wrapped %0d %0d %0d", dut.dbg.wrapped[0], dut.dbg.wrapped[1], dut.dbg.wrapped[2]);
+      $fdisplay(fd, "full %0d %0d %0d", dut.dbg.full[0], dut.dbg.full[1], dut.dbg.full[2]);
+      $fdisplay(fd, "seen %0d %0d %0d", dut.dbg.seen[0], dut.dbg.seen[1], dut.dbg.seen[2]);
+      $fdisplay(fd, "uptime %0d", dut.dbg.uptime);
+      $fdisplay(fd, "frames %0d", dut.dbg.frames);
+      $fdisplay(fd, "stops %0d", dut.dbg.stops);
+      $fdisplay(fd, "go_time %0d", dut.dbg.go_time);
+      $fdisplay(fd, "bsram_wrs %0d", dut.dbg.bsram_wrs);
+      $fdisplay(fd, "rom_reqs %0d", dut.dbg.rom_reqs);
+      $fdisplay(fd, "rom_defers %0d", dut.dbg.rom_defers);
+      $fdisplay(fd, "rom_timeouts %0d", dut.dbg.rom_timeouts);
+      $fclose(fd);
+      $display("board_tb: trace buffers written to %s_{rl,op,mm}.hex, counters to %s_meta.txt", base, base);
     end
   end
 
@@ -194,17 +224,27 @@ module board_tb;
   // a counter on the ORIGINATING side of a handshake cannot be fooled by a
   // sampling window on the other side.
   integer cpu_req_t  = 0, cpu_ack_t  = 0;
-  integer bs_req_t   = 0, bs_ack_t   = 0;
+  integer bs_wr_t    = 0;
   integer ar_req_t   = 0, ar_ack_t   = 0;
   reg     cpu_req_p  = 1'b0, cpu_ack_p = 1'b0;
-  reg     bs_req_p   = 1'b0, bs_ack_p  = 1'b0;
+  reg     bs_wr_p    = 1'b0;
+  integer ovr_n      = 0;
   reg     ar_req_p   = 1'b0, ar_ack_p  = 1'b0;
 
   always @(posedge sdram_clk) begin
-    if (dut.cpu_req    !== cpu_req_p) begin cpu_req_t = cpu_req_t + 1; cpu_req_p = dut.cpu_req; end
+    if (dut.cpu_req    !== cpu_req_p) begin
+      // A toggle while the controller still owes the previous one cancels both.
+      if (cpu_req_p !== dut.sdram.cpu_req_ack && ovr_n < 10) begin
+        ovr_n = ovr_n + 1;
+        $display("[ovr] %0t cpu_req toggled over an unaccepted request: loading=%b addr=%06X we=%b",
+                 $time, dut.loading, dut.cpu_addr, dut.cpu_we);
+      end
+      cpu_req_t = cpu_req_t + 1; cpu_req_p = dut.cpu_req;
+    end
     if (dut.sdram.cpu_req_ack !== cpu_ack_p) begin cpu_ack_t = cpu_ack_t + 1; cpu_ack_p = dut.sdram.cpu_req_ack; end
-    if (dut.bsram_req  !== bs_req_p)  begin bs_req_t  = bs_req_t + 1;  bs_req_p  = dut.bsram_req; end
-    if (dut.sdram.bsram_req_ack !== bs_ack_p) begin bs_ack_t = bs_ack_t + 1; bs_ack_p = dut.sdram.bsram_req_ack; end
+    // BSRAM is block RAM in snestang_top since core-log entry 88; count write strobes.
+    if (dut.bsram_wr && !bs_wr_p) bs_wr_t = bs_wr_t + 1;
+    bs_wr_p = dut.bsram_wr;
     if (dut.aram_req   !== ar_req_p)  begin ar_req_t  = ar_req_t + 1;  ar_req_p  = dut.aram_req; end
     if (dut.sdram.aram_req_ack !== ar_ack_p) begin ar_ack_t = ar_ack_t + 1; ar_ack_p = dut.sdram.aram_req_ack; end
   end
@@ -213,10 +253,103 @@ module board_tb;
   // shape of what the machine is doing rather than only its end state.
   always @(posedge sys_clk) begin
     if (cyc > 0 && cyc % 50_000_000 == 0) begin
-      $display("[sdram] bank0(ROM/WRAM) act=%0d rd=%0d wr=%0d | bank1(BSRAM) act=%0d rd=%0d wr=%0d | bank2(ARAM) act=%0d rd=%0d wr=%0d",
+      $display("[sdram] bank0(ROM) act=%0d rd=%0d wr=%0d | bank1 act=%0d rd=%0d wr=%0d | bank2(ARAM) act=%0d rd=%0d wr=%0d",
                act_b[0], rd_b[0], wr_b[0], act_b[1], rd_b[1], wr_b[1], act_b[2], rd_b[2], wr_b[2]);
       $fflush();
     end
   end
 
+
+
+  // +romwin=T prints the CPU port's request path every mclk for 400 mclk from
+  // T ns: the cartridge address and its posted copy, the WRAM strobes, the
+  // req/ack toggle pair and the two read registers.  T is in ns because
+  // $value$plusargs reads a 32-bit integer.  It found the lost GSU fetch of
+  // core-log entry 88.
+  integer romwin = 0; integer rw_n = 0;
+  initial void'($value$plusargs("romwin=%d", romwin));
+  always @(posedge dut.mclk) if (romwin != 0 && $time >= longint'(romwin) * 1000 && rw_n < 400) begin
+    rw_n <= rw_n + 1;
+    $display("[rw] %0t ROMA=%06X ce%b oe%b sd=%06X | wram rd%b wr%b A=%05X | req%b ack%b port%b caddr=%06X p0=%04X p1=%04X tog%b",
+      $time, dut.ROM_ADDR, dut.ROM_CE_N, dut.ROM_OE_N, dut.rom_addr_sd, dut.wram_rd, dut.wram_wr, dut.WRAM_ADDR,
+      dut.cpu_req, dut.cpu_ack, dut.cpu_port, dut.cpu_addr, dut.cpu_port0, dut.cpu_port1, dut.cpu_dout_tog);
+  end
 endmodule
+
+// +gsutrace=N prints the GSU's program counter, opcode and wait flags each time
+// R15 changes, for the first N changes after a GO, and once every 100000 clocks
+// while it does not change.  Bound into GSU because Verilator does not resolve
+// a dotted reference through main's unnamed generate block.
+module gsu_probe (
+  input        CLK, FLAG_GO,
+  input [15:0] PC,
+  input [7:0]  PBR, OPCODE, ROM_BUF, RAM_BUF,
+  input [3:0]  STATE,
+  input [2:0]  ROMST,
+  input        RLW, RFW, RCW, MLW, MSW, MPW, MFW, MCW, MUW,
+  input [20:0] ROM_A,
+  input [16:0] RAM_A,
+  input [7:0]  ROM_DI, RAM_DI,
+  input        ROM_RD_N, RAM_CE_N, RAM_WE_N
+);
+  integer n = 0, still = 0, lim = 0;
+  reg [15:0] pc_p = 16'hFFFF;
+  initial void'($value$plusargs("gsutrace=%d", lim));
+  always @(posedge CLK) if (lim != 0 && FLAG_GO) begin
+    still <= still + 1;
+    if ((PC != pc_p && n < lim) || still == 100000) begin
+      pc_p <= PC; n <= n + 1; still <= 0;
+      $display("[gsu] %0t pc=%02X:%04X op=%02X st=%0d romst=%0d wait rl%b rf%b rc%b ml%b ms%b mp%b mf%b mc%b mu%b rombuf=%02X rambuf=%02X roma=%06X romdi=%02X rama=%05X ramdi=%02X ce%b we%b",
+        $time, PBR, PC, OPCODE, STATE, ROMST, RLW, RFW, RCW, MLW, MSW, MPW, MFW, MCW, MUW,
+        ROM_BUF, RAM_BUF, ROM_A, ROM_DI, RAM_A, RAM_DI, RAM_CE_N, RAM_WE_N);
+    end
+  end
+endmodule
+
+// +gsujob=N prints the GSU's ROM-buffer handshake every mclk for the first N
+// mclk of the first GO: the R14 latch, LOAD_PEND/WAIT, R14_CHANGE, ROMWAIT and
+// the enables that gate them.  Board probes (core-log entry 88) showed the
+// first job stuck at 01:b30d with ROM_LOAD_WAIT set and ROMST_LOAD never
+// entered; this is the sim side of that comparison.
+module gsu_job_probe (
+  input        CLK, FLAG_GO, EN, CPU_EN, R14L, LPEND, LWAIT, LSTART, LEND,
+  input        R14C, ROMWAIT, LAST, INCPC,
+  input [15:0] PC, R14,
+  input [7:0]  OPCODE,
+  input [3:0]  STATE,
+  input [2:0]  ROMST,
+  input        RFW, RCW, MLW, MSW, MPW, MFW, MCW, MUW
+);
+  integer n = 0, lim = 0;
+  reg done = 1'b0;
+  initial void'($value$plusargs("gsujob=%d", lim));
+  always @(posedge CLK) if (lim != 0 && !done) begin
+    if (FLAG_GO) begin
+      n <= n + 1;
+      if (n + 1 >= lim) done <= 1'b1;
+      $display("[job] %0d pc=%04X op=%02X st=%0d romst=%0d en%b cpu%b r14c%b romw%b last%b inc%b latch%b pend%b lw%b ls%b le%b | rf%b rc%b ml%b ms%b mp%b mf%b mc%b mu%b r14=%04X",
+        n, PC, OPCODE, STATE, ROMST, EN, CPU_EN, R14C, ROMWAIT, LAST, INCPC, R14L, LPEND, LWAIT,
+        LSTART, LEND, RFW, RCW, MLW, MSW, MPW, MFW, MCW, MUW, R14);
+    end else if (n != 0) done <= 1'b1;
+  end
+endmodule
+
+bind GSU gsu_job_probe gsu_job_probe_i (
+  .CLK(CLK), .FLAG_GO(FLAG_GO), .EN(EN), .CPU_EN(CPU_EN), .R14L(R14_CHANGE_LATCH),
+  .LPEND(ROM_LOAD_PEND), .LWAIT(ROM_LOAD_WAIT), .LSTART(ROM_LOAD_START), .LEND(ROM_LOAD_END),
+  .R14C(R14_CHANGE), .ROMWAIT(MC.ROMWAIT), .LAST(MC.LAST_CYCLE), .INCPC(MC.INCPC),
+  .PC(R[15]), .R14(R[14]), .OPCODE(OPCODE), .STATE(STATE[3:0]), .ROMST(ROMST),
+  .RFW(ROM_FETCH_WAIT), .RCW(ROM_CACHE_WAIT),
+  .MLW(RAM_LOAD_WAIT), .MSW(RAM_SAVE_WAIT), .MPW(RAM_PCF_WAIT),
+  .MFW(RAM_FETCH_WAIT), .MCW(RAM_CACHE_WAIT), .MUW(MULT_WAIT)
+);
+
+bind GSU gsu_probe gsu_probe_i (
+  .CLK(CLK), .FLAG_GO(FLAG_GO), .PC(R[15]), .PBR(PBR), .OPCODE(OPCODE),
+  .ROM_BUF(ROM_BUF), .RAM_BUF(RAM_BUF), .STATE(STATE[3:0]), .ROMST(ROMST),
+  .RLW(ROM_LOAD_WAIT), .RFW(ROM_FETCH_WAIT), .RCW(ROM_CACHE_WAIT),
+  .MLW(RAM_LOAD_WAIT), .MSW(RAM_SAVE_WAIT), .MPW(RAM_PCF_WAIT),
+  .MFW(RAM_FETCH_WAIT), .MCW(RAM_CACHE_WAIT), .MUW(MULT_WAIT),
+  .ROM_A(ROM_A), .RAM_A(RAM_A), .ROM_DI(ROM_DI), .RAM_DI(RAM_DI),
+  .ROM_RD_N(ROM_RD_N), .RAM_CE_N(RAM_CE_N), .RAM_WE_N(RAM_WE_N)
+);

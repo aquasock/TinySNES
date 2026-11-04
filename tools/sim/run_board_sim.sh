@@ -83,7 +83,7 @@ sources=(
     "$src/src/smc_parser.v" "$src/src/sdram_cl2_2ch.v"
     "$src/src/sdram_bist.v" "$src/src/aram_bist.v" "$src/src/wram_bist.v"
     "$src/src/rom_stability.v" "$src/src/rom_probe.v"
-    "$src/src/snes2hdmi.v" "$src/src/snestang_top.v"
+    "$src/src/snes2hdmi.v" "$src/src/snestang_top.v" "$src/src/tinysnes_dbg.v"
     "$src/pll/gowin_pll_27.v" "$src/pll/gowin_pll_hdmi.v" "$src/pll/gowin_pll_snes.v"
 )
 
@@ -120,7 +120,7 @@ echo "=== running ==="
 ./obj_dir/board_sim \
     "+hex=$hex" "+romlen=$romlen" \
     "+stopframes=$frames" "+maxcycles=$maxcyc" \
-    "+ppm=$out/frames.ppm" 2>&1 | tee "$out/run.log"
+    "+ppm=$out/frames.ppm" "+tracedump=$out/trace" 2>&1 | tee "$out/run.log"
 
 echo
 echo "picture: $out/frames.ppm"

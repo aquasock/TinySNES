@@ -143,6 +143,7 @@ sources=(
     "$src"/src/chip/GSU/GSUMap.v
     "$src"/src/main.v
     "$src/src/snestang_top.v"
+    "$src/src/tinysnes_dbg.v"
     "$src"/src/snes2hdmi.v
     "$src/src/smc_parser.v"
     "$src/src/sdram_cl2_2ch.v"
@@ -257,6 +258,15 @@ require_cell "cartridge DSP"   'DSP_LHRomMap' 1 || assert_ok=0
 else
 echo "=== 1. synthesis (cached) ==="
 fi
+
+# A clock must not drive both a true negedge flop and a LUT1 clock inverter:
+# the two halves of its negedge logic then clock a few ns apart, untimed.
+# This stopped the SuperFX on the board (core-log entry 88).
+echo "=== 1b. clock edges ==="
+"$suite/py3bin/python3" "$root/tools/clock_edge_check.py" "$out/tinysnes.json" || {
+    echo "refusing to place a netlist with split negedge clocking" >&2
+    exit 1
+}
 
 [[ "$stage" == synth ]] && { echo "stopping after synthesis"; exit 0; }
 

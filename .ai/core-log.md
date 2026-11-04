@@ -2827,3 +2827,47 @@ The audio fault is open and the next agent should not build before establishing 
 - User Test: FAIL
 
 ---
+
+## 88 COMMIT Unreleased 2026-11-03T23:32:20-07:00
+
+#### Coming From:
+
+Unreleased ec1525b
+
+#### Purpose:
+
+Find why every SuperFX cartridge drew a blank picture on the board while the bench ran Star Fox, by giving the core an on-board debug endpoint, and fix the cause.
+
+#### Outcome:
+
+Star Fox runs on the board: the user reported it working with good sound and a picture that is almost perfect, pending a side-by-side comparison against a PC emulator. The cause was the synthesis flow, not the GSU's logic, and it is recorded as TCL-020. On GW5A, `synth_gowin` keeps only a plain negedge flop as a true `DFFN` and turns every negedge flop with an enable or reset into a posedge `DFFRE` behind a LUT1 inverter of its clock, so in `GSU.v` the `EN` flop clocked on the real negedge while the 22 flops of the ROM/RAM PEND and WAIT handshake, `MULT_WAIT` and `LMULT`, and the cache block RAM clocked from `cache.0.0_CLKB`, the inverted `mclk` on fabric routing a few ns later; nextpnr times that net as an unrelated clock, so the crossing was never checked. The fix is a synchronous reset on `EN`, which puts it on the same inverted clock and leaves the netlist with no `DFFN`, and `tools/clock_edge_check.py`, run as build step `1b` in `tools/build_tinysnes.sh`, now refuses any netlist in which one clock drives both a true negedge flop and a LUT clock inverter; it fails the previous build and passes this one. The fault was found with new instruments built this cycle. `fpga/snes/src/tinysnes_dbg.v` is a register bank on the BL616 link, answered as frame type `0x10` by `iosys_bl616.v`, with GSU state, PC and flags, counters, a runtime `ROM_CYCLES` override and trace buffers of the GSU's ROM latches, opcodes and memory requests, fed by taps added to `GSU.v`, `GSUMap.v` and `main.v`; `tools/tinysnes_dbg.py` drives it through `fpgapipe` in two-wire mode, `tools/sim/dbg_link_tb.sv` checks the link end to end, and its `analyze` command checks a trace against the cartridge image, which on the bench matched every ROM latch and opcode. A planned WRAM/BSRAM peek port was dropped at the user's direction because a second read port made yosys duplicate both arrays and filled block RAM to 340 of 340; the tool's peek commands now read zero. On the board the first GSU job ran from `01:b301` with every ROM latch and opcode correct, then stopped at `01:b30d` with `ROM_LOAD_WAIT` set, `ROM_LOAD_PEND` clear and `ROMST_LOAD` never visited, identically at `ROM_CYCLES` 7 and 11, while the bench's new `gsu_job_probe` in `tools/sim/board_tb.sv` showed latch, PEND and WAIT setting together on the same cycle and LOAD entered next. Also in this cycle, carried from earlier in the session and tested by the user before this fix with Zelda and Super Mario Kart: WRAM and BSRAM moved from SDRAM into inferred block RAM in `snestang_top.v`, and the CPU-port ROM request now waits on `cpu_port_idle`. The deployed artifact is `build/en_fix/tinysnes.bin`, SHA-256 `bc50be6f8b244e49cf479278e14db39b7d341785f697a9b032488c61d7534406`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, loaded as `/root/cores/console138k/tinysnes-dbg.bin`; `dbg.clk` reached 28.9 MHz against 21.5, and the build carries one unmeasured pip, `SPINE9/CBRIDGEOUT_TOP0` on `dbg.clk`, which also ran in the previous debug build. After loading Star Fox the endpoint reported 488 GO starts in about five seconds with all seven ROM states visited. The Star Fox board sim still runs 290 GSU jobs in 240 frames with the fix. Zelda and Super Mario Kart were not re-run on this exact bitstream, and the known audio crackle is unchanged. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 87 were not rewritten, and added TCL-020 to `core-reference.md` with its question-table row and index line; validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-eight-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+The user will compare Star Fox on the board against the same ROM in a PC emulator to judge the remaining picture difference; any difference found there is the next SuperFX work, and the GSU's BSRAM port, which has no acknowledge input on `GSUMap`, is the first candidate to consider. Vortex and Yoshi's Island should be tried on this build, and Zelda and Super Mario Kart re-run as a regression check. The debug endpoint stays in the build because it costs little and it found this fault; `tools/tinysnes_dbg.py status` is the first thing to run when a cartridge misbehaves. The audio crackle, the OSD, saves and the ExHiROM decode remain open exactly as entry 87 describes.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- fpga/snes/src/chip/GSU/GSUMap.v
+- fpga/snes/src/main.v
+- fpga/snes/src/iosys/iosys_bl616.v
+- fpga/snes/src/tinysnes_dbg.v
+- fpga/snes/src/snestang_top.v
+- tools/build_tinysnes.sh
+- tools/clock_edge_check.py
+- tools/tinysnes_dbg.py
+- tools/sim/board_tb.sv
+- tools/sim/gsu_tb.sv
+- tools/sim/run_board_sim.sh
+- tools/sim/dbg_link_tb.sv
+- tools/sim/run_dbg_link_sim.sh
+- README.md
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

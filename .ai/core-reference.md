@@ -99,6 +99,7 @@ rules:
 | How does a core image or ROM get onto the card? | BRD | BRD-004 |
 | Can a cartridge coprocessor be used for sound, as on the Famicom? | EXT | EXT-013 |
 | How is a cartridge's map mode encoded, and how is ExHiROM laid out? | EXT | EXT-014 |
+| Why did the GSU stop on hardware while the bench ran it? | TCL | TCL-020 |
 
 ---
 
@@ -118,6 +119,7 @@ TCL-016 a ROM-address ring names a hot address, not a fetch sequence ·
 TCL-017 the WRAM debug channel is selected but never driven ·
 TCL-018 the display band says whether a snapshot fired ·
 TCL-019 the fastrom access window and the full-core bench ·
+TCL-020 GW5A negedge flops with an enable become inverted-clock DFFRE ·
 BRD-005 placement, not timing, decides whether this netlist boots ·
 EXT-012 the APU handshake completes and a boot takes 30M clocks ·
 EXT-010 the opcode-commit point for instruction-level probes ·
@@ -614,6 +616,20 @@ EXT-009 the LoROM cartridge window and the PC >= $8000 test
     - "SNESTang commit 5f0ef19, src/cpu.v: the SPEED selection for banks $80-$FF and the TINYSNES_FORCE_SLOW_ROM override"
     - "This repository, tools/sim/snes_tb.sv and tools/sim/run_sim.sh: the full-core bench and its +lat cartridge model"
   verification: "Measured on 2026-11-01 (core-log entry 37) with the full-core bench: a two-by-two matrix over cartridge latency and rom-speed mode separated the fault cleanly, `+lat=3` passing and `+lat=4` failing with MEMSEL set on the same image, and the committed-opcode log located the desynchronisation at the instruction immediately after the MEMSEL store."
+
+- record_id: TCL-020
+  kind: TOOLCHAIN
+  topic_id: TCL
+  title: "On GW5A, synth_gowin keeps only a plain negedge flop as a true DFFN; every negedge flop with an enable or reset becomes a posedge DFFRE behind a LUT1 clock inverter"
+  status: VERIFIED
+  verified_date: 2026-11-03
+  statement: "For `-family gw5a`, `techlibs/gowin/synth_gowin.cc` runs `dfflegalize -cell $_DFF_?_ 0 -cell $_SDFFE_PP?P_ r -cell $_DFFE_PP?P_ r ...`, so of the negedge types only `$_DFF_N_` survives and maps to `DFFN`; a negedge flop with an enable or a synchronous reset is legalised to a posedge `DFFRE` whose clock is a `$_NOT_` of the real clock, which becomes a LUT1 on fabric routing.  The `synth_gowin` help text does not show this; it prints the other families' cell list.  Reproduced with a three-line module on yosys 0.69+260.  In this design the GSU's `EN` was the only true `DFFN`, while its ROM/RAM PEND and WAIT flops, `MULT_WAIT`, `LMULT` and the instruction-cache block RAM ran from `cache.0.0_CLKB`, the LUT-inverted `mclk`.  nextpnr times `CLKB` as an unrelated 65 MHz clock and does not check the `EN` to PEND/WAIT path (about 1.8 ns) for hold, so the late flops sampled `EN` after it had changed: on the board `ROM_LOAD_WAIT` set while `ROM_LOAD_PEND` did not, and the GSU stopped on its first ROM load, at `01:b30d` in Star Fox, deterministically and independent of `ROM_CYCLES`.  The bench, with ideal clocks, entered `ROMST_LOAD` on the same cycle and ran 290 jobs."
+  consequence: "Negedge logic on one clock must be all true `DFFN` or all inverted-clock `DFFRE`, never both, because the two halves clock a few ns apart with no timing check between them.  The simple repair is to give any plain negedge flop a synchronous reset or enable so it joins the inverted clock; that is what `GSU.v` now does for `EN`, after which the inverted-clock flops cross to the `mclk` posedge domain with half a cycle of margin in each direction.  `tools/clock_edge_check.py` runs as build step `1b` and refuses a netlist with the mix.  A bench with ideal clocks cannot see this fault, and the symptom on hardware looks like a logic deadlock, not a timing failure."
+  sources:
+    - "YosysHQ/yosys main, techlibs/gowin/synth_gowin.cc: the gw5a dfflegalize cell list"
+    - "This repository, build/dbg_s2/tinysnes-routed.json: the LUT1 `cache.0.0_CLKB_LUT1_F` on `dbg.clk` driving 22 DFFRE clock pins and the cache DP, and `EN_DFFN_Q` as the design's only DFFN"
+    - "This repository, tools/sim/board_tb.sv gsu_job_probe and tools/tinysnes_dbg.py: the bench and board traces of the first GSU job"
+  verification: "Measured 2026-11-03 (core-log entry 88).  The board's debug endpoint showed one GO, PC fixed at `01:b30d`, `rom_load_wait` 1 and LOAD never visited, with all 13 ROM latches and 10 opcodes matching the cartridge; the same at `ROM_CYCLES` 7 and 11.  After the `EN` reset, the netlist has no `DFFN`, the gate passes, and Star Fox on the board ran 488 GO starts in five seconds with every ROM state visited; the user reported it playing with good sound."
 
 - record_id: BRD-005
   kind: BOARD
