@@ -135,6 +135,7 @@ module gsu_tb (
   // ------------------------------------------------------- GSU debug outputs
   wire [15:0] GSU_GO_CNT, GSU_SFR, GSU_STATE_SEEN;
   wire        GSU_FLAG_GO, GSU_CACHE_ANY, GSU_EN;
+  wire [23:0] GSU_PC;
   wire [2:0]  GSU_ROMST;
   wire        GSU_IN_CACHE, GSU_ROM_CACHE_WAIT, GSU_ROM_LOAD_WAIT;
   wire        GSU_CACHE_FILL_SEEN, GSU_CACHE_MMIO_SEEN;
@@ -426,6 +427,63 @@ module gsu_tb (
     end
   endtask
 
+  // +ramlog=path writes one line per BSRAM write (frame, address, data) from
+  // frame +ramlogfrom on, tagged with the GSU start count, so two GSU implementations can be diffed by write
+  // order without depending on cycle timing.  A write held over several clocks
+  // is logged once.
+  reg [4095:0] ramlog_path;
+  integer ramlog_fd = 0, ramlog_from = 0;
+  reg ramlog_prev = 0;
+  reg [19:0] ramlog_pa = 0;
+  reg [7:0] ramlog_pd = 0;
+  initial begin
+    ramlog_path = 0;
+    void'($value$plusargs("ramlogfrom=%d", ramlog_from));
+    if ($value$plusargs("ramlog=%s", ramlog_path)) ramlog_fd = $fopen(ramlog_path, "w");
+  end
+  always @(posedge clk) begin
+    if (ramlog_fd != 0) begin
+      ramlog_prev <= !BSRAM_CE_N && !BSRAM_WE_N;
+      ramlog_pa <= BSRAM_ADDR;
+      ramlog_pd <= BSRAM_D;
+      if (!BSRAM_CE_N && !BSRAM_WE_N && frame_no >= ramlog_from &&
+          (!ramlog_prev || ramlog_pa != BSRAM_ADDR || ramlog_pd != BSRAM_D))
+        $fwrite(ramlog_fd, "%0d %0d %05x %02x %0d %06x\n", frame_no, GSU_GO_CNT, BSRAM_ADDR, BSRAM_D, GSU_FLAG_GO, GSU_PC);
+    end
+  end
+
+  // +mmiolog=path logs S-CPU accesses to the GSU registers $3000-$303F, one
+  // line per access taken when RD_N/WR_N rises, with the last data seen on the
+  // bus.  SFR ($3030/$3031) is left out: the CPU polls it, so its count
+  // depends on how long the GSU runs, not on what it computes.  Starts at
+  // +ramlogfrom like the RAM log.
+  reg [4095:0] mmiolog_path;
+  integer mmio_fd = 0;
+  reg mm_rd = 0, mm_wr = 0;
+  reg [23:0] mm_a = 0;
+  reg [7:0] mm_d = 0;
+  wire [23:0] mm_addr = dut.CA;
+  wire mm_hit = !mm_addr[22] && mm_addr[15:6] == 10'h0C0 &&
+                mm_addr[5:1] != 5'h18;
+  initial begin
+    mmiolog_path = 0;
+    if ($value$plusargs("mmiolog=%s", mmiolog_path)) mmio_fd = $fopen(mmiolog_path, "w");
+  end
+  always @(posedge clk) begin
+    if (mmio_fd != 0 && frame_no >= ramlog_from) begin
+      if (!dut.CPURD_N && mm_hit) begin
+        mm_rd <= 1; mm_a <= mm_addr; mm_d <= dut.GSU_DO;
+      end else if (!dut.CPUWR_N && mm_hit) begin
+        mm_wr <= 1; mm_a <= mm_addr; mm_d <= dut.DO;
+      end else begin
+        if (mm_rd || mm_wr)
+          $fwrite(mmio_fd, "%0d %0d %s %04x %02x\n", frame_no, GSU_GO_CNT,
+                  mm_rd ? "R" : "W", mm_a[15:0], mm_d);
+        mm_rd <= 0; mm_wr <= 0;
+      end
+    end
+  end
+
   reg [4095:0] dump_path;
   always @(posedge clk) begin
     if (frame_end && dump_pfx != 0 && frame_no >= dump_from &&
@@ -490,7 +548,7 @@ module gsu_tb (
     .GSU_DBG_FIRST_OP(GSU_FIRST_OP),
     .GSU_DBG_CACHE_EN(GSU_CACHE_EN),
     .GSU_DBG_FETCH_OP_SEEN(GSU_FETCH_OP_SEEN),
-    .GSU_DBG_PC(), .GSU_DBG_RL(), .GSU_DBG_OP(), .GSU_DBG_MM(),
+    .GSU_DBG_PC(GSU_PC), .GSU_DBG_RL(), .GSU_DBG_OP(), .GSU_DBG_MM(),
     .GSU_DBG_ROM_CYCLES(4'd0)
   );
 

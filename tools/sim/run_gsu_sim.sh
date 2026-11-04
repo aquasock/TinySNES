@@ -23,6 +23,9 @@
 #   --bwlat N      BSRAM acknowledge latency in clk (default 0 = never busy)
 #   --romtype N    mapper chip bits after the header arrives (default 112 = $70,
 #                  GSU; use 32 = $20 for a plain LoROM control run)
+#   --gsu FILE     replace chip/GSU/GSU.v with FILE, repeatable (e.g. a reference
+#                  GSU converted from the MiSTer VHDL plus its port wrapper;
+#                  see tools/sim/gsu_ref/build_ref.sh)
 #   --arg +X=Y     pass a plusarg straight to the bench, repeatable, e.g.
 #                  --arg +rommask=1FFFFF --arg +press_frame=1390
 #                  --arg +dump=/path/dir/ --arg +dumpevery=10
@@ -43,6 +46,7 @@ bwlat=0
 rtog=0
 out="$root/build/gsusim"
 defines=()
+gsu_files=()
 extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,6 +60,7 @@ while [[ $# -gt 0 ]]; do
     --bwlat) bwlat="$2"; shift 2 ;;
     --rtog) rtog="$2"; shift 2 ;;
     --arg) extra+=("$2"); shift 2 ;;
+    --gsu) gsu_files+=("$(cd -- "$(dirname -- "$2")" && pwd)/$(basename -- "$2")"); shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -114,6 +119,12 @@ sources=(
     "$src/chip/GSU/GSUMap.v"
     "$src/main.v"
 )
+if (( ${#gsu_files[@]} )); then
+    for i in "${!sources[@]}"; do
+        [[ "${sources[$i]}" == "$src/chip/GSU/GSU.v" ]] && unset 'sources[i]'
+    done
+    sources+=("${gsu_files[@]}")
+fi
 for f in "${sources[@]}"; do
     [[ -f "$f" ]] || { echo "missing source: $f" >&2; exit 2; }
 done

@@ -2967,3 +2967,41 @@ Find why the title's water is warped at most rotation angles but correct when th
 - User Test: PASS
 
 ---
+
+## 92 COMMIT Unreleased 2026-11-04T09:42:25-07:00
+
+#### Coming From:
+
+Unreleased 7edfb08
+
+#### Purpose:
+
+Find and fix why the port's SuperFX leaves out Yoshi's Island's intro figures and warps the title water, using MiSTer's GSU as a reference in the same simulation.
+
+#### Outcome:
+
+MiSTer's SNES GSU at `901a172c` was converted from VHDL to Verilog with GHDL and run in place of the port's GSU in the full-machine bench, using the new `--gsu` option of `tools/sim/run_gsu_sim.sh`. The reference drew the stork and clouds that the port left out, so the fault was in the port's GSU. The new `+ramlog` and `+mmiolog` logs in `tools/sim/gsu_tb.sv` showed both GSUs making the same 1,070,246 RAM writes to frame 1179 and the same S-CPU register accesses, with the first real difference in GSU start 3737 at frame 1227. A register trace of that start located it at `09:88B2`, an `FMULT` of `$4000` by `$FF00` that gave `$3FC0` in the port and `$FFC0` in the reference. The port's ALU in `fpga/snes/src/chip/GSU/GSU.v` multiplied unsigned for `MULT`, `FMULT` and `LMULT`, which are signed in the reference and on hardware; only `UMULT` is unsigned. Both operands now go through `$signed`. In simulation the fixed port matched the reference's registers exactly through start 3737, and from start 3800 on its RAM writes were identical to the reference's. The only difference left is the stork's wing pose, which follows the CPU-written random word at `$1970` and depends on CPU timing, not the GSU. The fix also cured the warped title water in simulation against snes9x, so entry 91's angle-dependent water fault came from the same bug. One synthesis feeding a 12-seed place-and-route sweep, all run at once, passed timing and gave bitstreams on every seed. Each seed used 42,659 LUT4 (about 1,000 more than entry 91, for the signed multipliers), 11,484 DFF and 212 BSRAM. fclk ranged from 188 to 253 MHz, `dbg.clk` from 26.9 to 30.0 MHz against 21.5, hclk from 120.7 to 133.4 MHz and the GSU cache clock from 176 to 302 MHz, and only seed 11 had hold violations (two, on the GSU cache clock). Seed 2 had the most fclk and `dbg.clk` headroom and is the seed of every earlier board-tested build. Its `tinysnes.bin`, SHA-256 `4d71d1ce6f3305caf6ce5beb34af73db2e6cbb585223d348f25f68ebb0b89860`, was deployed with `tools/tang_deploy.py`, and Yoshi's Island Rev 1 was loaded with `tools/load_snes_rom.py`. The board capture from `/dev/video0` showed the stork with the twins, the clouds, Kamek and the falling-baby scene, all missing before. The user checked the title live, reported the water as perfect and accepted the result. The reference flow is now reproducible: `tools/sim/gsu_ref/build_ref.sh` fetches the VHDL, splits its three dual-edge processes with `split.py` and regenerates the Verilog byte for byte, and `gsudis.py` disassembles GSU code. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 91 were not rewritten, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the ninety-two-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+The user is continuing to play Yoshi's Island on this build. Check on the board whether the map and Kamek's room, which entry 91 saw drawn only on their left side, are now drawn whole. Then take up the remaining faults, comparing the port with the reference GSU in simulation first: the missing chime, the black text box, the GSU stall at `09:FEFE` and the audio crackle.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- tools/sim/gsu_tb.sv
+- tools/sim/run_gsu_sim.sh
+- tools/sim/gsu_ref/build_ref.sh
+- tools/sim/gsu_ref/split.py
+- tools/sim/gsu_ref/dpram_difclk.vhd
+- tools/sim/gsu_ref/gsu_ref_wrap.v
+- tools/sim/gsu_ref/gsu_port_wrap.v
+- tools/sim/gsu_ref/gsudis.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
