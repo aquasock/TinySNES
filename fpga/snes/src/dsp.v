@@ -780,7 +780,10 @@ always @(posedge CLK) begin : main_process
                     if (BRR_OFFS[VS.V] == 6) begin
                         if (TBRRHDR[0]) begin      // end bit ON
                             BRR_ADDR[VS.V] <= BRR_NEXT_ADDR;
-                            ENDX_BUF[VS.V] <= 1'b1;
+                            // Via BRR_END, as MiSTer's DSP.vhd does: VS_VOLR
+                            // rebuilds ENDX_BUF from ENDX | BRR_END next
+                            // step, so setting ENDX_BUF here was lost.
+                            BRR_END[VS.V] <= 1'b1;
                         end else 
                             BRR_ADDR[VS.V] <= BRR_ADDR[VS.V] + 9;
                     end

@@ -32,6 +32,10 @@
 //   +cycles=N      master clocks to run, default 400000
 //   +trace=path    write a GSU state trace to this file
 //   +vcd=path      dump waves to this file
+//   +wav=path      raw stereo s16le of every S-DSP sample (see raw2wav.py)
+//   +dsplog=path   every S-DSP register write as "<sample> <reg> <value>"
+//   +apulog=path   APU port and ARAM writes between +apufrom=N and +aputo=M samples
+//   +aramdump=path ARAM contents at the end of the run ($writememh)
 //
 // The port list exists only for the C++ harness: a signal reached from C++ has to
 // be a top-level output.  Nothing connects to these in a pure-SV run, where they
@@ -305,6 +309,11 @@ module gsu_tb (
 
   // ----------------------------------------------------------- ARAM model
   reg [7:0] aram [0:65535];
+  reg [4095:0] aramdump_path;
+  initial begin
+    aramdump_path = 0;
+    void'($value$plusargs("aramdump=%s", aramdump_path));
+  end
   initial for (i = 0; i < 65536; i = i + 1) aram[i] = 8'h00;
   always @(posedge clk) begin
     if (!ARAM_CE_N && !ARAM_WE_N) aram[ARAM_ADDR] <= ARAM_D;
@@ -542,6 +551,63 @@ module gsu_tb (
     end
   end
 
+  // +wav=path writes every S-DSP output sample as raw stereo s16le (left
+  // first), straight from AUDIO_L/R on SND_RDY, before any board resampling or
+  // FIFO; tools/sim/raw2wav.py wraps it with the measured rate.
+  reg [4095:0] wav_path;
+  integer wav_fd = 0;
+  initial begin
+    wav_path = 0;
+    if ($value$plusargs("wav=%s", wav_path)) wav_fd = $fopen(wav_path, "wb");
+  end
+  always @(posedge clk)
+    if (wav_fd != 0 && AUDIO_READY)
+      $fwrite(wav_fd, "%c%c%c%c", AUDIO_L[7:0], AUDIO_L[15:8], AUDIO_R[7:0], AUDIO_R[15:8]);
+
+  // +dsplog=path writes every SPC700 write to an S-DSP register as
+  // "<sample> <reg> <value>", sample being the S-DSP output sample count.
+  reg [4095:0] dsplog_path;
+  integer dsplog_fd = 0;
+  integer dsp_samples = 0;
+  initial begin
+    dsplog_path = 0;
+    if ($value$plusargs("dsplog=%s", dsplog_path)) dsplog_fd = $fopen(dsplog_path, "w");
+  end
+  always @(posedge clk) begin
+    if (AUDIO_READY) dsp_samples <= dsp_samples + 1;
+    if (dsplog_fd != 0 && dut.SNES.dsp.ENABLE && dut.SNES.dsp.CE && dut.SNES.dsp.SMP_EN_INT
+        && !dut.SNES.dsp.SMP_WE_N && dut.SNES.dsp.SMP_A == 16'h00F3)
+      $fwrite(dsplog_fd, "%0d %02h %02h\n", dsp_samples, dut.SNES.dsp.RI, dut.SNES.dsp.SMP_DO);
+  end
+
+  // +apulog=path with +apufrom=N +aputo=M (S-DSP sample counts) logs, inside
+  // that window, CPU writes to $2140-3 ("C"), SPC700 writes to $F4-7 ("S") and
+  // SPC700 writes to ARAM ("W"), each as "<sample> <kind> <addr> <value>".
+  reg [4095:0] apulog_path;
+  integer apulog_fd = 0, apu_from = 0, apu_to = 0;
+  initial begin
+    apulog_path = 0;
+    if ($value$plusargs("apulog=%s", apulog_path)) apulog_fd = $fopen(apulog_path, "w");
+    void'($value$plusargs("apufrom=%d", apu_from));
+    void'($value$plusargs("aputo=%d", apu_to));
+  end
+  always @(posedge clk) begin
+    if (apulog_fd != 0 && dsp_samples >= apu_from && dsp_samples < apu_to) begin
+      if (!dut.SNES.smp.PAWR_N && dut.SNES.smp.PAWR_N_OLD && dut.SNES.smp.CS && !dut.SNES.smp.CS_N)
+        $fwrite(apulog_fd, "%0d C %0d %02h\n", dsp_samples, dut.SNES.smp.PA, dut.SNES.smp.CPU_DI);
+      if (dut.SNES.smp.SPC700_CE && !dut.SNES.smp.SPC700_R_WN) begin
+        if (dut.SNES.smp.SPC700_A[15:2] == 14'h3D)
+          $fwrite(apulog_fd, "%0d S %0d %02h\n", dsp_samples, dut.SNES.smp.SPC700_A[1:0], dut.SNES.smp.SPC700_D_OUT);
+        else if (dut.SNES.smp.SPC700_A[15:4] != 12'h00F)
+          $fwrite(apulog_fd, "%0d W %04h %02h\n", dsp_samples, dut.SNES.smp.SPC700_A, dut.SNES.smp.SPC700_D_OUT);
+      end
+      // SPC700 reads of its I/O page ("R <addr> <value> <dsp-reg> <pc>").
+      if (dut.SNES.smp.SPC700_CE && dut.SNES.smp.SPC700_R_WN && dut.SNES.smp.SPC700_A[15:4] == 12'h00F)
+        $fwrite(apulog_fd, "%0d R %04h %02h %02h %04h\n", dsp_samples, dut.SNES.smp.SPC700_A,
+                dut.SNES.smp.SPC700_D_IN, dut.SNES.dsp.RI, dut.SNES.smp.SPC700.PC);
+    end
+  end
+
   reg [4095:0] dump_path;
   always @(posedge clk) begin
     if (frame_end && dump_pfx != 0 && frame_no >= dump_from &&
@@ -691,6 +757,10 @@ module gsu_tb (
     // machine stuck in the sound upload writes no VRAM at all.
     if (!VRAM1_WE_N || !VRAM2_WE_N) vram_writes <= vram_writes + 1;
 
+    // A mapper with no GSU is set before reset, as the board's loader holds the
+    // machine in reset until smc_parser is done; HiROM would otherwise fetch
+    // its reset vector through the LoROM mapper.
+    if (cyc == 1 && romtype_val[7:4] != 4'h7) ROM_TYPE <= romtype_val[7:0];
     if (cyc == 10)  rst_n  <= 1'b1;
     if (cyc == 100) enable <= 1'b1;
     // The header has been parsed by now; this is when rom_type becomes $70 and
@@ -764,6 +834,7 @@ module gsu_tb (
       $display("  ROM requests %0d, lost to toggle collapse %0d (rtog=%0d)", rtog_seen, rtog_lost, rtog);
       $display("  frame: %0d pixels captured (full frame = 57344)", fb_captured);
       if (frame_path != 0) write_ppm(frame_path);
+      if (aramdump_path != 0) $writememh(aramdump_path, aram);
       if (fd != 0) $fclose(fd);
       $finish;
     end

@@ -79,7 +79,7 @@ sources=(
     "$src/src/chip/GSU/GSU_PKG.v" "$src/src/chip/GSU/GSU.v" "$src/src/chip/GSU/GSUMap.v"
     "$src/src/main.v"
     "$src/src/SNES.v" "$src/src/ppucgram.v" "$src/src/ppuhoam.v" "$src/src/ppuoam.v"
-    "$src/src/dual_clk_fifo.v" "$src/src/vram.v" "$src/src/vram_spb.v"
+    "$src/src/dual_clk_fifo.v" "$src/src/hdmi_audio_clock.v" "$src/src/vram.v" "$src/src/vram_spb.v"
     "$src/src/gowin_dpb_cgram.v" "$src/src/gowin_dpb_hoam.v" "$src/src/gowin_dpb_oam.v"
     "$src/src/iosys/gowin_dpb_menu.v" "$src/src/iosys/textdisp.v"
     "$src/src/iosys/uart_fractional.v" "$src/src/iosys/uart_fixed.v" "$src/src/iosys/crc16.v"

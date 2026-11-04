@@ -27,15 +27,21 @@ module i2s_tb;
     reg        audio_valid = 0;
 
     wire dac_mclk, dac_lrck, dac_sclk, dac_sdin;
-    wire [15:0] dbg_taken, dbg_overwritten;
+    wire [15:0] dbg_taken, dbg_overwritten, dbg_underrun;
 
     i2s_out #(.RATIO_NUM(823808), .RATIO_DEN(1073865)) dut (
         .clk(clk), .resetn(resetn),
         .audio_l(audio_l), .audio_r(audio_r), .audio_valid(audio_valid),
         .dac_mclk(dac_mclk), .dac_lrck(dac_lrck),
         .dac_sclk(dac_sclk), .dac_sdin(dac_sdin),
-        .dbg_taken(dbg_taken), .dbg_overwritten(dbg_overwritten)
+        .dbg_taken(dbg_taken), .dbg_overwritten(dbg_overwritten),
+        .dbg_underrun(dbg_underrun)
     );
+
+    // The resampler runs its FIFO half full, 32 samples, so a value fed in
+    // reaches the output about 32 input periods later.  Each check below waits
+    // that long, with margin, before reading what came out.
+    localparam integer LATENCY = 40;
 
     // ------------------------------------------------------------ measurement
     integer mclk_rises = 0, sclk_rises = 0, lrck_rises = 0;
@@ -166,7 +172,7 @@ module i2s_tb;
 
         // ---- 2. a constant must come out constant
         // Anything else means the weight or the phase is wrong.
-        for (i = 0; i < 8; i = i + 1) send(16'h1234, 16'h5678);
+        for (i = 0; i < 8 + LATENCY; i = i + 1) send(16'h1234, 16'h5678);
         repeat (4000) @(posedge clk);
         $display("  frame %016h%016h", snapshot[63:32], snapshot[31:0]);
         check(snapshot[63:32] == {1'b0, 16'h1234, 15'd0},
@@ -178,7 +184,7 @@ module i2s_tb;
         // Send 0x1000, 0x1100, 0x1200 ... and check the output walks up between
         // them rather than jumping or sticking.
         for (i = 0; i < 6; i = i + 1) send(16'h1000 + i*16'h100, 16'h1000 + i*16'h100);
-        repeat (4000) @(posedge clk);
+        repeat (4000 + (LATENCY - 6) * 667) @(posedge clk);
         $display("  ramp frame left sample %04h", snapshot[62:47]);
         check(snapshot[62:47] > 16'h1000 && snapshot[62:47] <= 16'h1600,
               "ramp output lies inside the samples fed in");
@@ -187,7 +193,7 @@ module i2s_tb;
         // the output must land strictly between once the phase reaches them.
         for (i = 0; i < 6; i = i + 1) send(16'h0000, 16'h0000);
         for (i = 0; i < 6; i = i + 1) send(16'h4000, 16'h4000);
-        repeat (8000) @(posedge clk);
+        repeat (8000 + LATENCY * 667) @(posedge clk);
         check(seen_mid, "a ramp produces samples strictly between the inputs");
 
         // ---- 4. a ramp must come out MONOTONIC and without stalls
@@ -215,7 +221,7 @@ module i2s_tb;
                         @(posedge clk);
                         if (frame_done) begin
                             frames = frames + 1;
-                            if (frames > 8) begin
+                            if (frames > 8 + LATENCY * 2) begin
                                 if (snapshot[62:47] == last) stalls = stalls + 1;
                                 else if (snapshot[62:47] < last) backups = backups + 1;
                                 else steps = steps + 1;
@@ -240,6 +246,8 @@ module i2s_tb;
         // echoing tone rather than as anything obviously broken.
         $display("  input samples: taken %0d, overwritten %0d", dbg_taken, dbg_overwritten);
         check(dbg_overwritten == 16'd0, "no input sample is overwritten before use");
+        $display("  underruns %0d", dbg_underrun);
+        check(dbg_underrun == 16'd0, "the resampler never runs its FIFO empty");
 
         // ---- 6. a bursty producer must not run the queue away
         // The board's producer does not deliver samples evenly: the machine is

@@ -69,3 +69,46 @@ Investigate the general audio path, starting with the pops that grow with sound 
 - User Test: PASS
 
 ---
+
+## 3 COMMIT Unreleased 2026-11-04T16:47:52-07:00
+
+#### Coming From:
+
+Unreleased c2ce59d
+
+#### Purpose:
+
+Fix the audio faults left after entry 2, namely Earthworm Jim 2's broken sound and the pops on both the Pmod I2S2 and HDMI audio outputs.
+
+#### Outcome:
+
+Three fixes were made. In `dsp.v` a BRR block with its end bit set now raises `BRR_END` instead of `ENDX_BUF`, as MiSTer's `DSP.vhd` does, because the next `VS_VOLR` step rebuilds `ENDX_BUF` from `ENDX | BRR_END` and the old write was lost, so games polling ENDX such as Earthworm Jim 2 never saw a voice end; the fix was found with new `tools/sim/gsu_tb.sv` options `+wav`, `+dsplog`, `+apulog`, `+apufrom`, `+aputo` and `+aramdump`, which also applies the ROM type at cycle 1, and on the board the seed-2 build `build/endx1` restored Earthworm Jim 2's intro accordion and vocals, which had sounded horrendous, and the user passed it and Super Mario Kart. The Pmod pops came from `i2s_out.sv` assuming the S-DSP's nominal 32,222 samples/s while the per-frame pause that holds 60 Hz HDMI makes about 32,127/s in bursts, so its bang-bang rate trim underran the FIFO about 87 times a second; the module now has a 64-entry FIFO, a PI servo on the fill level with `KP_SHIFT` 19, `KI_SHIFT` 4 and the integrator clamped to 0.75 percent, the nominal ratio `RATIO_NUM`/`RATIO_DEN` 99804511/130483747, a `running` gate so it waits for half full before reading, and `dbg_overwritten` and `dbg_underrun` counter ports not yet wired to the debug bus; the new bench `tools/sim/run_i2s_out.sh` with `tools/sim/i2s_out_tb.sv` and `tools/sim/raw2wav.py` drives it with bursty production, and `tools/tests/i2s_tb.sv` was updated for the extra latency and checks underruns. HDMI audio clicked about 20 times a second because `snes2hdmi.v` read its 16-entry FIFO with a fixed `clk_audio` of 32,004 Hz, 74.25 MHz divided by 2320, against the same 32,127/s production, dropping about 120 samples a second; the divider was replaced by the new module `hdmi_audio_clock.v`, a 32-bit phase accumulator on hclk whose step is steered by the FIFO's read-side level, a new `rlevel` port on `dual_clk_fifo.v`, through a PI servo around 8 entries with `KP_SHIFT` 8, `KI_SHIFT` 4 and the integrator clamped to about 0.9 percent, with the error and step registered so the servo stays off the critical path, so every sample is sent exactly once and the HDMI core's ACR packet, which measures `clk_audio` to produce CTS, tells the sink the real rate while the infoframe still says 32 kHz; this was chosen with the user over a 48 kHz interpolating resampler as the lighter, bit-exact option, accepting that a strict sink might reject the 0.4 percent offset. The new bench `tools/sim/run_hdmi_audio.sh` with `tools/sim/hdmi_audio_tb.sv` passed over 3 s at 0 and plus or minus 300 ppm with no drops, repeats, overflows or underruns, the level between 5 and 9 and the rate between 32,120 and 32,130 Hz, and `hdmi_audio_clock.v` was added to `tools/build_tinysnes.sh` and `tools/sim/run_board_sim.sh`. The seed-2 build `build/i2s1` with the Pmod fix passed timing and the user called the Pmod basically perfect, with a rare tiny pop judged acceptable. The first HDMI build `build/hda1`, without the registered error and step, passed but cut hclk to 99.8 MHz with the servo on the critical path, and on the board its capture-card recording fell from 157 clicks over 12 sigma in 8 s to 3 and the user reported HDMI and Pmod both sounding perfect; the final seed-2 build `build/hda2` passed timing with dbg.clk at 28.4 MHz against 21.5, fclk 229.0 against 64.5, hclk 131.8 against 74.25 with the HDMI TMDS encoder again the critical path, and the GSU cache clock 289.8 against 65, passed the clock-edge check, used 43,599 LUT4 or 31 percent and 212 of 340 BSRAM, and `build/hda2/tinysnes.bin`, SHA-256 `7cf1ecbbd2bf4caddd14c99974b220f316f0a9a2bb9da576150a5bfe0492a1b1`, was deployed as `/root/cores/console138k/tinysnes-dbg.bin`, after which an 8 s capture of RetroRegen's 440 Hz tone through the Guermok USB capture card showed 1 click over 12 sigma, 60 Hz at minus 118 dBFS and no 30 Hz sidebands, and the user accepted it. The remaining large events, about one every 4 s and also present before the fix, look like the capture card slipping one 32 kHz sample against its own clock, but that is not proven. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, inspected the `.ai/` diff as this entry alone, and validated it as entry 3 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, permitted Status values, no self-referencing hash and a count of three against the 100-entry limit.
+
+#### Next Steps:
+
+Check the remaining audio faults, Yoshi's Island's buzzing chimes and coins, lagging coin sounds and missing channels, and Star Fox's sound cutouts, against these fixes, then confirm both servos under PAL, where the frame pause and production rate differ and nothing has been tested. Wiring the `i2s_out.sv` and HDMI FIFO underrun counters to the debug bus would prove whether the residual capture-card events come from the core, and the `i2s_out.sv` header still describes the old 41,947 Hz rate and no FIFO. If a TV rejects the off-nominal HDMI audio rate, the fallback is a 48 kHz interpolating resampler on hclk. Earlier open items carry over, including Yoshi's Island's minor glitches and black text box, the GSU stall once seen at `09:FEFE`, clearing debug counters on cartridge load, the on-screen menu, save persistence, the ExHiROM decode in `smc_parser.v` and the missing coprocessors.
+
+#### Files Modified:
+
+- fpga/snes/src/dsp.v
+- fpga/snes/src/dual_clk_fifo.v
+- fpga/snes/src/hdmi_audio_clock.v
+- fpga/snes/src/i2s_out.sv
+- fpga/snes/src/snes2hdmi.v
+- tools/build_tinysnes.sh
+- tools/sim/gsu_tb.sv
+- tools/sim/hdmi_audio_tb.sv
+- tools/sim/i2s_out_tb.sv
+- tools/sim/raw2wav.py
+- tools/sim/run_board_sim.sh
+- tools/sim/run_hdmi_audio.sh
+- tools/sim/run_i2s_out.sh
+- tools/tests/i2s_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

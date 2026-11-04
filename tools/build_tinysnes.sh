@@ -159,6 +159,7 @@ sources=(
     "$src/src/ppuhoam.v"
     "$src/src/ppuoam.v"
     "$src/src/dual_clk_fifo.v"
+    "$src/src/hdmi_audio_clock.v"
     "$src"/src/gowin_dpb_cgram.v
     "$src"/src/gowin_dpb_hoam.v
     "$src"/src/gowin_dpb_oam.v

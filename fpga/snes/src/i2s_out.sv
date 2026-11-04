@@ -63,8 +63,19 @@ module i2s_out #(
     // into the FIFO, which then overflowed every tenth of a second: a continuous
     // crackle, and the reason the Pmod output sounded scratchy while the same
     // module playing TinyNES and TinyGBC was clean.
-    parameter integer RATIO_NUM = 823808,
-    parameter integer RATIO_DEN = 1073865
+    //
+    // 823808/1073865 is still not the rate that arrives on an NTSC game, because
+    // the machine does not run all the time: snes2hdmi stops it once per frame
+    // until the 60.000 Hz HDMI frame catches up (pause_snes_for_frame_sync).  An
+    // NTSC frame is 1364 x 262 - 2 = 357,366 mclk and the HDMI frame is
+    // mclk / 60 = 358,423, so the DSP makes 32,127 samples a second, not 32,222,
+    // and consuming at 32,222 emptied the FIFO 87 times a second: one held
+    // sample each, a click of up to 500 LSB on a 440 Hz tone.  The ratio below is
+    // that paused rate exactly, 823808/1073865 x 357366/358422.94.  A PAL frame
+    // is longer than the HDMI frame, never pauses, and runs at the full rate;
+    // the servo below covers that 0.3 percent.
+    parameter integer RATIO_NUM = 99804511,
+    parameter integer RATIO_DEN = 130483747
 ) (
     input  wire        clk,        // mclk, 21.477 MHz
     input  wire        resetn,
@@ -85,7 +96,10 @@ module i2s_out #(
     // being consumed.  A non-zero overwrite count means the resampler's one-deep
     // holding slot loses audio, which is audible as broadband distortion.
     output reg  [15:0] dbg_taken,
-    output reg  [15:0] dbg_overwritten
+    output reg  [15:0] dbg_overwritten,
+    // Output samples that wanted a new input and found the FIFO empty, so the
+    // last one was held: each is an audible click.
+    output reg  [15:0] dbg_underrun
 );
 
     // ------------------------------------------------------- clock generation
@@ -164,45 +178,54 @@ module i2s_out #(
     // change: sidebands at 440 +/- 60, 1320 +/- 60 and 2200 +/- 60 Hz, each about
     // 20 dB below its harmonic.
     //
-    // So the step is nudged: when the queue is fuller than the midpoint the
-    // resampler consumes slightly faster, and when it is emptier, slightly
-    // slower.  The correction is a fraction of a percent, far below anything
-    // audible as pitch, and it turns a rate or timing error into a slowly
-    // varying phase rather than a jump.  This is why the 0.13 percent error found
-    // in the previous cycle would also have been harmless here.
+    // So the FIFO absorbs the burst and the step follows the average rate.  The
+    // step is the nominal ratio plus a proportional-integral servo on the FIFO's
+    // distance from half full, evaluated once per output frame.  The integral
+    // term learns the real average rate, so a frame-paused NTSC machine, a PAL
+    // one running flat out, and any SDRAM stall all settle with the FIFO
+    // centred; the proportional term damps it.
+    //
+    // An earlier bang-bang trim of 1/4096 of a step could move the rate by only
+    // 8 samples a second, a tenth of the 95 the frame pause takes away, so the
+    // FIFO sat empty and every frame released a held sample.
+    //
+    // Gains, in units of STEP LSBs: 102,255 LSB is one sample a second.
+    //   P: error << 19 = 5.1 samples/s per sample of error.
+    //   I: integral += error << 4 per frame = 6.6 samples/s^2 per sample.
+    // That is critically damped, natural frequency 2.6 rad/s.  The FIFO dips
+    // about 1.6 samples during each frame pause, which the P term turns into a
+    // 60 Hz rate wobble of 0.013 percent: sidebands near -67 dB on a 440 Hz
+    // tone, far below audibility.  A 0.3 percent rate step (PAL against the
+    // nominal) moves the FIFO about 14 entries before the integral absorbs it.
     localparam [63:0] STEP64 = (64'd1 << 32) * RATIO_NUM / RATIO_DEN;
     localparam [31:0] STEP   = STEP64[31:0];
-    // Authority and dead band.  1/4096 of a step is 0.024 percent, far below any
-    // audible pitch change, and the dead band is a quarter of the queue either
-    // side of centre.  An earlier version used 1/1024 and no dead band, and it
-    // oscillated: measured on the bench, 2 backwards steps in 522 frames, because
-    // each correction carried the phase past the midpoint and the next reversed
-    // it.
-    localparam [31:0] STEP_TRIM = STEP >> 12;
+    localparam integer KP_SHIFT = 19;
+    localparam integer KI_SHIFT = 4;
+    localparam signed [31:0] INTEG_MAX = 32'sd1 << 25;   // +/- 0.75 percent
 
-    // A small FIFO between arrival and consumption.  The average rates match by
-    // construction -- consuming IN_RATE per output period is exactly the producer
-    // rate -- but the two are not phase-aligned, so a sample can arrive just
-    // after a consumption point and have to wait a whole output period.  With a
-    // one-deep slot the next arrival then overwrote it: measured on the bench,
-    // 68 of 358 samples were lost, 19 percent, which is heard as broadband
-    // distortion rather than as anything obviously broken.  Four entries is
-    // enough to absorb that jitter because the rates do match, so the occupancy
-    // stays bounded.
-    localparam integer FIFO_DEPTH = 16;
+    // The FIFO between arrival and consumption.  Samples arrive in bursts around
+    // each frame pause and the consumer is smooth, so the FIFO holds the
+    // difference; it runs half full, and 64 entries leaves 32 either side,
+    // twice the excursion of a PAL start against the NTSC nominal.
+    localparam integer FIFO_DEPTH = 64;
 
     reg [15:0] fifo_l [0:FIFO_DEPTH-1];
     reg [15:0] fifo_r [0:FIFO_DEPTH-1];
-    reg [4:0]  fifo_wr = 5'd0, fifo_rd = 5'd0;
-    reg [4:0]  fifo_count = 5'd0;
+    reg [5:0]  fifo_wr = 6'd0, fifo_rd = 6'd0;
+    reg [6:0]  fifo_count = 7'd0;
 
-    wire        fifo_empty = fifo_count == 5'd0;
-    wire        fifo_full  = fifo_count == FIFO_DEPTH[4:0];
+    wire        fifo_empty = fifo_count == 7'd0;
+    wire        fifo_full  = fifo_count == FIFO_DEPTH[6:0];
 
     reg [15:0] prev_l = 16'd0, prev_r = 16'd0;   // older of the pair
     reg [15:0] cur_l  = 16'd0, cur_r  = 16'd0;   // newer
     reg [31:0] phase = 32'd0;
     reg        primed = 1'b0;
+    // The resampler does not start consuming until the FIFO first reaches half
+    // full, so it starts centred and the integral does not wind up on the
+    // empty FIFO of a machine that has not started yet.
+    reg        running = 1'b0;
+    reg signed [31:0] integ = 32'sd0;
     reg signed [15:0] lat_l = 16'sd0, lat_r = 16'sd0;
 
     wire frame_tick = sclk_fall && (bitn_next[4:0] == 5'd0) && ~bitn_next[5];
@@ -226,48 +249,54 @@ module i2s_out #(
     wire signed [16:0] p_l = $signed({prev_l[15], prev_l}) + (r_l >>> 16);
     wire signed [16:0] p_r = $signed({prev_r[15], prev_r}) + (r_r >>> 16);
 
-    // Occupancy error against the half-full point, as a direction only: the
-    // magnitude is fixed, so the loop is a simple bang-bang servo and cannot
-    // overshoot on a single sample.
-    localparam [4:0] MID = FIFO_DEPTH[4:0] / 2;
-    localparam [4:0] BAND = FIFO_DEPTH[4:0] / 4;
-    wire above_mid = fifo_count > MID + BAND;
-    wire below_mid = fifo_count < MID - BAND;
-    wire [31:0] step_now = above_mid ? STEP + STEP_TRIM :
-                           below_mid ? STEP - STEP_TRIM : STEP;
+    // Occupancy error against the half-full point, positive when fuller, so a
+    // positive error consumes faster.
+    localparam [6:0] MID = FIFO_DEPTH[6:0] / 2;
+    wire signed [7:0]  err      = $signed({1'b0, fifo_count}) - $signed({1'b0, MID});
+    wire signed [31:0] err_p    = $signed({{24{err[7]}}, err}) <<< KP_SHIFT;
+    wire signed [31:0] err_i    = $signed({{24{err[7]}}, err}) <<< KI_SHIFT;
+    wire signed [31:0] integ_sum = integ + err_i;
+    wire signed [31:0] integ_next = integ_sum >  INTEG_MAX ?  INTEG_MAX :
+                                    integ_sum < -INTEG_MAX ? -INTEG_MAX : integ_sum;
+    wire [31:0] step_now = STEP + err_p + integ;
 
     // 33-bit sum so the carry out of the 32-bit phase is visible.
     wire [32:0] phase_sum = {1'b0, phase} + {1'b0, step_now};
 
     // The wrap pops one entry; the frame tick is where that happens.
-    wire pop = frame_tick && phase_sum[32] && !fifo_empty;
+    wire pop = frame_tick && running && phase_sum[32] && !fifo_empty;
 
     always @(posedge clk) begin
         if (!resetn) begin
-            fifo_wr <= 5'd0;
-            fifo_rd <= 5'd0;
-            fifo_count <= 5'd0;
+            fifo_wr <= 6'd0;
+            fifo_rd <= 6'd0;
+            fifo_count <= 7'd0;
             prev_l <= 16'd0; prev_r <= 16'd0;
             cur_l  <= 16'd0; cur_r  <= 16'd0;
             phase <= 32'd0;
             primed <= 1'b0;
+            running <= 1'b0;
+            integ <= 32'sd0;
             lat_l <= 16'sd0; lat_r <= 16'sd0;
             dbg_taken <= 16'd0;
             dbg_overwritten <= 16'd0;
+            dbg_underrun <= 16'd0;
         end else begin
             // Push on arrival.  A full FIFO would still lose the sample, so the
-            // count is exposed; at matched rates it should never fill.
+            // count is exposed; with the servo locked it should never fill.
             if (audio_valid && !fifo_full) begin
                 fifo_l[fifo_wr] <= audio_l;
                 fifo_r[fifo_wr] <= audio_r;
-                fifo_wr <= (fifo_wr == FIFO_DEPTH-1) ? 5'd0 : fifo_wr + 5'd1;
+                fifo_wr <= fifo_wr + 6'd1;
                 if (dbg_taken != 16'hFFFF) dbg_taken <= dbg_taken + 16'd1;
             end else if (audio_valid && fifo_full) begin
                 if (dbg_overwritten != 16'hFFFF)
                     dbg_overwritten <= dbg_overwritten + 16'd1;
             end
 
-            if (frame_tick) begin
+            if (fifo_count >= MID) running <= 1'b1;
+
+            if (frame_tick && running) begin
                 // Hold silence until the pair is real, so the first frames do not
                 // interpolate against a zero that was never a sample.
                 if (primed)
@@ -276,6 +305,7 @@ module i2s_out #(
                     begin lat_l <= 16'sd0; lat_r <= 16'sd0; end
 
                 phase <= phase_sum[31:0];
+                integ <= integ_next;
 
                 if (phase_sum[32]) begin
                     // The phase passed `cur`: shift the window forward.
@@ -284,16 +314,17 @@ module i2s_out #(
                     if (!fifo_empty) begin
                         cur_l <= fifo_l[fifo_rd];
                         cur_r <= fifo_r[fifo_rd];
-                        fifo_rd <= (fifo_rd == FIFO_DEPTH-1) ? 5'd0 : fifo_rd + 5'd1;
+                        fifo_rd <= fifo_rd + 6'd1;
                         primed <= 1'b1;
-                    end
+                    end else if (dbg_underrun != 16'hFFFF)
+                        dbg_underrun <= dbg_underrun + 16'd1;
                 end
             end
 
             // Occupancy bookkeeping, in one place so push and pop cannot disagree.
             case ({audio_valid && !fifo_full, pop})
-                2'b10:   fifo_count <= fifo_count + 5'd1;
-                2'b01:   fifo_count <= fifo_count - 5'd1;
+                2'b10:   fifo_count <= fifo_count + 7'd1;
+                2'b01:   fifo_count <= fifo_count - 7'd1;
                 default: ;
             endcase
         end

@@ -594,35 +594,27 @@ assign linefill_dbg = lf_dbg;
     end
     
 
-    // HDMI TX audio - send 32K sampling rate audio
-    // Hoarse sound issue: https://github.com/nand2mario/snestang/issues/16
-    // SNES average framerate is 60.09881. So we need to pause the SNES a bit every frame to ensure 60 fps HDMI. 
-    // For sound, that translate to about 8 samples pause time per frame. So we run our DSP a bit faster to 
-    // buffer enough samples before the SNES pause.
-    localparam AUDIO_OUT_RATE = 32000;
-    localparam AUDIO_DELAY = CLKFRQ * 1000 / AUDIO_OUT_RATE / 2;
+    // HDMI TX audio, nominally 32 kHz, with clk_audio servoed to the S-DSP's
+    // real rate (see hdmi_audio_clock.v).
+    localparam AUDIO_OUT_RATE = 32000;              // header value only
     reg [15:0] audio_sample_word [1:0];
-    reg [$clog2(AUDIO_DELAY)-1:0] audio_divider;
-    reg clk_audio;
-    reg audio_rinc;
+    wire [15:0] audio_word_l, audio_word_r;
+    wire clk_audio;
+    wire audio_rinc;
     wire audio_full, audio_empty;
     wire [31:0] audio_sample;
+    wire [4:0] audio_level;
 
-    always @(posedge clk_pixel) begin
-        if (resetn) begin
-            audio_rinc <= 0;
-            if (audio_divider != AUDIO_DELAY - 1) 
-                audio_divider <= audio_divider + 1;
-            else begin 
-                audio_divider <= 0;
-                clk_audio = ~clk_audio;     // generate audio clock @ 32Khz
-                // output audio sample on posedge clk_audio
-                if (!clk_audio && !audio_empty) begin
-                    {audio_sample_word[0], audio_sample_word[1]} <= audio_sample;
-                    audio_rinc <= 1'b1;                    
-                end
-            end
-        end
+    hdmi_audio_clock #(.CLK_HZ(CLKFRQ * 1000)) audio_clock (
+        .clk(clk_pixel), .resetn(resetn),
+        .level(audio_level), .empty(audio_empty), .sample(audio_sample),
+        .clk_audio(clk_audio), .rinc(audio_rinc),
+        .word_l(audio_word_l), .word_r(audio_word_r)
+    );
+
+    always @* begin
+        audio_sample_word[0] = audio_word_l;
+        audio_sample_word[1] = audio_word_r;
     end
 
     // Audio sample FIFO for 16 samples
@@ -631,7 +623,7 @@ assign linefill_dbg = lf_dbg;
         .winc(audio_ready), .wdata({audio_l, audio_r}), .wfull(audio_full),
         .rclk(clk_pixel), .rrst_n(1'b1),
         .rinc(audio_rinc), .rdata(audio_sample), .rempty(audio_empty),
-        .almost_full(), .almost_empty()
+        .almost_full(), .almost_empty(), .rlevel(audio_level)
     );
 
     //
