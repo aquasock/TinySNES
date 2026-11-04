@@ -1020,27 +1020,26 @@ always @(posedge CLK) begin
         end
       //			GSU_ROM_RD <= '0';
         if (EN) begin
-            // TinySNES: 5 rather than 1/2/3.  The GSU latches ROM_DI after
-            // counting ROM_CYCLES of RON, and each GSU cycle is two master
-            // clocks because CLK_CE toggles -- so upstream's 1 to 3 is 2 to 6
-            // mclk.  This board's cartridge lives in SDRAM and answers about
-            // four mclk after the address appears (TCL-019), plus a register in
-            // main.v, so the data is late and the GSU latched garbage.  In the
-            // bench this is the difference between a working cache fill at
-            // +lat=0..2 and none at all at +lat=3..4, which is exactly the
-            // signature the board showed.  5 is the largest value whose
-            // +2 for the LOAD path still fits ROM_ACCESS_CNT's three bits.
+            // TinySNES: 3 at 10.7 MHz and 9 at 21.4 MHz, rather than upstream's
+            // 1 and 3 (2 for TURBO).  The GSU latches ROM_DI after counting
+            // ROM_CYCLES of RON with no ready handshake.  This board's
+            // cartridge lives in SDRAM and answers about four mclk after the
+            // address (TCL-019), plus a register in main.v.  With CLS=0 a GSU
+            // cycle is two mclk because CLK_CE toggles, so 3 is 6 mclk: on the
+            // board 2 and 3 latch every byte of Star Fox correctly, 1 hangs
+            // it, and the old 9 ran it at half speed.  With CLS=1 a GSU cycle
+            // is one mclk; Yoshi's Island, Stunt Race FX and Dirt Trax FX all
+            // hang at 3, and Yoshi's Island also hangs at 6 though every ROM
+            // byte it latched was correct, so 9 stays until that is found.
             // DBG_ROM_CYCLES is a runtime override from the debug endpoint.
             // 13 is the ceiling because the LOAD path counts ROM_CYCLES + 2 in
             // ROM_ACCESS_CNT's four bits.
             if (DBG_ROM_CYCLES != 4'd0 && DBG_ROM_CYCLES <= 4'd13)
                 ROM_CYCLES <= DBG_ROM_CYCLES;
-            else if (TURBO) 
+            else if (SPEED || TURBO)
                 ROM_CYCLES <= 4'd9;
-            else if (SPEED == 1'b0) 
-                ROM_CYCLES <= 4'd9;
-            else 
-                ROM_CYCLES <= 4'd9;
+            else
+                ROM_CYCLES <= 4'd3;
 
             R14_CHANGE_LATCH <= 1'b0;
             if (CPU_EN && R14_CHANGE) 

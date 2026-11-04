@@ -381,6 +381,9 @@ module gsu_tb (
   // and four zero ID bits, then ones.  The CPU reads ~DI, so a pressed button
   // drives DI low.  +press_btn uses those indices (Start = 3) and holds the
   // button from frame +press_frame for +press_dur frames.
+  // +romcyc=N drives GSU.v's DBG_ROM_CYCLES knob, 1..13; 0 keeps the built-in 9.
+  integer romcyc = 0;
+  initial void'($value$plusargs("romcyc=%d", romcyc));
   integer press_btn = 3, press_frame = -1, press_dur = 6;
   initial begin
     void'($value$plusargs("press_btn=%d", press_btn));
@@ -484,6 +487,43 @@ module gsu_tb (
     end
   end
 
+  // +golog=path times the GSU against the S-CPU, one line per event with its
+  // mclk: "G n" when GO_CNT becomes n (a start), "I" when the GSU's IRQ_N
+  // falls (a STOP with IRQ unmasked), "S" when FLAG_GO falls (only the port
+  // drives it; the reference wrapper ties it low), and per frame
+  // "F frame starts irqs go_mclk sfr_reads" where sfr_reads counts S-CPU
+  // reads of $3030/$3031, i.e. how hard the CPU polled for the GSU.
+  reg [4095:0] golog_path;
+  integer go_cyc = 0;
+  integer go_fd = 0, f_starts = 0, f_irqs = 0, f_go = 0, f_sfr = 0;
+  reg [15:0] go_prev = 0;
+  reg irq_prev = 1, fg_prev = 0, sfr_rd_prev = 0;
+  wire sfr_rd = !dut.CPURD_N && !mm_addr[22] && mm_addr[15:1] == 15'h1818;
+  initial begin
+    golog_path = 0;
+    if ($value$plusargs("golog=%s", golog_path)) go_fd = $fopen(golog_path, "w");
+  end
+  always @(posedge clk) begin
+    go_cyc <= go_cyc + 1;
+    if (go_fd != 0) begin
+      go_prev <= GSU_GO_CNT; irq_prev <= dut.GSU_IRQ_N; fg_prev <= GSU_FLAG_GO;
+      sfr_rd_prev <= sfr_rd;
+      if (GSU_GO_CNT != go_prev) $fwrite(go_fd, "%0d G %0d\n", go_cyc, GSU_GO_CNT);
+      if (irq_prev && !dut.GSU_IRQ_N) $fwrite(go_fd, "%0d I\n", go_cyc);
+      if (fg_prev && !GSU_FLAG_GO) $fwrite(go_fd, "%0d S\n", go_cyc);
+      if (frame_end) begin
+        $fwrite(go_fd, "%0d F %0d %0d %0d %0d %0d\n", go_cyc, frame_no,
+                f_starts + (GSU_GO_CNT != go_prev), f_irqs, f_go, f_sfr);
+        f_starts = 0; f_irqs = 0; f_go = 0; f_sfr = 0;
+      end else begin
+        if (GSU_GO_CNT != go_prev) f_starts = f_starts + 1;
+        if (irq_prev && !dut.GSU_IRQ_N) f_irqs = f_irqs + 1;
+        if (GSU_FLAG_GO) f_go = f_go + 1;
+        if (sfr_rd && !sfr_rd_prev) f_sfr = f_sfr + 1;
+      end
+    end
+  end
+
   reg [4095:0] dump_path;
   always @(posedge clk) begin
     if (frame_end && dump_pfx != 0 && frame_no >= dump_from &&
@@ -549,7 +589,7 @@ module gsu_tb (
     .GSU_DBG_CACHE_EN(GSU_CACHE_EN),
     .GSU_DBG_FETCH_OP_SEEN(GSU_FETCH_OP_SEEN),
     .GSU_DBG_PC(GSU_PC), .GSU_DBG_RL(), .GSU_DBG_OP(), .GSU_DBG_MM(),
-    .GSU_DBG_ROM_CYCLES(4'd0)
+    .GSU_DBG_ROM_CYCLES(romcyc[3:0])
   );
 
   // ------------------------------------------------------------- reporting

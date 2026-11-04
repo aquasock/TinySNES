@@ -3005,3 +3005,35 @@ The user is continuing to play Yoshi's Island on this build. Check on the board 
 - User Test: PASS
 
 ---
+
+## 93 COMMIT Unreleased 2026-11-04T11:32:40-07:00
+
+#### Coming From:
+
+Unreleased 6f11ec5
+
+#### Purpose:
+
+Find why the Star Fox intro runs at about half speed on the board and why SuperFX sound effects lag, and set the GSU's ROM wait to what the board's SDRAM actually needs.
+
+#### Outcome:
+
+The GSU's `ROM_CYCLES` in `fpga/snes/src/chip/GSU/GSU.v` was 9 at every clock speed, against upstream's 1 to 3. A board capture of Star Fox reached the title 42.3 s after first light against 31.1 s in snes9x, and Star Fox simulations with the new `+romcyc` and `+golog` options of `tools/sim/gsu_tb.sv` showed the port at `+romcyc=1` progressing frame for frame with MiSTer's reference GSU while the port at 9 fell behind, so the slow GSU was the whole cause. On the board the debug knob showed that Star Fox, which leaves `CLS` at 0 so a GSU cycle is two mclk, latches every ROM byte correctly at 2 and 3 and hangs at 1, and at 3 it reached the title in 28.8 s and the user reported sound, graphics and speed all clearly better. The 21.4 MHz games, which write `$3039 = 01`, behaved differently: Yoshi's Island, Stunt Race FX and Dirt Trax FX all failed at 3, and Yoshi's Island also failed at 6. A trace of the Yoshi's Island boot at 6 showed data loads and code fetches all correct but only 69% of instruction-cache fills, with every other byte stale, which is the cartridge port in `fpga/snes/src/snestang_top.v` not returning a fresh 16-bit word within seven mclk across its request and acknowledge handshake; at 8 every byte was correct and the game ran. The default is now 3 when `CLS` is 0 and 9 when `CLS` or `TURBO` is set, keeping every 21.4 MHz game at its tested value, and `tools/tinysnes_dbg.py` reports that default. At 9 the user played Stunt Race FX, Dirt Trax FX, Vortex, Star Fox 2 and Doom with no visual faults; Winter Gold is a PAL cartridge and stopped at its own region check. Synthesis and place-and-route on seed 2 passed timing with no hold violations, with fclk 232 MHz, `dbg.clk` 29.5 MHz against 21.5, hclk 136 MHz and the GSU cache clock 299 MHz, using 43,136 LUT4, 11,481 DFF and 212 BSRAM. Its `tinysnes.bin`, SHA-256 `4c86ac26038165e2cd203cb7dfa26a741f2a8c8d8a547654f1da012fc9b6e582`, was deployed with `tools/tang_deploy.py`; with the knob at its default Star Fox reached the title 29.0 s after first light, and Yoshi's Island showed the stork correctly. The user accepted both and reported small audio cuts and some missing channels in Yoshi's Island and small pops in every game, which also occur in non-SuperFX games. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 92 were not rewritten, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the ninety-three-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Replace the GSU's fixed ROM wait with a ready signal from the cartridge port, so that each read waits for its word instead of a guessed count; this should let the 21.4 MHz games run faster than at 9 and may cure the lag of Yoshi's Island's coin sound. Then take up the audio cuts and missing channels in Yoshi's Island and the small pops heard in every game, which belong to the general audio path rather than the GSU.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU.v
+- tools/sim/gsu_tb.sv
+- tools/tinysnes_dbg.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

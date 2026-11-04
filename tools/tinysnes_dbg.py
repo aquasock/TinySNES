@@ -218,7 +218,7 @@ def show_status(r: dict, prev: dict | None, dt: float) -> None:
     knob = r["knob"]
     print(f"cart ROM reads {r['rom_reqs']}   deferred {r['rom_defers']}   "
           f"timeouts {r['rom_timeouts']}   BSRAM writes {r['bsram_wrs']}   "
-          f"ROM_CYCLES {knob if knob else '9 (default)'}")
+          f"ROM_CYCLES {knob if knob else 'default (3, or 9 at 21 MHz)'}")
     if prev and dt > 0:
         rate = lambda k: (r[k] - prev[k]) / dt
         print(f"rates/s  frames {rate('frames'):.1f}  GO {((r['go_sfr'] >> 16) - (prev['go_sfr'] >> 16)) % 65536 / dt:.1f}"
@@ -450,7 +450,7 @@ def main() -> int:
                     raise SystemExit("ROM_CYCLES is 1..13, or 0 for the built-in 9")
                 link.wr(REG["knob"], args.n)
             k = link.rd(REG["knob"])
-            print(f"GSU ROM_CYCLES {k if k else '9 (default)'}")
+            print(f"GSU ROM_CYCLES {k if k else 'default (3, or 9 at 21 MHz)'}")
         elif args.cmd == "peek":
             base = 0x01000000 if args.mem == "bsram" else 0x02000000
             a0 = args.addr & ~3
