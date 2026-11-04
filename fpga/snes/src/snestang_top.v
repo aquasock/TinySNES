@@ -68,6 +68,9 @@ module snestang_top (
     output ds_cs2,
 `endif
 
+    // Pmod I2S2 on PMOD1: MCLK, LRCK, SCLK and SDIN, in that order.
+    output [3:0] pmod1_dac,
+
     // USB1 and USB2.  The ports are declared unconditionally on purpose: they
     // are board pins, and whether anything is wired to them is a different
     // question from whether the pin exists.  Leaving them behind `ifdef USB1
@@ -2938,6 +2941,22 @@ assign pad_reads = 16'd0;
 assign pad_fails = 8'd0;
 assign pad_dbg_bytes = 16'd0;
 assign pad_dbg_fmt3  = 1'b0;
+`endif
+
+// ------------------------------------------------------------- Pmod I2S audio
+// A second, better audio output than the HDMI transmitter's: a CS4344 DAC on a
+// Pmod I2S2, fed from the same sample stream snes2hdmi sends to HDMI.  The unit
+// resamples the S-DSP's fixed 32,180 Hz up to 48,828 Hz, because the DAC derives
+// Fs from its MCLK and the emulated rate cannot be moved.
+`ifdef TINYSNES_I2S
+i2s_out sound (
+    .clk(mclk), .resetn(resetn),
+    .audio_l(audio_l), .audio_r(audio_r), .audio_valid(audio_ready),
+    .dac_mclk(pmod1_dac[0]), .dac_lrck(pmod1_dac[1]),
+    .dac_sclk(pmod1_dac[2]), .dac_sdin(pmod1_dac[3])
+);
+`else
+assign pmod1_dac = 4'b0000;
 `endif
 
 // output button presses to SNES

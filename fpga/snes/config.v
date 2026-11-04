@@ -31,6 +31,12 @@
 // of its own and takes input only over the BL616 link.
 `define WII_PAD
 
+// The Pmod I2S2 on PMOD1, fed from the same sample stream the HDMI transmitter
+// gets.  Off by default is not useful here: the pins are constrained either way
+// and the unit costs one small divider plus a resampler, so it is built unless
+// a diagnostic build wants the logic budget.
+`define TINYSNES_I2S
+
 package configPackage;
 
 localparam SDRAM_DATA_WIDTH = 16;

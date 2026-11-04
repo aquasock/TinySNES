@@ -163,6 +163,7 @@ sources=(
     "$src"/src/gowin_dpb_oam.v
     "$src"/src/controller_adapter.sv
     "$src"/src/wii_pad.sv
+    "$src"/src/i2s_out.sv
     "$src"/src/iosys/gowin_dpb_menu.v
     "$src/src/iosys/iosys_bl616.v"
     "$src/src/iosys/uart_fractional.v"

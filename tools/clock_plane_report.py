@@ -99,6 +99,15 @@ OWN_MEASURED = {
     # synced image and this reference reached the PLL that makes the pixel and
     # serializer clocks.  entry 76.
     ("pll", "SPINE8",  "CBRIDGEOUT_BOTTOM0"): True,
+    # 2026-11-03, core-log entry 87.  SPINE27/TOP2 carries fclk in the build
+    # deployed with the I2S resampler, and the user reported the picture
+    # perfect on it, so fclk reached the SDRAM controller that serves the
+    # cartridge and both work RAMs.  It was unmeasured before this: every
+    # counter-example on this device so far is a BOTTOM pip on a PLL source,
+    # and this is a TOP pip, which is consistent with that.  Worth recording
+    # because the servo change steered fclk here on all eight seeds tried, so
+    # refusing the build over it would have blocked a working design.
+    ("pll", "SPINE27", "CBRIDGEOUT_TOP2"): True,
 }
 
 

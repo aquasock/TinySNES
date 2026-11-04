@@ -2789,3 +2789,41 @@ Saves are the obvious next feature, and the shape is known rather than speculati
 - User Test: PASS
 
 ---
+
+## 87 COMMIT Unreleased 2026-11-03T18:53:54-07:00
+
+#### Coming From:
+
+Unreleased 0cb5f21
+
+#### Purpose:
+
+Add a Pmod I2S2 audio output from the same sample stream the HDMI transmitter gets, and hand the project off with the audio fault narrowed but not closed.
+
+#### Outcome:
+
+`fpga/snes/src/i2s_out.sv` drives a CS4344 DAC on a Pmod I2S2 in PMOD1, fed from the same `audio_l`/`audio_r`/`audio_ready` the HDMI path uses, and it plays: the user heard Castlevania IV's music through it. The frame is I2S with 64 SCLKs, LRCK low for the left channel, a zero delay bit then 16 bits MSB first; MCLK, SCLK and LRCK all come from one counter on `mclk` and drive pins directly, so the unit adds nothing to the FPGA's clock network. Three real defects were found and fixed in it, each measured: a one-deep holding slot overwrote 68 of 358 input samples (19 percent lost, heard as broadband distortion) until a 16-entry FIFO was added and the bench's overwrite counter went to zero; an 8-bit interpolation weight quantised to 256 LSB of error at full scale, -42 dBFS, until it was widened to 16 bits with rounding, -90 dBFS; and the resampling ratio was taken from a nominal 21.477 MHz master clock when `mclk` is the PLL's 21.505376 MHz, so the S-DSP produces 32,222 Hz and not the 32,180 assumed, which made the FIFO overflow every tenth of a second until an exact integer ratio of 823808/1073865 replaced both integers. A fourth change made the resampler an asynchronous converter, nudging its step by occupancy so bursty arrivals become slowly-varying phase rather than a jump. `tools/tests/i2s_tb.sv` covers the clocks, the frame shape, the resampler, and a bursty producer; it now instantiates a real `CEGen` with `dsp.v`'s own constants, because it previously generated samples 667 clocks apart -- the same wrong rate the RTL assumed -- so the two agreed with each other and neither could see the overflow. The scratch the user hears is NOT closed. It was first attributed to frame-rate modulation from `pause_snes_for_frame_sync`, which halts the whole machine once per frame and is unique to this core among the sibling projects, but the ASRC built to absorb it changed the measurement by nothing, so that cause is unconfirmed and likely wrong. `tools/audio_probe.py` was added to capture the Pmod's line-out through the PC's line-in and report harmonics, spurious peaks, noise floor and envelope modulation, and using it exposed a fault in the writer's own method rather than in the design: several captures were analysed without establishing which cable was in the line-in or whether a core and ROM were loaded at all, one "cable unplugged" comparison was recorded three seconds after asking the user, before they could act, and one capture of a clean 1001 Hz tone was taken with no bitstream loaded -- when an unconfigured FPGA cannot clock the DAC, so that signal cannot have come from the board. Those readings and the conclusions drawn from them (a 60.000 Hz modulation with 0.5 Hz resolution, and a TV-versus-Pmod comparison) are therefore void and are recorded as void rather than deleted. Two facts about the siblings make the comparison that motivated much of this work unsound: TinyNES and TinyGBC are libretro cores running on the AE350 soft CPU, writing samples into an AHB FIFO that their `i2s_out` drains, whereas this core has no CPU and a hardware DSP, so "the siblings are clean" says nothing about this design. Separately the Pmod's pin map conflicts with this board's SDRAM: PMOD1_IO0 (W19) carried `O_sdram_cke`, which is a dummy output because the console's SDRAM module ties CKE high itself, so it moved to W20 and W19 became the DAC's MCLK, with F19, E22 and E21 for LRCK, SCLK and SDIN as both siblings use them. A clock-plane finding is recorded because it unblocks future builds: the servo change steered `fclk` onto `SPINE27/CBRIDGEOUT_TOP2` on all eight seeds tried, and the build booted with a perfect picture, so that pip is now measured-good in `tools/clock_plane_report.py`. Every clock in the deployed build is on a measured-good bridge pip; the only remaining complaint is the GSU cache clock, which is the deferred SuperFX thread. `README.md` gained nothing this cycle; the deployed core is `build/i2a_s2/tinysnes.bin` and the board runs the RetroRegen diagnostic cartridge. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 86 were not rewritten, and made no change to `core-reference.md` because the I2S and CS4344 facts are already carried in EXT-001 and the clock measurement belongs in the tool's own table; validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-seven-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+The audio fault is open and the next agent should not build before establishing ground truth, because four cycles were spent on measurements of uncertain provenance. The three facts to confirm before any capture are: that `tangload` reported `core loaded` and the picture shows the SNES rather than the launcher, that a ROM is playing, and which cable is in the PC's line-in -- the Pmod's line-out or the display's HDMI audio out. `tools/audio_probe.py --fundamental <f>` is the instrument; run it under `~/venv-audio/bin/python3` because numpy and scipy are in that venv. The comparison worth making first is the same cartridge on the same cable with the ground-loop hypothesis in mind: the Pmod output is a 3.5 mm jack and therefore not galvanically isolated, while HDMI is, so a mains hum on the jack and not on HDMI is the expected signature, and a ten-pound isolator settles it without a build. Do not re-open the four I2S fixes -- each was measured and each is an improvement -- and do not treat the siblings as a reference implementation for the audio path, since they run a libretro core on a soft CPU rather than a hardware DSP. If a real defect remains after ground truth is established, the next measurement is the arrival pattern of `audio_ready` in a probe build, not another resampler change. Two other threads are unchanged and both are nearer completion than the audio one: the OSD is still the only untested surface and is a connected change because `textdisp` is instantiated in `iosys_bl616.v` with its output unused and `overlay` tied to zero, and saves now have a known shape -- read BSRAM out through the debug port, write a `.srm` to the card, load it on launch, following TinyNES's NVRAM handover -- with the warning that any test must power cycle rather than reload, since a save survives one `tangload` and not a reboot. The SuperFX keeps its two named candidates and the ExHiROM decode in `smc_parser.v` still waits on an image.
+
+#### Files Modified:
+
+- fpga/snes/src/i2s_out.sv
+- fpga/snes/src/snestang_top.v
+- fpga/snes/tinysnes.cst
+- fpga/snes/config.v
+- tools/build_tinysnes.sh
+- tools/clock_plane_report.py
+- tools/audio_probe.py
+- tools/tests/i2s_tb.sv
+- tools/tests/run_i2s_tb.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: FAIL
+
+---

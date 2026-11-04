@@ -76,6 +76,19 @@ IO_PORT "usb1_dp" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 IO_LOC  "usb1_dn" G13;
 IO_PORT "usb1_dn" IO_TYPE=LVCMOS33 PULL_MODE=UP;
 
+// Pmod I2S2 on PMOD1, seated normally: Digilent pins 1-4 are Sipeed PMOD1_IO0,
+// IO2, IO4 and IO6, the DAC's MCLK, LRCK, SCLK and SDIN -- the same pins and the
+// same module TinyNES and TinyGBC use on this board.  The CS4344 takes
+// MCLK = 256 x Fs, so 12.5 MHz here is 48,828 Hz.
+IO_LOC  "pmod1_dac[0]" W19;
+IO_PORT "pmod1_dac[0]" IO_TYPE=LVCMOS33;
+IO_LOC  "pmod1_dac[1]" F19;
+IO_PORT "pmod1_dac[1]" IO_TYPE=LVCMOS33;
+IO_LOC  "pmod1_dac[2]" E22;
+IO_PORT "pmod1_dac[2]" IO_TYPE=LVCMOS33;
+IO_LOC  "pmod1_dac[3]" E21;
+IO_PORT "pmod1_dac[3]" IO_TYPE=LVCMOS33;
+
 // Joystick on pmod1
 
 
@@ -170,9 +183,12 @@ IO_PORT "O_sdram_dqm[1]" IO_TYPE=LVCMOS33;
 
 // SDRAM clock enable.  SNESTang's console.cst does not constrain this pin --
 // Gowin's fitter placed it wherever it liked -- and the Console's SDRAM module
-// ties CKE high itself, so the signal only has to reach a pad.  PMOD1_IO0 is
-// free in this core (no VGA, no DualShock), so it carries it.
-IO_LOC "O_sdram_cke" W19;
+// ties CKE high itself, so the signal only has to reach a pad rather than a
+// particular one.  It sat on PMOD1_IO0 (W19) until the Pmod I2S2 needed that
+// pad: the module's pin 1 is MCLK, which is fixed by the hardware, so CKE moves
+// to PMOD1_IO1 instead.  Pins 7-10 are unused on a Pmod I2S2, so nothing
+// collides there.
+IO_LOC "O_sdram_cke" W20;
 IO_PORT "O_sdram_cke" IO_TYPE=LVCMOS33;
 
 IO_LOC "O_sdram_clk" B17;
