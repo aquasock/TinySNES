@@ -2871,3 +2871,33 @@ The user will compare Star Fox on the board against the same ROM in a PC emulato
 - User Test: PASS
 
 ---
+
+## 89 COMMIT Unreleased 2026-11-03T23:41:44-07:00
+
+#### Coming From:
+
+Unreleased 047d234
+
+#### Purpose:
+
+Record the user's first play tests of the SuperFX-fixed build across Star Fox, Super Mario Kart, Donkey Kong Country and Yoshi's Island.
+
+#### Outcome:
+
+The build from entry 88, `build/en_fix/tinysnes.bin` loaded as `/root/cores/console138k/tinysnes-dbg.bin`, was played by the user with each cartridge unzipped from `/run/media/vash/MiSTer_Data/games/SNES/` into `/tmp` and sent with `tools/load_snes_rom.py` in two-wire mode, and every transfer completed without error. Star Fox plays at length but shows many graphical glitches, which the user has deferred. Super Mario Kart boots and plays, and the user reported that the sound on the I2S Pmod was now perfect, which is the first time the crackle that entry 87 left open has not been heard. Donkey Kong Country Rev 2, a 4 MiB cartridge, plays with sound the user called perfect apart from one tiny underrun about every ten seconds, so the crackle is reduced to a rare dropout rather than gone. Yoshi's Island Rev 1, the second SuperFX title and the first GSU2 title tried, boots and runs at full speed, and the debug endpoint reported 798 GO starts with no stalled ROM or RAM handshake, but the opening chime is missing, the rotating island on the title is distorted, the first text box is drawn as a solid black square, the sound crackles, and whole sound channels appear to be missing. Two of the endpoint's counters cannot both be right after a cartridge load, GO time reading 44 s against an uptime of 11 s and stops exceeding starts, which suggests the counters are not cleared when a cartridge is loaded, so only the GO-start count and the handshake flags were relied on here. No source, build or bitstream changed in this cycle. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 88 were not rewritten, made no change to `core-reference.md` this cycle, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the eighty-nine-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+The user is continuing to play to gather more symptoms before any change is made. The SuperFX picture faults in Star Fox and Yoshi's Island, and Yoshi's Island's black text box in particular, point first at the GSU's game-pak RAM path, whose BSRAM port has no acknowledge input on `GSUMap`, and the board sim's Yoshi's Island frames should be compared against an emulator before the board is touched. The missing channels in Yoshi's Island should be checked against Super Mario Kart and Donkey Kong Country, which keep all their channels, to learn whether sound data reaches the APU wrongly while the GSU owns the ROM bus or whether the fault is in the APU itself. The Donkey Kong Country underrun is the remaining trace of the entry 87 crackle and should be measured on the Pmod's FIFO level. The debug counters should be cleared on cartridge load. The OSD, saves and the ExHiROM decode remain open.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: FAIL
+
+---
