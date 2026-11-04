@@ -2937,3 +2937,33 @@ Find out whether the Tang is driving HDMI at all. Check its console over the CDC
 - User Test: NOT RUN
 
 ---
+
+## 91 COMMIT Unreleased 2026-11-04T07:31:51-07:00
+
+#### Coming From:
+
+Unreleased b437c48
+
+#### Purpose:
+
+Build, deploy and board-test the GSU character-address fix that entry 90 verified only in simulation.
+
+#### Outcome:
+
+This entry supersedes entry 90's failed build. The `GetCharOffset` fix in `fpga/snes/src/chip/GSU/GSU_PKG.v` was rebuilt unchanged into `build/yi_fix1` with seed 2 and `TINYSNES_CLK_FIRST=dbg.clk`. The build passed the clock-edge check and the timing gate, with `dbg.clk` at 26.546 MHz against 21.505, fclk at 228.833 against 64.516 and hclk at 127.535 against 74.250, and gave `tinysnes.bin` SHA-256 `bd12484581666b0f4a1a30649f8a7624ee56e80684ee5c88445ae97de384f1ca`. It was placed on the card as `/root/cores/console138k/tinysnes-dbg.bin` by the new `tools/tang_deploy.py`, which sends the file with `tangput`, checks 4 KiB at its head, middle and tail with `tangget`, and runs `tangload`. All three checks matched and the console reported the core loaded. Yoshi's Island Rev 1 was then loaded with `tools/load_snes_rom.py` and left to run through the intro to the title. The capture card, which entry 90 could not get to show the console, worked again after the host PC was rebooted, and the run was recorded from `/dev/video0` and compared with snes9x frames from `tools/ref_emu.py`. On the title screen the rotating island's mountains, trees and castles now draw as they do in snes9x. The user accepted the result and noted that in two of six sampled frames, where the island faces almost straight on, the whole picture including the water is correct, while in the other four the surrounding water is warped and streaked, so the remaining title fault depends on the rotation angle. The intro still lacks every GSU-drawn figure seen in snes9x: the stork and the clouds of its scene, Yoshi and baby Mario are missing, and the map and Kamek's room are drawn only on their left side. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 90 were not rewritten, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the ninety-one-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find why the title's water is warped at most rotation angles but correct when the island faces front-on. Super Mario Kart's mode 7 works, so first check whether the water is a mode-7 layer driven by HDMA or a GSU-drawn picture, using the simulator, which shows the same fault. Then trace the missing intro figures, the stork, its clouds, Yoshi and baby Mario, together with the left-only map and Kamek's room. Their right-hand cut-off points at another GSU plot-address or screen-width case, and the remaining 330-byte SuperFX RAM difference from snes9x at frame 1230 should be diffed write by write. The missing chime, the black text box, the GSU stall at `09:FEFE` and the audio crackle remain open.
+
+#### Files Modified:
+
+- tools/tang_deploy.py
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
