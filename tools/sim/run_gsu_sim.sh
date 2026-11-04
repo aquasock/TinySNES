@@ -23,6 +23,9 @@
 #   --bwlat N      BSRAM acknowledge latency in clk (default 0 = never busy)
 #   --romtype N    mapper chip bits after the header arrives (default 112 = $70,
 #                  GSU; use 32 = $20 for a plain LoROM control run)
+#   --arg +X=Y     pass a plusarg straight to the bench, repeatable, e.g.
+#                  --arg +rommask=1FFFFF --arg +press_frame=1390
+#                  --arg +dump=/path/dir/ --arg +dumpevery=10
 #
 set -euo pipefail
 
@@ -40,6 +43,7 @@ bwlat=0
 rtog=0
 out="$root/build/gsusim"
 defines=()
+extra=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --cycles) cycles="$2"; shift 2 ;;
@@ -51,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --glat) glat="$2"; shift 2 ;;
     --bwlat) bwlat="$2"; shift 2 ;;
     --rtog) rtog="$2"; shift 2 ;;
+    --arg) extra+=("$2"); shift 2 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -115,6 +120,7 @@ done
 
 args=(+hex="$hex" +cycles="$cycles" +trace="$out/gsu.trace" +frame="$out/frame.ppm" +romtype="$rt" +lat="$lat" +glat="$glat" +bwlat="$bwlat" +rtog="$rtog")
 [[ "$vcd" == 1 ]] && args+=("+vcd=$out/waves.vcd")
+args+=("${extra[@]}")
 
 cd "$out"
 # DSPn.v loads its microcode with $readmemh and a bare filename, so the file has

@@ -498,15 +498,15 @@ function logic [16:0] GetCharOffset(logic [12:0] offs, logic [1:0] ht,
 
     case (ht)
     2'b00: temp = {1'b0, offs[4:0], 4'b0} + {5'b0, offs[12:8]};
-    2'b01: temp = {1'b0, offs[4:0], 4'b0} + {3'b0, offs[4:0], 2'b0};
-    2'b10: temp = {1'b0, offs[4:0], 4'b0} + {2'b0, offs[4:0], 3'b0};
+    2'b01: temp = {1'b0, offs[4:0], 4'b0} + {3'b0, offs[4:0], 2'b0} + {5'b0, offs[12:8]};
+    2'b10: temp = {1'b0, offs[4:0], 4'b0} + {2'b0, offs[4:0], 3'b0} + {5'b0, offs[12:8]};
     default:  temp = {offs[12], offs[4], offs[11:8], offs[3:0]};
     endcase
 
     case (md)
     2'b00: temp2 = {3'b0, temp, 4'b0};
     2'b01: temp2 = {2'b0, temp, 5'b0};
-    2'b10: temp2 = {1'b0, temp, 6'b0};
+    2'b11: temp2 = {1'b0, temp, 6'b0};
     default:  temp2 = {2'b0, temp, 5'b0};
     endcase
 

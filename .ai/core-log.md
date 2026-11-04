@@ -2901,3 +2901,39 @@ None.
 - User Test: FAIL
 
 ---
+
+## 90 COMMIT Unreleased 2026-11-04T01:16:16-07:00
+
+#### Coming From:
+
+Unreleased a0651fb
+
+#### Purpose:
+
+Fix the GSU character-address bugs behind Yoshi's Island's broken title island and record the unfinished board check and capture-card investigation for an agent handoff.
+
+#### Outcome:
+
+`GetCharOffset` in `fpga/snes/src/chip/GSU/GSU_PKG.v` had two porting errors against the MiSTer VHDL and bsnes `superfx/memory.cpp`: the 160-line and 192-line screen heights (`ht` 01 and 10) dropped the `offs[12:8]` row term, and the 8 bpp tile size was decoded on `md` 10 instead of 11. Both are fixed. The new snes9x libretro runner `tools/ref_emu.py` gives reference frames and cartridge-RAM and WRAM dumps, and `tools/sim/gsu_tb.sv` with `tools/sim/run_gsu_sim.sh` now takes a 4 MiB ROM, a `+rommask`, a timed START press, a frame counter and `+dump`, `+dumpevery` and `+dumpfrom` RAM and frame dumps through a repeatable `--arg`. A 610M-cycle simulation of Yoshi's Island Rev 1 with START at frame 1392, compared with snes9x at the same frames, now draws the title island's mountains, trees and castles, which were missing before the fix. The mode-7 ground plane is still streaked, the stork scene's clouds are still missing, and the SuperFX RAM still differs from snes9x by 330 bytes at frame 1230, the same as before the fix, so a second GSU defect remains. The board build in `build/yi_fix1`, using the usual seed 2 `dbg.clk` options, was killed partway through nextpnr routing when its shell was lost, so it left no bitstream, and nothing was deployed or tested on the board. The HDMI capture card, a MacroSilicon `345f:2133` on hub 1-8.1 port 2, would not show the Tang console. A `usbreset`, a `uhubctl` port power cycle, the user's physical replug, and Tang reboots through the user's unmodified two-wire relay script `reboot_in 2_wire.py` all failed. So did a card power cycle at each of six points around the reboot: when the Tang went off, 4 s into its boot, 3 s after its full power, 8 s before the reboot, 30 s after it, and both before and after. The card only ever showed its grey acquiring fill or its "No Video" page, and in the last three trials it stayed on "No Video", which points at the Tang not driving HDMI rather than the card failing to lock. The trial tools are now in `tools/capture/`. These are `capcard-reset`, `reboot_trial.sh`, which runs one reboot-and-cycle trial, and `classify_frames.py`, which labels each frame as console, grey fill or "No Video". They depend on a host sudoers rule, `/etc/sudoers.d/capcard`, that allows exactly the `uhubctl` cycle and `usbreset` commands without a password. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, checked that entries 1 to 89 were not rewritten, and validated this entry's numbering, six sections, one-sentence Purpose, prose, Status values and the ninety-entry count against the 100-entry limit.
+
+#### Next Steps:
+
+Find out whether the Tang is driving HDMI at all. Check its console over the CDC serial port (`ffff:5454`) for the running core and video mode, and check the cable and HDMI port, before any more card sequencing. If the card is at fault, read the MS2130 receiver status over HID with `ms-tools`. Once the console shows on the card, rebuild `build/yi_fix1` with the GSU fix, deploy it with the user's permission, load Yoshi's Island, capture the title island and compare it with snes9x. The second GSU defect should then be traced in simulation by diffing GSU RAM writes against snes9x across frames 1220 to 1230, using a saved simulator checkpoint and an instruction trace. The missing chime, the black text box, the GSU stall at `09:FEFE` and the audio crackle remain open. Do not automate the capture-card reset until the user has seen a working sequence.
+
+#### Files Modified:
+
+- fpga/snes/src/chip/GSU/GSU_PKG.v
+- tools/ref_emu.py
+- tools/sim/gsu_tb.sv
+- tools/sim/run_gsu_sim.sh
+- tools/capture/capcard-reset
+- tools/capture/classify_frames.py
+- tools/capture/reboot_trial.sh
+
+#### Status:
+
+- Build: FAIL
+- Deployment: NOT RUN
+- User Test: NOT RUN
+
+---

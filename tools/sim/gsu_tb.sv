@@ -77,7 +77,7 @@ module gsu_tb (
   // anyone watches, and still bounded rather than running forever.
   integer cycles_max = 1000000000;
   reg     reported = 1'b0;
-  reg [1023:0] hex_path, trace_path, vcd_path, frame_path;
+  reg [4095:0] hex_path, trace_path, vcd_path, frame_path;
 
   // ------------------------------------------------------------- cart header
   // Star Fox (USA) (Rev 2): LoROM, type $13, rom size $0A (1MByte).
@@ -145,7 +145,7 @@ module gsu_tb (
 
   // ------------------------------------------------------------ ROM model
   // One byte per line, produced by run_sim.sh from the .sfc.
-  reg [7:0] rom [0:1048575];
+  reg [7:0] rom [0:4194303];   // 4 MByte, the largest GSU image
   integer i;
 
   initial begin
@@ -167,6 +167,7 @@ module gsu_tb (
     if (rom_lat < 0) rom_lat = 0;
     if (rom_lat != 0) $display("  [bench] cartridge latency %0d mclk", rom_lat);
     void'($value$plusargs("cycles=%d", cycles_max));
+    void'($value$plusargs("rommask=%h", ROM_MASK));
     void'($value$plusargs("trace=%s", trace_path));
     void'($value$plusargs("vcd=%s", vcd_path));
     if (hex_path == 0) begin
@@ -204,7 +205,7 @@ module gsu_tb (
   end
   always @(posedge clk) begin
     for (rp = 8; rp > 0; rp = rp - 1) rom_pipe[rp] <= rom_pipe[rp-1];
-    rom_pipe[0] <= rom[ROM_ADDR[19:0]];
+    rom_pipe[0] <= rom[ROM_ADDR[21:0]];
   end
   // A second, independent delay for reads the GSU initiates.  +lat delays every
   // cartridge read, which makes it impossible to test the coprocessor beyond the
@@ -246,8 +247,8 @@ module gsu_tb (
       if (rtog_busy > 0) rtog_lost <= rtog_lost + 1;   // toggle collapsed
       else rtog_busy <= rtog;
     end
-    if (rtog == 0) rom_q_held <= rom[ROM_ADDR[19:0]];
-    else if (rtog_busy == 0) rom_q_held <= rom[rtog_addr_q[19:0]];
+    if (rtog == 0) rom_q_held <= rom[ROM_ADDR[21:0]];
+    else if (rtog_busy == 0) rom_q_held <= rom[rtog_addr_q[21:0]];
   end
   wire [7:0] rom_q_final = (rtog == 0) ? (gsu_active ? rom_q_gsu : rom_q_slow)
                                        : (gsu_active ? rom_q_held : rom_q_slow);
@@ -354,9 +355,87 @@ module gsu_tb (
   always @(posedge clk) begin
     if (rst_n && GSU_CACHE_EN && cf_dbg_n < 10) begin
       $display("  [cffill] ROM_ADDR=%h rom[]=%h ROM_Q=%h | sampler addr=%h b=%h %h %h %h",
-               ROM_ADDR, rom[ROM_ADDR[19:0]], ROM_Q,
+               ROM_ADDR, rom[ROM_ADDR[21:0]], ROM_Q,
                GSU_CF_ADDR, GSU_CF_B0, GSU_CF_B1, GSU_CF_B2, GSU_CF_B3);
       cf_dbg_n <= cf_dbg_n + 1;
+    end
+  end
+
+  // ------------------------------------------------------------ frame counter
+  // A frame ends where the PPU enters vertical blank, which is also where a
+  // libretro core returns from retro_run, so frame N here and frame N in
+  // tools/ref_emu.py describe the same moment once the two are aligned on the
+  // first lit frame.
+  integer frame_no = 0;
+  reg     vbl_q = 1'b1;
+  wire    frame_end = vbl_q & ~VBLANKn;
+  always @(posedge clk) begin
+    vbl_q <= VBLANKn;
+    if (frame_end) frame_no <= frame_no + 1;
+  end
+
+  // ------------------------------------------------------------- controller
+  // A standard pad: STRB latches the buttons, each rising CLK shifts the next
+  // one out, 16 bits in the order B Y Select Start Up Down Left Right A X L R
+  // and four zero ID bits, then ones.  The CPU reads ~DI, so a pressed button
+  // drives DI low.  +press_btn uses those indices (Start = 3) and holds the
+  // button from frame +press_frame for +press_dur frames.
+  integer press_btn = 3, press_frame = -1, press_dur = 6;
+  initial begin
+    void'($value$plusargs("press_btn=%d", press_btn));
+    void'($value$plusargs("press_frame=%d", press_frame));
+    void'($value$plusargs("press_dur=%d", press_dur));
+  end
+  wire        pad_held = press_frame >= 0 && frame_no >= press_frame &&
+                         frame_no < press_frame + press_dur;
+  wire [15:0] pad_buttons = pad_held ? (16'd1 << press_btn[3:0]) : 16'd0;
+  reg  [15:0] pad_sr = 16'hFFFF;
+  reg         pad_clk_q = 1'b0;
+  always @(posedge clk) begin
+    pad_clk_q <= JOY1_CLK;
+    if (JOY_STRB) pad_sr <= pad_buttons;
+    else if (JOY1_CLK & ~pad_clk_q) pad_sr <= {1'b1, pad_sr[15:1]};
+  end
+
+  // ------------------------------------------------------------ frame dumps
+  // +dump=PREFIX writes, at the end of every +dumpevery'th frame from
+  // +dumpfrom to +dumpto, PREFIXfNNNNN.ppm (the picture), PREFIXrNNNNN.bin
+  // (the GSU's 64 KByte work RAM) and PREFIXwNNNNN.bin (128 KByte WRAM), the
+  // same regions tools/ref_emu.py --dump takes from the reference emulator.
+  reg [4095:0] dump_pfx;
+  integer dump_every = 1, dump_from = 0, dump_to = 2147483647;
+  initial begin
+    dump_pfx = 0;
+    void'($value$plusargs("dump=%s", dump_pfx));
+    void'($value$plusargs("dumpevery=%d", dump_every));
+    void'($value$plusargs("dumpfrom=%d", dump_from));
+    void'($value$plusargs("dumpto=%d", dump_to));
+    if (dump_every < 1) dump_every = 1;
+  end
+
+  task dump_mem(input [4095:0] path, input integer which, input integer len);
+    integer k, fdm;
+    begin
+      fdm = $fopen(path, "wb");
+      if (fdm == 0) $display("could not open %0s for writing", path);
+      else begin
+        for (k = 0; k < len; k = k + 1)
+          $fwrite(fdm, "%c", which == 0 ? bsram[k] : wram[k]);
+        $fclose(fdm);
+      end
+    end
+  endtask
+
+  reg [4095:0] dump_path;
+  always @(posedge clk) begin
+    if (frame_end && dump_pfx != 0 && frame_no >= dump_from &&
+        frame_no <= dump_to && (frame_no % dump_every) == 0) begin
+      $sformat(dump_path, "%0sf%05d.ppm", dump_pfx, frame_no);
+      write_ppm(dump_path);
+      $sformat(dump_path, "%0sr%05d.bin", dump_pfx, frame_no);
+      dump_mem(dump_path, 0, 65536);
+      $sformat(dump_path, "%0sw%05d.bin", dump_pfx, frame_no);
+      dump_mem(dump_path, 1, 131072);
     end
   end
 
@@ -386,7 +465,7 @@ module gsu_tb (
     .HIGH_RES(HIGH_RES), .FIELD(FIELD), .INTERLACE(INTERLACE),
     .DOTCLK(DOTCLK), .RGB_OUT(RGB_OUT),
     .HBLANKn(HBLANKn), .VBLANKn(VBLANKn), .X_OUT(X_OUT), .Y_OUT(Y_OUT),
-    .JOY1_DI(2'b11), .JOY2_DI(2'b11), .JOY_STRB(JOY_STRB),
+    .JOY1_DI({1'b1, ~pad_sr[0]}), .JOY2_DI(2'b11), .JOY_STRB(JOY_STRB),
     .JOY1_CLK(JOY1_CLK), .JOY2_CLK(JOY2_CLK),
     .JOY1_P6(), .JOY2_P6(), .JOY2_P6_in(), .DOT_CLK_CE(DOT_CLK_CE), .EXT_RTC(),
     .AUDIO_L(AUDIO_L), .AUDIO_R(AUDIO_R), .AUDIO_READY(AUDIO_READY), .AUDIO_EN(1'b1),
@@ -597,7 +676,7 @@ module gsu_tb (
     end
   end
 
-  task write_ppm(input [1023:0] path);
+  task write_ppm(input [4095:0] path);
     integer x, y, fd2;
     reg [7:0] r, g, b;
     reg [14:0] px;

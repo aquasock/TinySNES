@@ -1,0 +1,28 @@
+#!/bin/bash
+# Power-cycle the Guermok HDMI capture card on its hub port, USB-reset it, then
+# check that /dev/video0 delivers a frame that is not the "No Video" screen.
+HUB=1-8.1 PORT=2 ID=345f:2133
+sudo -n /usr/sbin/uhubctl -l $HUB -p $PORT -a cycle -d 3 >/dev/null || { echo "uhubctl failed"; exit 1; }
+for i in $(seq 20); do lsusb -d $ID >/dev/null && break; sleep 0.5; done
+sleep 1
+sudo -n /usr/bin/usbreset $ID >/dev/null || { echo "usbreset failed"; exit 1; }
+for i in $(seq 20); do [ -e /dev/video0 ] && break; sleep 0.5; done
+sleep 2
+out=/tmp/capcard_check.png
+timeout 20 ffmpeg -nostdin -y -loglevel fatal -f v4l2 -input_format mjpeg -video_size 1280x720 \
+    -i /dev/video0 -t 6 -update 1 -frames:v 9999 $out || { echo "capture failed"; exit 1; }
+python3 - "$out" <<'P'
+import sys
+from PIL import Image
+im = Image.open(sys.argv[1]).convert('L')
+lo, hi = im.getextrema()
+# The card's "No Video" page is pure black with a white logo in the centre only.
+c = im.crop((480, 300, 800, 420)).getextrema()
+edge = im.crop((0, 0, 1280, 280)).getextrema()
+if lo == hi:
+    print(f"capture card: signal, but frame is flat ({lo})")
+elif c[1] > 200 and edge[1] < 20:
+    print("capture card: NO VIDEO"); sys.exit(2)
+else:
+    print("capture card: picture OK")
+P
