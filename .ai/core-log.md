@@ -112,3 +112,33 @@ Check the remaining audio faults, Yoshi's Island's buzzing chimes and coins, lag
 - User Test: PASS
 
 ---
+
+## 4 COMMIT Unreleased 2026-11-04T17:22:43-07:00
+
+#### Coming From:
+
+Unreleased 46a280a
+
+#### Purpose:
+
+Play-test the audio fixes of entry 3 across the usual test cartridges and the top-rated SNES games to find what still fails.
+
+#### Outcome:
+
+No file changed and nothing was rebuilt; every test ran on the entry-3 build `build/hda2/tinysnes.bin`, SHA-256 `7cf1ecbbd2bf4caddd14c99974b220f316f0a9a2bb9da576150a5bfe0492a1b1`, already deployed as `/root/cores/console138k/tinysnes-dbg.bin`, with each cartridge sent by `tools/load_snes_rom.py` from `/run/media/vash/MiSTer_Data/games/SNES/`, from `/run/media/vash/GIT/TinySNES/build/rom/` or, for Super Mario World, from `/home/vash/Desktop/Super Mario World (USA).zip`. The user passed every cartridge for video and for the pops, which are gone everywhere. Star Fox and Earthworm Jim 2 sounded and looked perfect, the user saying Earthworm Jim 2 is indistinguishable from a real SNES. Yoshi's Island's buzzing chimes and coins are fixed, but its missing sound channel is more noticeable than before. Zelda: A Link to the Past is perfect except that the bush-throw sound and the item-get fanfare are completely silent, which the user judged the same fault as Yoshi's Island. Super Mario Kart sounds perfect but still shows its known vertical stripe at the left edge of the screen. F-Zero seemed perfect, though the user does not know the game and suspects it too is missing channels. Since Metacritic has almost no scores for original SNES games, the top-ten list came from GameRankings averages as cited by focusfuturemagazine.com, and of it Super Metroid, Chrono Trigger (4 MB), Final Fantasy III (US release of VI), Super Mario World both alone and on Super Mario All-Stars plus Super Mario World (2.5 MB), Donkey Kong Country 2 and the original Donkey Kong Country all passed as perfect; Star Ocean, which needs the absent S-DD1, and Fire Emblem: Thracia 776 are not on the MiSTer drive and were not tried. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, inspected the `.ai/` diff as this entry alone, and validated it as entry 4 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, permitted Status values, no self-referencing hash and a count of four against the 100-entry limit.
+
+#### Next Steps:
+
+Find why some sound effects never play, as heard in Zelda's bush throw and item-get fanfare and in Yoshi's Island's missing channel, likely a shared S-DSP or SPC700 fault such as key-on, key-off, ENDX, echo-buffer or voice-steal handling made more visible by the entry-3 ENDX change; reproduce it in the `tools/sim/gsu_tb.sv` bench with `+dsplog` and `+wav` against a reference and then propose a fix. Super Mario Kart's left-edge stripe, the PAL behaviour of both audio servos, wiring the audio FIFO counters to the debug bus, the stale `i2s_out.sv` header and the open items carried in entry 3 remain.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: PASS
+
+---
