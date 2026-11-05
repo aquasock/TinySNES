@@ -142,3 +142,35 @@ None.
 - User Test: PASS
 
 ---
+
+## 5 COMMIT Unreleased 2026-11-04T18:14:09-07:00
+
+#### Coming From:
+
+Unreleased 74329ee
+
+#### Purpose:
+
+Find and fix the sound effects and instrument that never play in Yoshi's Island and Zelda: A Link to the Past.
+
+#### Outcome:
+
+The fault is in the SPC700 microcode inherited unchanged from upstream SNESTang, not in the entry-3 ENDX change: a 260-million-clock Yoshi's Island simulation with and without that change produced bit-identical audio and DSP logs, and both lacked the sound snes9x (`tools/ref_emu.py`) plays at 1.3 to 1.8 seconds. The DSP log showed the driver keying on voice 6, whose registers it never wrote, and the new `+spctrace` and `+spcbus` options in `tools/sim/gsu_tb.sv` showed why: in `LSR !a` the read-modify-write step shifted the temporary register T, left over from the previous read-modify-write, instead of the byte just read, because its busCtrl field was `10000` where `ASL !a`, the direct-page forms and MiSTer's `MCode.vhd` all select the data bus with `00000`. `ROL !a` and `ROR !a` carried the same error. Those three rows were corrected in `fpga/snes/src/spc700/mcode.vh`, rows 355, 611 and 867, which is the table the build compiles, and in its source `mcode.txt`. In simulation the 1.3-second sound returned at RMS 1223 against snes9x's 1224, the music's first chord keyed two voices instead of one, and the 6-to-12-second envelope correlation with snes9x rose from 0.90 to 0.98. The build `build/spc1/tinysnes.bin`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, SHA-256 `27ff58dfe50c758e44acbf8d35d4b7a828fdfe7228e09912b981340b9fc18562`, was deployed by `tools/tang_deploy.py` as `/root/cores/console138k/tinysnes-dbg.bin`, and the user reported every audio issue resolved. The build needs `APICULA_FORK=/run/media/vash/GIT/apicula-mathieufro` when run from a worktree outside `/run/media/vash/GIT`, since the script's default path is relative to the checkout and otherwise falls back to the stock apycula, whose pack fails. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, inspected the `.ai/` diff as this entry alone, and validated it as entry 5 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, permitted Status values, no self-referencing hash and a count of five against the 100-entry limit.
+
+#### Next Steps:
+
+Super Mario Kart's left-edge stripe, the PAL behaviour of both audio servos, wiring the audio FIFO counters to the debug bus, the stale `i2s_out.sv` header and the open items carried in entry 3 remain.
+
+#### Files Modified:
+
+- fpga/snes/src/spc700/mcode.vh
+- fpga/snes/src/spc700/mcode.txt
+- tools/sim/gsu_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

@@ -36,6 +36,8 @@
 //   +dsplog=path   every S-DSP register write as "<sample> <reg> <value>"
 //   +apulog=path   APU port and ARAM writes between +apufrom=N and +aputo=M samples
 //   +aramdump=path ARAM contents at the end of the run ($writememh)
+//   +spctrace=path SPC700 opcode fetches with registers, in the +apufrom/+aputo window
+//   +spcbus=path   SPC700 bus cycles, in the +apufrom/+aputo window
 //
 // The port list exists only for the C++ harness: a signal reached from C++ has to
 // be a top-level output.  Nothing connects to these in a pure-SV run, where they
@@ -606,6 +608,38 @@ module gsu_tb (
         $fwrite(apulog_fd, "%0d R %04h %02h %02h %04h\n", dsp_samples, dut.SNES.smp.SPC700_A,
                 dut.SNES.smp.SPC700_D_IN, dut.SNES.dsp.RI, dut.SNES.smp.SPC700.PC);
     end
+  end
+
+  // +spctrace=path logs, inside the +apufrom/+aputo window, every SPC700
+  // opcode fetch as "<sample> <pc> <op> A X Y SP PSW".
+  reg [4095:0] spctrace_path;
+  integer spctrace_fd = 0;
+  initial begin
+    spctrace_path = 0;
+    if ($value$plusargs("spctrace=%s", spctrace_path)) spctrace_fd = $fopen(spctrace_path, "w");
+  end
+  always @(posedge clk) begin
+    if (spctrace_fd != 0 && dsp_samples >= apu_from && dsp_samples < apu_to &&
+        dut.SNES.smp.SPC700.EN && dut.SNES.smp.SPC700.STATE == 4'b0000 && !dut.SNES.smp.SPC700.GotInterrupt)
+      $fwrite(spctrace_fd, "%0d %04h %02h A=%02h X=%02h Y=%02h SP=%02h P=%02h\n", dsp_samples,
+              dut.SNES.smp.SPC700.PC, dut.SNES.smp.SPC700.D_IN, dut.SNES.smp.SPC700.A,
+              dut.SNES.smp.SPC700.X, dut.SNES.smp.SPC700.Y, dut.SNES.smp.SPC700.SP,
+              dut.SNES.smp.SPC700.PSW);
+  end
+
+  // +spcbus=path logs, inside the same window, every SPC700 bus cycle as
+  // "<sample> <state> <addr> R|W <d_in> <d_out>".
+  reg [4095:0] spcbus_path;
+  integer spcbus_fd = 0;
+  initial begin
+    spcbus_path = 0;
+    if ($value$plusargs("spcbus=%s", spcbus_path)) spcbus_fd = $fopen(spcbus_path, "w");
+  end
+  always @(posedge clk) begin
+    if (spcbus_fd != 0 && dsp_samples >= apu_from && dsp_samples < apu_to && dut.SNES.smp.SPC700_CE)
+      $fwrite(spcbus_fd, "%0d %0d %04h %s %02h %02h\n", dsp_samples, dut.SNES.smp.SPC700.STATE,
+              dut.SNES.smp.SPC700_A, dut.SNES.smp.SPC700_R_WN ? "R" : "W",
+              dut.SNES.smp.SPC700_D_IN, dut.SNES.smp.SPC700_D_OUT);
   end
 
   reg [4095:0] dump_path;
