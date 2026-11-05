@@ -23,13 +23,18 @@ peak is taken as the fundamental.
 """
 import argparse
 import math
+import os
 import subprocess
 import sys
 import wave
 
 
 def record(seconds: float, device: str, rate: int) -> str:
-    path = "/tmp/audio_probe.wav"
+    # Under build/, not /tmp: this machine's /tmp is tmpfs, so a capture written
+    # there is resident RAM rather than disk.  build/ is gitignored.
+    scratch = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "build", "tmp")
+    os.makedirs(scratch, exist_ok=True)
+    path = os.path.join(scratch, "audio_probe.wav")
     cmd = ["arecord", "-D", device, "-f", "S16_LE", "-r", str(rate),
            "-c", "2", "-d", str(int(round(seconds))), path]
     subprocess.run(cmd, check=True, capture_output=True)

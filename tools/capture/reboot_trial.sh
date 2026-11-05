@@ -7,11 +7,17 @@
 #       both   before and after
 #       at:REGEX:DELAY  power-cycle the card DELAY s after the reboot script
 #              prints a line matching REGEX (e.g. "at:relay 1001:4")
-# Then records 25 s at 1 fps into /tmp/grab/TAG_NN.png and prints one letter
+# Then records 25 s at 1 fps into build/capture/TAG_NN.png and prints one letter
 # per frame from classify_frames.py.  Needs the sudoers rule for uhubctl and
 # the user's unmodified "/home/vash/Desktop/reboot_in 2_wire.py".
+#
+# Frames go under the repository's build/ directory, not /tmp: /tmp on this
+# machine is tmpfs, so capture frames written there are resident RAM, and a
+# session of these trials once cost 5 GB of it.  build/ is on the working drive
+# and is already gitignored.  Override with TINYSNES_CAPTURE_DIR if needed.
 here=$(cd "$(dirname "$0")" && pwd)
-mkdir -p /tmp/grab; cd /tmp/grab; rm -f "$2"_*.png
+cap="${TINYSNES_CAPTURE_DIR:-$here/../../build/capture}"
+mkdir -p "$cap"; cd "$cap"; rm -f "$2"_*.png
 REBOOT="/home/vash/Desktop/reboot_in 2_wire.py"
 cyc(){ sudo -n /usr/sbin/uhubctl -l 1-8.1 -p 2 -a cycle -d 3 >/dev/null; echo "  card cycled $(date +%T) ($1)"; }
 case "$1" in

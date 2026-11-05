@@ -32,7 +32,7 @@ flasher="$suite/bin/openFPGALoader"
 board="${TINYSNES_BOARD:-tangconsole}"
 uart="${TINYSNES_UART:-/dev/ttyUSB1}"
 video="${TINYSNES_VIDEO:-/dev/video0}"
-capture="${TINYSNES_CAPTURE_DIR:-/tmp/onewire}"
+capture="${TINYSNES_CAPTURE_DIR:-$root/build/capture}"
 
 die() { echo "$*" >&2; exit 2; }
 

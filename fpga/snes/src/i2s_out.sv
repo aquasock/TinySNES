@@ -7,17 +7,16 @@
 // by construction: TinyNES runs a 75 MHz bus, divides by 6 for a 12.5 MHz MCLK,
 // and gets 48,828 Hz, which is what its emulator produces.  This core cannot do
 // that, because the S-DSP's rate is fixed by the hardware it emulates: `CEGen`
-// in dsp.v divides mclk by 128 for each sample at ACLK_FREQ 411904, so the core
-// produces exactly 32,180 Hz whatever clock we give it.  The CS4344 wants
-// MCLK = 256 x Fs, so the rates differ and something must convert between them.
+// in dsp.v divides mclk by 128 for each sample, so the input rate is mclk/128
+// whatever clock the DAC is given.  The CS4344 wants MCLK = 256 x Fs, so the two
+// rates differ and something has to convert between them.
 //
-// The conversion is linear interpolation, not sample dropping.  32,180 -> 48,828
-// is a 1.517x upsample, so there are more output slots than input samples and
-// each output sample is a weighted blend of the two inputs either side of it.
-// That is a mild lowpass -- under 0.15 dB down at 5 kHz and about 1 dB at 10 kHz,
-// with nothing aliased, because no input sample is ever discarded.  Repeating or
-// dropping samples would be far cheaper and would be audible as a tone at the
-// difference frequency.
+// The conversion is linear interpolation, not sample dropping.  The output slot
+// rate is mclk/512 (below), which is above the input rate, so there are more
+// output slots than input samples and each output sample is a weighted blend of
+// the two inputs either side of it.  That is a mild lowpass with nothing aliased,
+// because no input sample is ever discarded.  Repeating or dropping samples would
+// be far cheaper and would be audible as a tone at the difference frequency.
 //
 // The clocks, and why they are not 48 kHz.  The obvious source is sys_clk, the
 // 50 MHz oscillator: 50 MHz / 1024 is 48,828.125 Hz exactly, and it is the same
@@ -26,28 +25,43 @@
 // device that pushes pll_27.clkin's input onto SPINE16/CBRIDGEOUT_BOTTOM0, a
 // bridge pip measured as clocking nothing.  Sixteen seeds were routed that way
 // and every one died on that pip, and setting NPNR_GOWIN_CLK_FIRST to that clock
-// applied but did not move it.  So the unit runs on mclk (21.477 MHz) instead,
-// which leaves sys_clk exactly as the display path had it.  MCLK is mclk / 2 =
-// 10.739 MHz, SCLK is MCLK / 4 and LRCK is MCLK / 256, so Fs is 21.477 MHz / 512
-// = 41,947 Hz.  That is below the 44.1 and 48 kHz the siblings reach, and it is
-// the honest cost of not disturbing a clock plan that took this project weeks to
-// stabilise; the rate is inaudibly different for game audio, and the resampler
-// ratio is set to it exactly.
+// applied but did not move it.  So the unit runs on mclk instead, which leaves
+// sys_clk exactly as the display path had it.
 //
 // All three audio clocks come from one counter on mclk and drive pins directly,
 // so this unit adds nothing to the FPGA's clock network and leaves the measured
-// bridge pips untouched.
+// bridge pips untouched:
+//
+//   MCLK = mclk / 2     SCLK = mclk / 8 (= MCLK / 4)
+//   LRCK = 64 SCLKs, so Fs = mclk / 512 = MCLK / 256
 //
 // The frame is I2S with 64 SCLKs: LRCK low for the left channel and high for the
 // right, each channel's first SCLK the I2S delay bit, then the 16-bit sample MSB
 // first, then zeros.  LRCK and SDIN change as SCLK falls, and the DAC samples as
 // it rises.
 //
-// Samples arrive on mclk and are consumed on sys_clk.  They are unrelated clocks,
-// so the handoff is a toggle beside the data: the producer flips a toggle when a
-// pair is ready, and this unit sees the flip through a synchroniser and latches
-// the data.  At 32 kHz against a 50 MHz consumer the producer is three orders of
-// magnitude slower, so no pair can be missed and no FIFO is needed.
+// Why there is a FIFO and a servo.  Samples arrive in bursts around the machine's
+// once-per-frame pause, not at a constant rate, and the average rate is about
+// 32,127 a second rather than the nominal 32,222, because `snes2hdmi` halts the
+// whole machine for a few thousand clocks each frame so its 60.000 Hz output
+// catches up.  A fixed step for either number drifts: consuming at the nominal
+// rate emptied the FIFO about 87 times a second.  So a 64-entry FIFO absorbs the
+// burst and the resampling step is the nominal ratio (RATIO_NUM/RATIO_DEN, below)
+// plus a proportional-integral servo on the FIFO's distance from half full,
+// evaluated once per output frame.  Consumption therefore follows arrival in the
+// steady state and every input sample is played exactly once.  `running` withholds
+// consumption until the FIFO first reaches half full, so the machine's first
+// partial second is not interpolated against an empty buffer.
+//
+// Three counters are exposed for the debug register bank (0x058 and 0x05c, see
+// tinysnes_dbg.v): input samples taken, input samples lost to a full FIFO, and
+// output frames that wanted a new input and found the FIFO empty.  With the servo
+// locked all three stop moving except `dbg_taken`, which is the traffic counter;
+// a rising `dbg_underrun` or `dbg_overwritten` means the servo has lost lock.
+//
+// Everything here is on mclk; there is no second clock domain inside this module.
+// `audio_valid` comes from the machine's own sample strobe, so the handoff the
+// siblings need a synchroniser for does not exist in this design.
 
 module i2s_out #(
     // The resampling ratio, as an exact rational with no floating point.  Both
@@ -103,12 +117,14 @@ module i2s_out #(
 );
 
     // ------------------------------------------------------- clock generation
-    // One free-running nibble counter off sys_clk.  Every audio clock is a bit
-    // of it, so all three stay synchronous with no phase to set, which is what
-    // the CS4344 requires.
-    //   scnt[0] swings every mclk      -> 10.739 MHz MCLK
-    //   scnt[3] swings every 8 mclk    -> 2.685 MHz SCLK
-    //   one LRCK period is 64 SCLKs    -> 41,947 Hz
+    // One free-running counter off mclk.  Every audio clock is a bit of it, so
+    // all three stay synchronous with no phase to set, which is what the CS4344
+    // requires.  mclk is the PLL's 21.505376 MHz, not the nominal 21.477 MHz.
+    //   scnt[0] swings every mclk      -> 10.753 MHz MCLK
+    //   scnt[2] swings every 4 mclk    -> 2.688 MHz SCLK (dac_sclk is its inverse)
+    //   one LRCK period is 64 SCLKs    -> 42,003 Hz
+    // The last figure is the output slot rate.  It is above the S-DSP's arrival
+    // rate (about 32,127/s), which is why the resampler below interpolates.
     reg [2:0] scnt = 3'd0;                 // one SCLK period: 8 mclk
     always @(posedge clk) scnt <= scnt + 3'd1;
 

@@ -4,7 +4,7 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 src="$root/fpga/snes/src"
-out="$(mktemp -d)"
+out="$(mkdir -p "$root/build/tmp" && mktemp -d "$root/build/tmp/dbglink.XXXXXX")"
 trap 'rm -rf "$out"' EXIT
 iverilog -g2012 -DSIM -o "$out/tb" -s dbg_link_tb \
     "$root/tools/sim/dbg_link_tb.sv" \

@@ -48,7 +48,8 @@ BUFS = ("rl", "op", "mm")
 REG = dict(magic=0x000, layout=0x004, frames=0x008, uptime=0x00C, board=0x010,
            go_sfr=0x020, pc=0x024, flags=0x028, stops=0x02C, bsram_wrs=0x030,
            rom_reqs=0x034, rom_defers=0x038, rom_timeouts=0x03C, knob=0x040,
-           scratch=0x044, go_time=0x048, ctrl=0x100, tstate=0x104)
+           scratch=0x044, go_time=0x048, audio_ovf=0x050, audio_unf=0x054,
+           i2s=0x058, i2s_unf=0x05C, ctrl=0x100, tstate=0x104)
 MCLK = 21_484_000
 
 GSU_REGS = {0x3030: "SFR", 0x3031: "SFRh", 0x3033: "BRAMR", 0x3034: "PBR",
@@ -219,6 +220,11 @@ def show_status(r: dict, prev: dict | None, dt: float) -> None:
     print(f"cart ROM reads {r['rom_reqs']}   deferred {r['rom_defers']}   "
           f"timeouts {r['rom_timeouts']}   BSRAM writes {r['bsram_wrs']}   "
           f"ROM_CYCLES {knob if knob else 'default (1, then ROM ready)'}")
+    # Audio FIFO health.  These should not move with the servos locked; a rising
+    # count is a sample the core dropped or a read that found the FIFO empty.
+    i2s = r["i2s"]
+    print(f"audio   HDMI overflow {r['audio_ovf']}  underrun {r['audio_unf']}   "
+          f"Pmod taken {i2s & 0xFFFF}  overflow {i2s >> 16}  underrun {r['i2s_unf']}")
     if prev and dt > 0:
         rate = lambda k: (r[k] - prev[k]) / dt
         print(f"rates/s  frames {rate('frames'):.1f}  GO {((r['go_sfr'] >> 16) - (prev['go_sfr'] >> 16)) % 65536 / dt:.1f}"

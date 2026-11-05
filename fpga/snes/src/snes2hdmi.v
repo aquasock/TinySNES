@@ -148,6 +148,13 @@ module snes2hdmi (
     input audio_ready,
     output audio_en,
 
+    // Audio FIFO health for the debug register bank.  A write offered to a full
+    // FIFO and a read taken from an empty one are each reduced to a toggle, so
+    // the underrun -- which happens on the pixel clock -- can cross into the
+    // bank's mclk domain as one bit rather than a counter.
+    output        audio_ovf_tog,
+    output        audio_unf_tog,
+
     // frame-sync pause happens during snes_refresh
     input snes_refresh,
 
@@ -631,6 +638,23 @@ assign linefill_dbg = lf_dbg;
         .rinc(audio_rinc), .rdata(audio_sample), .rempty(audio_empty),
         .almost_full(), .almost_empty(), .rlevel(audio_level)
     );
+
+    // The two ways this path can lose a sample, each as a toggle that the debug
+    // bank counts.  Overflow is a write the FIFO refused; underrun is a read
+    // that found nothing, which the clock regenerator repeats as a held sample.
+    // With the audio servo locked neither should ever move.
+    reg audio_ovf_tog_r = 1'b0;
+    reg audio_unf_tog_r = 1'b0;
+    assign audio_ovf_tog = audio_ovf_tog_r;
+    assign audio_unf_tog = audio_unf_tog_r;
+
+    always @(posedge clk)
+        if (resetn && audio_ready && audio_full)
+            audio_ovf_tog_r <= ~audio_ovf_tog_r;
+
+    always @(posedge clk_pixel)
+        if (resetn && audio_rinc && audio_empty)
+            audio_unf_tog_r <= ~audio_unf_tog_r;
 
     //
     // Video

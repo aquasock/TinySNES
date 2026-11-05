@@ -2148,6 +2148,12 @@ always @(posedge mclk) begin
     vblankn_r   <= vblankn;
 end
 
+// Audio FIFO health, counted by the debug bank at 0x050-0x05c.  snes2hdmi
+// reduces an overflow and an underrun to one toggle each; i2s_out already keeps
+// 16-bit counters in mclk, which is the bank's own clock.
+wire        audio_ovf_tog, audio_unf_tog;
+wire [15:0] i2s_dbg_taken, i2s_dbg_overwritten, i2s_dbg_underrun;
+
 wire [31:0] dbg_bus_addr, dbg_bus_wdata, dbg_bus_rdata;
 wire        dbg_bus_valid, dbg_bus_write;
 
@@ -2161,6 +2167,9 @@ tinysnes_dbg #(.TRACE_AW(10)) dbg (
     .ev_rom_req(rom_want & cpu_port_idle),
     .ev_rom_defer(rom_want & ~cpu_port_idle & ~rom_defer_r),
     .ev_rom_timeout(sd_rd_pending && sd_wait_age == 6'd63),
+    .audio_ovf_tog(audio_ovf_tog), .audio_unf_tog(audio_unf_tog),
+    .i2s_taken(i2s_dbg_taken), .i2s_overwritten(i2s_dbg_overwritten),
+    .i2s_underrun(i2s_dbg_underrun),
     .gsu_go_cnt(gsu_dbg_go_cnt), .gsu_sfr(gsu_dbg_sfr), .gsu_flag_go(gsu_dbg_flag_go),
     .gsu_pc(gsu_dbg_pc), .gsu_state_seen(gsu_dbg_state_seen),
     .gsu_romst_seen(gsu_dbg_romst_seen), .gsu_romst(gsu_dbg_romst), .gsu_en(gsu_dbg_en),
@@ -3050,10 +3059,15 @@ i2s_out sound (
     .clk(mclk), .resetn(resetn),
     .audio_l(audio_l), .audio_r(audio_r), .audio_valid(audio_ready),
     .dac_mclk(pmod1_dac[0]), .dac_lrck(pmod1_dac[1]),
-    .dac_sclk(pmod1_dac[2]), .dac_sdin(pmod1_dac[3])
+    .dac_sclk(pmod1_dac[2]), .dac_sdin(pmod1_dac[3]),
+    .dbg_taken(i2s_dbg_taken), .dbg_overwritten(i2s_dbg_overwritten),
+    .dbg_underrun(i2s_dbg_underrun)
 );
 `else
 assign pmod1_dac = 4'b0000;
+// No Pmod output in this build, so the bank's three I2S registers read zero
+// rather than reporting the fault counters of a FIFO that does not exist.
+assign i2s_dbg_taken = 16'd0, i2s_dbg_overwritten = 16'd0, i2s_dbg_underrun = 16'd0;
 `endif
 
 // output button presses to SNES
@@ -3323,6 +3337,7 @@ snes2hdmi s2h(
     .overlay_color(overlay_color), 
     .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr), .desk_wr_data(desk_wr_data),
     .audio_l(audio_l), .audio_r(audio_r), .audio_ready(audio_ready), .audio_en(audio_en),
+    .audio_ovf_tog(audio_ovf_tog), .audio_unf_tog(audio_unf_tog),
     .clk_pixel(hclk),.clk_5x_pixel(hclk5),.locked(1'b1),
     .tmds_clk_n(tmds_clk_n), .tmds_clk_p(tmds_clk_p),
     .tmds_d_n(tmds_d_n), .tmds_d_p(tmds_d_p)

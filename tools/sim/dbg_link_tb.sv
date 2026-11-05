@@ -3,7 +3,8 @@
 //
 // It checks the reply framing and CRC against an independent model, every
 // opcode and error status, the register bank, the knob, a BSRAM peek, a trace
-// buffer written by synthetic GSU events, and that a joypad frame sent while a
+// buffer written by synthetic GSU events, the audio FIFO counters the bank
+// gained for the Pmod I2S and HDMI paths, and that a joypad frame sent while a
 // reply is pending no longer swallows the reply.  It also drives TinyTang's desk
 // frames (0x13 cursor, 0x14 cells, 0x15 enable, 0x08 show) and checks the cell
 // writes and desk_on they produce, and checks the joypad report: TinyTang's pad
@@ -25,6 +26,12 @@ reg resetn = 0;
 reg  uart_rx = 1;
 wire uart_tx;
 reg  [11:0] joy1 = 0;
+
+// Audio FIFO health.  The two toggles stand in for snes2hdmi's overflow and
+// underrun flags; the I2S counters are constants because i2s_out already counts
+// on mclk and only needs carrying to the bank.
+reg  audio_ovf_tog = 1'b0;
+reg  audio_unf_tog = 1'b0;
 reg         home = 0;
 wire        desk_on, desk_wr_tog;
 wire [11:0] desk_wr_addr;
@@ -62,6 +69,8 @@ tinysnes_dbg #(.TRACE_AW(10)) dbg (
     .bus_write(bus_write), .bus_rdata(bus_rdata),
     .status(8'h0e), .ev_frame(1'b0), .ev_bsram_wr(1'b0), .ev_rom_req(1'b0),
     .ev_rom_defer(1'b0), .ev_rom_timeout(1'b0),
+    .audio_ovf_tog(audio_ovf_tog), .audio_unf_tog(audio_unf_tog),
+    .i2s_taken(16'h1234), .i2s_overwritten(16'h0002), .i2s_underrun(16'h0007),
     .gsu_go_cnt(16'h1234), .gsu_sfr(16'h0020), .gsu_flag_go(1'b0),
     .gsu_pc(24'h01b301), .gsu_state_seen(16'h0), .gsu_romst_seen(7'h0),
     .gsu_romst(3'h0), .gsu_en(1'b0), .gsu_in_cache(1'b0),
@@ -370,6 +379,19 @@ initial begin : main
            {8'hff ^ 8'h5a, 8'hfe ^ 8'h5a, 8'hfd ^ 8'h5a, 8'hfc ^ 8'h5a});
     check("wram peek 0x10",   8'h01, 8'h01, 32'h02000010, 32'h0, 0, 0,
            ~{8'h13 ^ 8'h5a, 8'h12 ^ 8'h5a, 8'h11 ^ 8'h5a, 8'h10 ^ 8'h5a});
+
+    // Audio FIFO health: a toggle is one lost or starved sample, so two edges on
+    // the overflow line must read 2 and one on the underrun line must read 1.
+    // (Each toggle is one edge; the RTL counts edges in its own domain.)
+    check("audio counters 0", 8'h01, 8'h01, 32'h50, 32'h0, 0, 0, 32'h0);
+    check("audio counters 0b", 8'h01, 8'h01, 32'h54, 32'h0, 0, 0, 32'h0);
+    check("i2s counters",     8'h01, 8'h01, 32'h58, 32'h0, 0, 0, 32'h00021234);
+    check("i2s underrun",     8'h01, 8'h01, 32'h5c, 32'h0, 0, 0, 32'h00000007);
+    audio_ovf_tog = 1'b1; #(CLK_NS * 10);
+    audio_ovf_tog = 1'b0; #(CLK_NS * 10);
+    audio_unf_tog = 1'b1; #(CLK_NS * 10);
+    check("audio overflow 2",  8'h01, 8'h01, 32'h50, 32'h0, 0, 0, 32'h2);
+    check("audio underrun 1",  8'h01, 8'h01, 32'h54, 32'h0, 0, 0, 32'h1);
 
     // Trace: restart with only the ROM-latch buffer, linear mode, then post
     // 1030 events so the buffer fills and stops at 1024.

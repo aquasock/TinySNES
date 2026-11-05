@@ -24,6 +24,14 @@
 //   0x040  RW knob: GSU ROM_CYCLES override, 1..13; 0 = built-in 9
 //   0x044  RW scratch
 //   0x048  mclk with FLAG_GO high since reset
+//   0x050  HDMI audio FIFO overflows: a sample offered to a full FIFO
+//   0x054  HDMI audio FIFO underruns: a read taken from an empty FIFO
+//   0x058  Pmod I2S {samples lost to a full FIFO, samples taken}
+//          Both are i2s_out's own 16-bit counters, carried through unchanged.
+//          The taken count free-runs since reset and saturates at 65535 within
+//          about 20 seconds on the board, so it is a delta (take two readings)
+//          and not an absolute; the overwritten count is the one to read.
+//   0x05c  Pmod I2S resampler underruns
 //
 //   0x100  RW trace control
 //            [0] run     [1] ring (else stop each buffer when full)
@@ -68,6 +76,15 @@ module tinysnes_dbg #(
     input             ev_rom_defer,
     input             ev_rom_timeout,
 
+    // Audio FIFO health.  Each is a toggle rather than a counter so the source
+    // can live in whatever clock domain the fault does; this bank counts edges
+    // in its own domain.  See snes2hdmi.v and i2s_out.sv.
+    input             audio_ovf_tog,
+    input             audio_unf_tog,
+    input      [15:0] i2s_taken,
+    input      [15:0] i2s_overwritten,
+    input      [15:0] i2s_underrun,
+
     input      [15:0] gsu_go_cnt,
     input      [15:0] gsu_sfr,
     input             gsu_flag_go,
@@ -102,11 +119,21 @@ reg [31:0] rom_reqs = 0, rom_defers = 0, rom_timeouts = 0, go_time = 0;
 reg [31:0] scratch = 0;
 reg        flag_go_r = 1'b0;
 
+// Audio FIFO health, counted from toggles.  Three flops per source: the first
+// captures a possibly metastable edge and the last two give a stable
+// comparison, so one visible edge is one lost or starved sample.
+reg [15:0] audio_ovf = 0, audio_unf = 0;
+reg        ovf_s1 = 1'b0, ovf_s2 = 1'b0, ovf_s3 = 1'b0;
+reg        unf_s1 = 1'b0, unf_s2 = 1'b0, unf_s3 = 1'b0;
+
 always @(posedge clk) begin
     if (~resetn) begin
         uptime <= 0; frames <= 0; stops <= 0; bsram_wrs <= 0;
         rom_reqs <= 0; rom_defers <= 0; rom_timeouts <= 0; go_time <= 0;
         scratch <= 0; gsu_rom_cycles <= 4'd0; flag_go_r <= 1'b0;
+        audio_ovf <= 0; audio_unf <= 0;
+        ovf_s1 <= 1'b0; ovf_s2 <= 1'b0; ovf_s3 <= 1'b0;
+        unf_s1 <= 1'b0; unf_s2 <= 1'b0; unf_s3 <= 1'b0;
     end else begin
         uptime <= uptime + 1;
         flag_go_r <= gsu_flag_go;
@@ -119,6 +146,13 @@ always @(posedge clk) begin
         if (ev_rom_timeout) rom_timeouts <= rom_timeouts + 1;
         if (wr && bus_addr == 32'h40) gsu_rom_cycles <= bus_wdata[3:0];
         if (wr && bus_addr == 32'h44) scratch <= bus_wdata;
+
+        ovf_s1 <= audio_ovf_tog; ovf_s2 <= ovf_s1; ovf_s3 <= ovf_s2;
+        unf_s1 <= audio_unf_tog; unf_s2 <= unf_s1; unf_s3 <= unf_s2;
+        if ((ovf_s2 ^ ovf_s3) && (audio_ovf != 16'hFFFF))
+            audio_ovf <= audio_ovf + 16'd1;
+        if ((unf_s2 ^ unf_s3) && (audio_unf != 16'hFFFF))
+            audio_unf <= audio_unf + 16'd1;
     end
 end
 
@@ -234,6 +268,10 @@ always @(posedge clk) begin
         16'h040: bus_rdata <= {28'b0, gsu_rom_cycles};
         16'h044: bus_rdata <= scratch;
         16'h048: bus_rdata <= go_time;
+        16'h050: bus_rdata <= {16'b0, audio_ovf};
+        16'h054: bus_rdata <= {16'b0, audio_unf};
+        16'h058: bus_rdata <= {i2s_overwritten, i2s_taken};
+        16'h05c: bus_rdata <= {16'b0, i2s_underrun};
         16'h100: bus_rdata <= ctrl;
         16'h104: bus_rdata <= {30'b0, waiting, recording};
         16'h110: bus_rdata <= {wrapped[0], full[0], 14'b0, 16'(wp[0])};

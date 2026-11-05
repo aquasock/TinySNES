@@ -30,7 +30,7 @@ which="${1:-all}"
 
 command -v iverilog >/dev/null || { echo "iverilog is required" >&2; exit 2; }
 
-tmp="$(mktemp -d)"
+tmp="$(mkdir -p "$root/build/tmp" && mktemp -d "$root/build/tmp/probe.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
 # extract <define> <out>: the block belonging to that define, verbatim.  Both

@@ -42,22 +42,25 @@ Three changes go beyond that, and each has a measurement behind it:
   every diagnostic build so those still show their own results.
 - **Tested cartridges:** Space Invaders (256 KiB, LoROM), Zelda: A Link to the
   Past (1 MiB, LoROM, ROM+RAM+battery), Super Mario Kart (512 KiB, HiROM,
-  FastROM, ROM+RAM+battery, DSP-1), Donkey Kong Country (4 MiB, HiROM, FastROM)
-  and Super Castlevania IV (1 MiB, LoROM). Mario Kart is the first HiROM and the
-  first fastrom cartridge confirmed here, and the first working coprocessor.
-  Donkey Kong Country is the first 4 MiB image, twice the size of the previous
-  largest, and it confirms the whole size range the mapper supports.
-- **SuperFX: Star Fox runs.** Star Fox (1 MiB, `$13`) plays with good sound
-  and a picture the user judged almost perfect; a side-by-side check against a
-  PC emulator is still to come. Vortex (512 KiB, `$14`) and Yoshi's Island
-  (2 MiB, `$15`) have not been tried since the fix. The blank screen every GSU
-  title used to show was the GSU stopping on its first ROM load, caused by the
-  synthesis flow rather than the RTL: on GW5A, yosys builds a negedge flop with
-  an enable or reset as a posedge flop behind a LUT clock inverter, so the
-  GSU's `EN` (a plain negedge flop) and its ROM/RAM handshake flops clocked a
-  few ns apart with no timing check between them. `EN` now has a reset so it
-  shares the inverted clock, and `tools/clock_edge_check.py` refuses any
-  netlist that splits a clock edge that way again.
+  FastROM, ROM+RAM+battery, DSP-1), Donkey Kong Country (4 MiB, HiROM, FastROM),
+  Super Castlevania IV (1 MiB, LoROM) and Chrono Trigger (4 MiB, HiROM, FastROM,
+  ROM+RAM+battery). Mario Kart is the first HiROM and the first fastrom
+  cartridge confirmed here, and the first working coprocessor. Donkey Kong
+  Country is the first 4 MiB image, twice the size of the previous largest, and
+  it confirms the whole size range the mapper supports. F-Zero runs with correct
+  video and audio, confirmed on the board on 2026-11-05.
+- **SuperFX: the GSU runs.** Star Fox, Vortex, Yoshi's Island, Stunt Race FX,
+  Dirt Trax FX, Star Fox 2 and Doom all run; Winter Gold is PAL and stops at its
+  region check. The blank screen every GSU title used to show was the GSU
+  stopping on its first ROM load, caused by the synthesis flow rather than the
+  RTL: on GW5A, yosys builds a negedge flop with an enable or reset as a posedge
+  flop behind a LUT clock inverter, so the GSU's `EN` (a plain negedge flop) and
+  its ROM/RAM handshake flops clocked a few ns apart with no timing check
+  between them. `EN` now has a reset so it shares the inverted clock, and
+  `tools/clock_edge_check.py` refuses any netlist that splits a clock edge that
+  way again. Two picture defects found since were also real rather than
+  timing: GSU tile addressing, and `MULT`/`FMULT`/`LMULT` taking `YA` as
+  unsigned where it is signed.
 - **Audio and video:** correct on every tested cartridge, including the 4 MiB
   title and the DSP-1 title. The S-DSP is complete in this core -- BRR with all
   four filters, Gaussian interpolation, ADSR and the GAIN modes, pitch
@@ -69,7 +72,11 @@ Three changes go beyond that, and each has a measurement behind it:
   invisible and reports absent. The BL616 link is not a second route -- `hid1`
   and `hid2` are wired into the top level but TinyTang's firmware never sends the
   `0x09` pad frame, so they stay zero.
-- **Not tested:** the OSD.
+- **TinyDesk overlay: working.** `desk_layer.v` draws TinyTang's 80x45 desk over
+  the picture and a tap of the Wii Classic Controller's HOME button opens and
+  closes it; game input is held idle while it is shown. The rest of the UI -- a
+  ROM browser and a core menu -- is not built.
+- **Not tested:** the OSD above the desk (`iosys_bl616.v`), which is tied off.
 - **Saves: the mechanic works, persistence does not exist.** A game writes its
   save to the cartridge SRAM in SDRAM and reads it back correctly, so saving and
   loading inside a session both work. Nothing in the tree writes that SRAM out to
@@ -184,6 +191,16 @@ reporting on a different machine. Reach for hardware once the logic is right.
 `+frame=PATH` writes one 256x224 frame as a PPM, which is the only reading that
 distinguishes a title screen from noise.
 
+A second, narrower bench covers the SPC700 alone: `tools/sim/run_spc_diff.sh`
+runs this core and MiSTer's, converted from VHDL by `tools/sim/spc_ref/`, on the
+same random program and compares PC, A, X, Y, SP, PSW and the write count at
+every instruction boundary. Differences in instruction *implementation* are
+invisible to a bench that agrees with itself, which is how an SPC700 that shifted
+the wrong operand survived this long; this one found that class. Two divergences
+are expected and are reported rather than counted as failures: `DIV` overflow,
+where this core implements the chip's nine-step rotate-and-subtract and MiSTer's
+reference saturates, and `STP`, which ends a random program.
+
 ## Layout
 
 ```
@@ -196,14 +213,14 @@ tools/              build, deploy, ROM loading, probes, frame analysis
 
 ## Known gaps
 
-- **SuperFX.** Star Fox runs; Vortex and Yoshi's Island are untested since the
-  fix, and Star Fox's picture has not yet been compared against an emulator.
-  The GSU's BSRAM port has no acknowledge input on `GSUMap`, which remains a
-  candidate if a GSU title misbehaves.
-- **The OSD is tied off** (`iosys_bl616.v`). `overlay_reg` powers up asserted and
-  `snes2hdmi` draws the overlay in preference to the picture while it is set; the
-  menu is empty in one-wire mode, so the whole picture area is black by
-  construction. TinyDesk is meant to replace it.
+- **SuperFX.** All the GSU titles tested run, but Star Fox's picture has not been
+  compared side by side against an emulator, and Yoshi's Island still has minor
+  glitches. The GSU's BSRAM port has no acknowledge input on `GSUMap`, which
+  remains a candidate if a GSU title misbehaves.
+- **The OSD behind TinyDesk is tied off** (`iosys_bl616.v`). `overlay_reg` powers
+  up asserted and `snes2hdmi` draws the overlay in preference to the picture
+  while it is set; the menu is empty in one-wire mode, so the whole picture area
+  is black by construction. The TinyDesk layer above it is what works.
 - `TINYSNES_CART_WAIT` in `snestang_top.v` refers to wait-state machinery removed
   when the core was reverted to upstream. It should be removed or re-derived.
 - The board occasionally fails to boot a cartridge on the first load; a reflash
