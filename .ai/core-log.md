@@ -281,3 +281,33 @@ Building out the rest of the UI on the desk, such as the ROM browser and core me
 - User Test: PASS
 
 ---
+
+## 9 COMMIT Unreleased 2026-11-04T22:29:11-07:00
+
+#### Coming From:
+
+Unreleased 768f6ff
+
+#### Purpose:
+
+Hand off the proposed design for SNES battery saves to the Tang's SD card, written on a HOME plus Minus exit as TinyNES and TinyGBC do, before any of it is implemented.
+
+#### Outcome:
+
+No engineering file changed in either repository. Since entry 8 the UI work moved to TinyTang at `/run/media/vash/GIT/TinyTang`, whose `main` at `83d6058` is pushed and in sync with `origin`: a TinySNES desk app in `ports/bl616/tinysnes_app.cpp` loads `/root/cores/console138k/tinysnes.bin` and streams a cartridge through `ports/bl616/tang_snes_load.c` while the core shows colour bars, and the Wii Classic format-0 controller fix is in, with the board running firmware SHA-256 prefix `af4ea73d` and the user confirming the controller works after leaving a game; that repository's `third_party/tinydesk` carries uncommitted changes that are not this project's and must stay out of its commits. The user set ZIP cartridges aside and chose battery saves, noting that SRAM already survives a game restart until the core is reloaded, and specified TinyNES and TinyGBC's behaviour: no Stop button, the player saves in the game, and holding HOME with Minus stores SRAM to the card and returns to the desktop, as `pad_quit()` does in TinyGBC's `firmware/apps/gb_bench/main.cpp` at lines 935 to 940. Because TinySNES has no CPU, the proposal puts the work on the BL616. In the core, `iosys_bl616.v` would set pad-word bit `0x8000` while HOME and SELECT, which is Minus, are both held, which already clears the HOME-tap detection; it would gain frame 0x18 to write a block of BSRAM from a 24-bit address and frame 0x19 to read up to 251 bytes back in a reply carrying a CRC, both refused unless `rom_loading` holds the core in reset, using a new TX state since `send_state` is four bits and `send_idx` only seven, and keeping 0x19 replies within the BL616's 256-byte frame payload; `snestang_top.v` would mux the 128 KiB BSRAM port near lines 1987 to 1994 to iosys while `loading`, adding no block RAM to a design already at 340 of 340. In TinyTang, `tang_pad.h` would gain `TANG_PAD_EXIT`, `tang_fpga_link.h` and `fpga_frames.h` the two frame types, and `tang_snes_load.c` would size the save from the header, battery when the low nibble of byte 0x16 is 2, 5, 6, 9 or 0xA and 1 KiB shifted by byte 0x18, using the expansion RAM byte at 0x7FBD or 0xFFBD for SuperFX cartridges whose byte 0x18 is zero and capping at 128 KiB, then restore `/sd/root/saves/snes/<stem>.sav` with verified 0x18 blocks after the ROM drains and before reset is released, doing nothing when no file exists because a fresh configuration zeroes BSRAM. `tinysnes_app.cpp` would drop the Stop button and `stop_task`, keep `launch_task` polling `tang_fpga_joypad` about every 50 ms, and on the exit bit raise the load hold, read SRAM out, write a `.part` file, read it back and rename it over the `.sav` as the AE350 save path in `tang_fpga_uart.c` does, record the overlay and load the desktop core; a core-load counter in `tdsh_tang_flash.c`'s `tang_core_load` would let the task end without saving if another core replaced TinySNES. The plan was presented and the user asked for this handoff before approving it. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, inspected the `.ai/` diff as this entry alone, and validated it as entry 9 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, `N/A` Status values, no self-referencing hash and a count of nine against the 100-entry limit.
+
+#### Next Steps:
+
+Get the user's approval of the battery-save plan, then implement the core half with `tools/sim/dbg_link_tb.sv` covering the exit bit and both frames, build and deploy the bitstream as `tinysnes.bin`, implement the firmware half with host tests in `tools/tests/tb_snes_load.c` and TinyTang's `tools/tests/run_all.sh` gate, flash the firmware, and have the user save in Zelda, exit with HOME plus Minus, confirm the `.sav` in `/root/saves/snes` and confirm it loads on relaunch; the SuperFX save size in 0x7FBD for Yoshi's Island, believed to be 32 KiB, is unverified, and `smc_parser.v` maps 64 KiB for every GSU cartridge. Zip cartridges and the items carried in entry 8 remain.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---
