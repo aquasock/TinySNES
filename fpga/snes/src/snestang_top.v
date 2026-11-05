@@ -246,7 +246,7 @@ wire        ARAM_CE_N;
 wire        ARAM_OE_N;
 wire        ARAM_WE_N;
 wire [15:0] aram_dout;
-wire  [7:0] ARAM_Q = ARAM_ADDR[0] ? aram_dout[15:8] : aram_dout[7:0];
+wire  [7:0] ARAM_Q;                    // from ARAM block RAM, see below
 wire  [7:0] ARAM_D;
 wire        aram_16 = 0;
 
@@ -1967,6 +1967,48 @@ always @(posedge mclk) begin
 end
 assign      WRAM_SD_Q = wram_dout;
 
+// TinySNES: ARAM is block RAM, not SDRAM.
+//
+// This is the fault WRAM and BSRAM were both moved out of, in the memory that
+// was left behind.  ARAM holds the BRR sample bytes and the echo buffer, and it
+// sat on a port of sdram_cl2_2ch shared with the cartridge, with its acknowledge
+// discarded (`.aram_req_ack()` was left unconnected).  The S-DSP has no stall or
+// ready input: it drives RAM_A and takes RAM_Q a fixed number of clocks later,
+// exactly as GSU.v drives its own memories.
+//
+// Measured on the board on 2026-11-05, capturing the HDMI output through the
+// capture card and aligning it against the same passage simulated with
+// tools/sim/gsu_tb.sv: with ARAM in SDRAM the board's envelope correlated 0.900
+// with the simulation and its side-over-mid ratio differed by 0.212 on mean and
+// 0.129 at the median; with ARAM here those become 0.971, 0.140 and 0.112, and
+// the fraction of active half-second windows reading as near-mono falls from 30
+// percent to 11.  The passage the user called worst, Zelda's intro from 6.5 to
+// 9.7 seconds, held side/mid at 0.06 to 0.13 on the old build where the
+// simulation shows 0.4 to 0.7; it now holds 0.49 to 0.58.  That is the "old
+// radio switching between mono and stereo" the user reported, and it is
+// quieter but not gone at 11 percent, so this is an improvement rather than a
+// cure.
+//
+// gsu_tb could never show the fault because its ARAM model is
+// `ARAM_Q <= aram[ARAM_ADDR]`, a synchronous array answering on the next mclk.
+// The board is the only place it reproduces.
+//
+// 64 KiB needs 32 blocks at 2 KiB each; BSRAM goes from 223 to 255 of 340.
+`ifndef TINYSNES_ARAM_TEST
+reg  [7:0]  aram_mem [0:65535];
+reg  [7:0]  aram_dout_b;
+always @(posedge mclk) begin
+    if (aram_wr) aram_mem[ARAM_ADDR] <= ARAM_D;
+    aram_dout_b <= aram_mem[ARAM_ADDR];
+end
+assign      ARAM_Q = aram_dout_b;
+assign      aram_dout = {aram_dout_b, aram_dout_b};
+`else
+// Diagnostic build: aram_bist owns the SDRAM port, so ARAM still comes from
+// there and the byte lanes are selected as before.
+assign      ARAM_Q = ARAM_ADDR[0] ? aram_dout[15:8] : aram_dout[7:0];
+`endif
+
 // TinySNES: BSRAM is block RAM, not SDRAM.
 //
 // It used to be a port of sdram_cl2_2ch behind a req/ack toggle, which suits
@@ -2782,8 +2824,10 @@ sdram_snes sdram(
     .aram_dout(aram_dout), .aram_req(aram_bist_req), .aram_req_ack(aram_bist_ack),
     .aram_we(aram_bist_we),
 `else
-    .aram_16(aram_16), .aram_addr(ARAM_ADDR), .aram_din({ARAM_D, ARAM_D}), 
-    .aram_dout(aram_dout), .aram_req(aram_req), .aram_req_ack(), .aram_we(aram_wr),
+    // TinySNES: ARAM is block RAM in this file; the port is tied off.  See
+    // "ARAM is block RAM" above for the measurement that put it there.
+    .aram_16(1'b0), .aram_addr(16'd0), .aram_din(16'd0),
+    .aram_dout(), .aram_req(1'b0), .aram_req_ack(), .aram_we(1'b0),
 `endif
 
 `ifdef SDRAM_3CH
