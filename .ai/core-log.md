@@ -208,3 +208,33 @@ Committing the SPC700 differential bench as a reproducible tool alongside `tools
 - User Test: PASS
 
 ---
+
+## 7 COMMIT Unreleased 2026-11-04T19:42:58-07:00
+
+#### Coming From:
+
+Unreleased 35423b3
+
+#### Purpose:
+
+Find and fix the fixed vertical stripe near Super Mario Kart's left screen edge that cut a column out of sprites passing through it.
+
+#### Outcome:
+
+The stripe reproduced in the Verilator simulation of `fpga/snes/src/main.v` with ROM type 129 as each kart of the title intro entered from the left, and the snes9x reference showed none, so the fault lay in the core rather than the game. In the sprite range engine of `fpga/snes/src/ppu.v`, the test that ends a sprite's tile fetch once a tile reaches the right screen edge, `(TILE_X + 8) >= 256`, was evaluated at 32 bits because of the unsized literal, so when a sprite started one to seven pixels left of the screen its first tile's end exceeded 511 instead of wrapping to the left edge, the fetch stopped after that tile and the following eight pixels of the sprite were never drawn. MiSTer's VHDL evaluates the same sum in nine bits, where it wraps and the fetch continues, and the line was inherited unchanged from upstream SNESTang. The fix computes the tile's end in a nine-bit `TILE_X_END` and tests its bit 8. In simulation of frames 320 to 720 the karts entered whole, and the only pixels that changed were the previously missing columns in the frames where a kart sat one to seven pixels past the left edge. The build `build/ppu1/tinysnes.bin`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, SHA-256 `a8b4cac1e85f5d015e94049f187d489b86751d94cede675f59d8f9b6110f392b`, met timing, was deployed by `tools/tang_deploy.py` as `/root/cores/console138k/tinysnes-dbg.bin`, and the user reported the stripe gone. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, inspected the `.ai/` diff as this entry alone, and validated it as entry 7 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, permitted Status values, no self-referencing hash and a count of seven against the 100-entry limit.
+
+#### Next Steps:
+
+Committing the SPC700 differential bench as a reproducible tool alongside `tools/sim/gsu_ref`, checking F-Zero for missing channels, the PAL behaviour of both audio servos, wiring the audio FIFO counters to the debug bus, the stale `i2s_out.sv` header and the open items carried in entry 3 remain.
+
+#### Files Modified:
+
+- fpga/snes/src/ppu.v
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

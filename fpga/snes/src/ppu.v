@@ -1367,6 +1367,7 @@ always @(posedge CLK) begin : calc_sprite_range
     reg [5:0] W, H, H2;
     reg [5:0] NEW_RANGE_CNT;
     reg [8:0] TILE_X;
+    reg [8:0] TILE_X_END;
     reg [2:0] CUR_TILES_CNT;
     reg [8:0] OAM_OBJ_X;
     reg [7:0] OAM_OBJ_Y;
@@ -1495,6 +1496,7 @@ always @(posedge CLK) begin : calc_sprite_range
                         OBJ_TILE_GAP <= 4096 + {OBJNAME, 12'b0};
                     
                     TILE_X = OAM_OBJ_X + {3'b0, CUR_TILES_CNT, 3'b0};
+                    TILE_X_END = TILE_X + 9'd8;
                     
                     OBJ_TILE_HFLIP <= OAM_OBJ_HFLIP;
                     OBJ_TILE_PAL <= OAM_OBJ_PAL ;
@@ -1503,7 +1505,7 @@ always @(posedge CLK) begin : calc_sprite_range
                     
                     TILES_OAM_CNT <= TILES_OAM_CNT + 1;
                     TILES_CNT <= CUR_TILES_CNT + 1;
-                    if (CUR_TILES_CNT == W[5:3] || ((TILE_X + 8) >= 256 && OAM_OBJ_X != 256)) begin
+                    if (CUR_TILES_CNT == W[5:3] || (TILE_X_END[8] && OAM_OBJ_X != 256)) begin
                         NEW_RANGE_CNT = RANGE_CNT - 1;
                         TILES_CNT <= 0;
                         RANGE_CNT <= NEW_RANGE_CNT;
