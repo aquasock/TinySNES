@@ -137,6 +137,12 @@ module snes2hdmi (
     output [7:0] overlay_y,
     input [14:0] overlay_color,
 
+    // TinyDesk, from iosys_bl616 on the machine clock; see desk_layer.v.
+    input desk_on,
+    input desk_wr_tog,
+    input [11:0] desk_wr_addr,
+    input [36:0] desk_wr_data,
+
     input [15:0] audio_l,
     input [15:0] audio_r,
     input audio_ready,
@@ -774,8 +780,20 @@ assign linefill_dbg = lf_dbg;
     wire boot_visible = boot_screen && cx < FRAMEWIDTH && cy < FRAMEHEIGHT;
 `endif
 
+    // TinyDesk over the whole frame, ahead of the boot screen and the picture.
+    wire desk_px;
+    wire [23:0] desk_rgb;
+    desk_layer desk (
+        .clk(clk_pixel), .cx(cx), .cy(cy),
+        .on(desk_on), .wr_tog(desk_wr_tog), .wr_addr(desk_wr_addr), .wr_data(desk_wr_data),
+        .px(desk_px), .rgb(desk_rgb)
+    );
+
     // calc rgb value to hdmi
     always @(posedge clk_pixel) begin
+        if (desk_px) begin
+            rgb <= desk_rgb;
+        end else
 `ifndef TINYSNES_DIAG_DISPLAY
         if (boot_visible) begin
             rgb <= boot_rgb;

@@ -66,6 +66,7 @@ module bootscreen_tb;
         .xs(9'h000), .ys(9'h000),
         .overlay(1'b0), .overlay_x(ovl_x), .overlay_y(ovl_y),
         .overlay_color(15'h0000),
+        .desk_on(1'b0), .desk_wr_tog(1'b0), .desk_wr_addr(12'd0), .desk_wr_data(37'd0),
         .audio_l(16'h0000), .audio_r(16'h0000),
         .audio_ready(1'b0), .audio_en(audio_en),
         .clk_pixel(clk_pixel), .clk_5x_pixel(clk_5x), .locked(1'b1),

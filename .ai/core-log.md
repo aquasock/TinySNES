@@ -238,3 +238,46 @@ Committing the SPC700 differential bench as a reproducible tool alongside `tools
 - User Test: PASS
 
 ---
+
+## 8 COMMIT Unreleased 2026-11-04T21:01:22-07:00
+
+#### Coming From:
+
+Unreleased 293d5a3
+
+#### Purpose:
+
+Begin the emulator UI by drawing TinyTang's TinyDesk overlay over the SNES picture and toggling it with a tap of the Wii Classic HOME button, as TinyNES and TinyGBC do.
+
+#### Outcome:
+
+The new `fpga/snes/src/desk_layer.v` draws TinyTang's 80 by 45 character desk over the whole 1280 by 720 picture in 16 by 16 pixel cells, each an 8 by 8 glyph from the new `fpga/snes/src/desk_font.hex` doubled in both directions, with its cell store written on the pixel clock from a toggle handshake so it has a single clock, a four-pixel lead so its output lines up with the rest of the picture in `snes2hdmi.v`, and a shown flag that switches only at the start of row 720 so a frame is never split. `fpga/snes/src/iosys/iosys_bl616.v` accepts TinyTang's desk frames, 0x13 for the cell cursor, 0x14 for five-byte cells and 0x15 for the desk enable, shows the desk only while both 0x15 and the 0x08 overlay toggle are set, holds the game's pads idle while it is shown, and now sends the joypad report in TinyTang's pad word as TinyNES does, with LB raised only for a tap of HOME, which `fpga/snes/src/wii_pad.sv` now outputs. The first build of this design failed the 74.25 MHz `hclk` gate at 71.99 MHz, and seeds 3, 4 and 5 reached only 71.96, 74.05 and 71.44 MHz, because the critical path was the HDMI encoder's serial `q_m` chain into its disparity accumulator, made sixteen levels deep by the new placement; `fpga/snes/hdmi/tmds_channel.sv` was therefore replaced by TinyNES's version, also used by TinyGBC, which builds `q_m` as a prefix tree and registers it, delaying the TMDS stream by one pixel clock, and a disposable bench found it identical to the old encoder delayed by one clock over 200,000 random cycles in every mode on all three channels, while a version of the bench without the delay reported mismatches. `tools/tests/desk_tb.sv` with `tools/tests/run_desk_tb.sh`, the extended `tools/tests/bootscreen_tb.sv` and `tools/sim/dbg_link_tb.sv` pass, and `tools/build_tinysnes.sh` and `tools/sim/run_board_sim.sh` include the new layer. The build `build/desk2/tinysnes.bin`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, SHA-256 `1300fc64d686fdfe677a2cb3726c5e8324c796742986a7f0f20321a3a41195e9`, met every clock with `hclk` at 105.3 MHz, was deployed by `tools/tang_deploy.py` as `/root/cores/console138k/tinysnes-dbg.bin` alongside TinyTang firmware `7c44fb3-dirty.1491160`, which lets a pad tap open the desk while its layer is off and records the overlay state a loader's 0x08 frame sets, and with Super Mario Kart loaded the user reported the desk opening and closing on HOME, including the first tap after a load, F12 still working, game input blocked while the desk is shown and the picture unchanged. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, inspected the `.ai/` diff as this entry alone, and validated it as entry 8 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, permitted Status values, no self-referencing hash and a count of eight against the 100-entry limit.
+
+#### Next Steps:
+
+Building out the rest of the UI on the desk, such as the ROM browser and core menu TinyNES and TinyGBC provide, comes next; PAL support is deferred by the user, and committing the SPC700 differential bench, wiring the audio FIFO counters to the debug bus, the stale `i2s_out.sv` header and the open items carried in entry 3 remain.
+
+#### Files Modified:
+
+- fpga/snes/hdmi/tmds_channel.sv
+- fpga/snes/src/desk_font.hex
+- fpga/snes/src/desk_layer.v
+- fpga/snes/src/iosys/iosys_bl616.v
+- fpga/snes/src/snes2hdmi.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/wii_pad.sv
+- tools/build_tinysnes.sh
+- tools/sim/dbg_link_tb.sv
+- tools/sim/run_board_sim.sh
+- tools/tests/bootscreen_tb.sv
+- tools/tests/desk_tb.sv
+- tools/tests/run_bootscreen_tb.sh
+- tools/tests/run_desk_tb.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

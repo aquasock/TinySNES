@@ -75,6 +75,9 @@ module wii_pad #(
     output reg  [7:0]  fails,
     // (R L X A RT LT DN UP START SELECT Y B), 1 = pressed.
     output reg  [11:0] buttons,
+    // HOME, 1 = pressed.  Not a SNES button, so not in `buttons`: iosys_bl616
+    // turns a tap of it into the desk overlay's toggle.
+    output reg         home,
     // The two raw button bytes of the last data report, byte 6 in 15:8 and
     // byte 7 in 7:0, active low.  Present so a probe build can show what the
     // controller actually sent rather than what this module decoded it to.
@@ -452,6 +455,7 @@ module wii_pad #(
     assign dbg_format3 = 1'b1;
     wire       b_r     = ~btn_lo[1];
     wire       b_plus  = ~btn_lo[2];
+    wire       b_home  = ~btn_lo[3];
     wire       b_minus = ~btn_lo[4];
     wire       b_l     = ~btn_lo[5];
     wire       b_down  = ~btn_lo[6];
@@ -464,12 +468,15 @@ module wii_pad #(
     wire       b_b     = ~btn_hi[6];
 
     always @(posedge clk) begin
-        if (!resetn || !(present && classic))
+        if (!resetn || !(present && classic)) begin
             buttons <= 12'd0;
-        else
+            home <= 1'b0;
+        end else begin
             // (R L X A RT LT DN UP START SELECT Y B)
             buttons <= {b_r, b_l, b_x, b_a, b_right, b_left,
                         b_down, b_up, b_plus, b_minus, b_y, b_b};
+            home <= b_home;
+        end
     end
 
 endmodule

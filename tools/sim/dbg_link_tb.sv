@@ -4,7 +4,12 @@
 // It checks the reply framing and CRC against an independent model, every
 // opcode and error status, the register bank, the knob, a BSRAM peek, a trace
 // buffer written by synthetic GSU events, and that a joypad frame sent while a
-// reply is pending no longer swallows the reply.  Run with run_dbg_link_sim.sh.
+// reply is pending no longer swallows the reply.  It also drives TinyTang's desk
+// frames (0x13 cursor, 0x14 cells, 0x15 enable, 0x08 show) and checks the cell
+// writes and desk_on they produce, and checks the joypad report: TinyTang's pad
+// word, LB only for a tap of HOME, and the periodic resend.  The report tick is
+// shortened to REPORT_CLOCKS so a 20 ms tick is 4.7 us here.  Run with
+// run_dbg_link_sim.sh.
 
 `timescale 1ns/1ps
 
@@ -20,14 +25,21 @@ reg resetn = 0;
 reg  uart_rx = 1;
 wire uart_tx;
 reg  [11:0] joy1 = 0;
+reg         home = 0;
+wire        desk_on, desk_wr_tog;
+wire [11:0] desk_wr_addr;
+wire [36:0] desk_wr_data;
+localparam integer REPORT_CLOCKS = 100;
 
 wire [31:0] bus_addr, bus_wdata, bus_rdata;
 wire        bus_valid, bus_write;
 
-iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
+iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000), .REPORT_CLOCKS(REPORT_CLOCKS)) iosys (
     .clk(clk), .hclk(clk), .resetn(resetn),
     .overlay(), .overlay_x(8'd0), .overlay_y(8'd0), .overlay_color(),
-    .joy1(joy1), .joy2(12'd0), .hid1(), .hid2(),
+    .joy1(joy1), .joy2(12'd0), .hid1(), .hid2(), .home(home),
+    .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr),
+    .desk_wr_data(desk_wr_data),
     .uart_tx(uart_tx), .uart_rx(uart_rx),
     .rom_loading(), .rom_do(), .rom_do_valid(),
     .debug_address(bus_addr), .debug_wdata(bus_wdata),
@@ -82,7 +94,9 @@ endtask
 
 // Receiver: every byte the FPGA sends goes into rxq.
 reg [7:0] rxq [0:4095];
+time rxt [0:4095];                          // when each byte finished
 integer rx_wr = 0, rx_rd = 0;
+time last_t;                                // rxt of the last byte taken
 initial begin : rx
     integer i;
     reg [7:0] b;
@@ -90,7 +104,8 @@ initial begin : rx
         @(negedge uart_tx);
         #(BIT_NS * 1.5);
         for (i = 0; i < 8; i = i + 1) begin b[i] = uart_tx; #(BIT_NS); end
-        rxq[rx_wr] = b;
+        rxq[rx_wr % 4096] = b;
+        rxt[rx_wr % 4096] = $time;
         rx_wr = rx_wr + 1;
     end
 end
@@ -107,7 +122,8 @@ task automatic get_byte(output [7:0] b);
                 $finish;
             end
         end
-        b = rxq[rx_rd];
+        b = rxq[rx_rd % 4096];
+        last_t = rxt[rx_rd % 4096];
         rx_rd = rx_rd + 1;
     end
 endtask
@@ -200,9 +216,134 @@ task automatic rd(input [31:0] addr, output [31:0] d);
     end
 endtask
 
+// ------------------------------------------------------------ desk model
+// Every cell write iosys makes: the toggle flips with address and data set.
+reg [11:0] wr_addr_q [0:63];
+reg [36:0] wr_data_q [0:63];
+integer wr_n = 0;
+reg tog_prev = 0;
+always @(posedge clk) begin
+    tog_prev <= desk_wr_tog;
+    if (desk_wr_tog != tog_prev) begin
+        wr_addr_q[wr_n] = desk_wr_addr;
+        wr_data_q[wr_n] = desk_wr_data;
+        wr_n = wr_n + 1;
+    end
+end
+
+task automatic frame1(input [7:0] t, input [7:0] b);
+    begin
+        send_byte(8'hAA); send_byte(8'h00); send_byte(8'h02); send_byte(t); send_byte(b);
+    end
+endtask
+
+task automatic desk_cursor(input [7:0] x, input [7:0] y);
+    begin
+        send_byte(8'hAA); send_byte(8'h00); send_byte(8'h03);
+        send_byte(8'h13); send_byte(x); send_byte(y);
+    end
+endtask
+
+// A cell as TinyTang sends it: char, then fg and bg big-endian.
+function automatic [39:0] cell_bytes(input [7:0] ch, input [15:0] fg, input [15:0] bg);
+    cell_bytes = {ch, fg, bg};
+endfunction
+
+task automatic desk_cells(input integer n, input [8*40-1:0] cells);
+    integer i;
+    reg [15:0] len;
+    begin
+        len = 1 + 5 * n;
+        send_byte(8'hAA); send_byte(len[15:8]); send_byte(len[7:0]); send_byte(8'h14);
+        for (i = 5 * n - 1; i >= 0; i = i - 1) send_byte(cells[8*i +: 8]);
+    end
+endtask
+
+task automatic want_writes(input [8*40-1:0] what, input integer n,
+                           input [11:0] a0, input [36:0] d0,
+                           input [11:0] a1, input [36:0] d1);
+    begin
+        #(BIT_NS * 20);
+        if (wr_n !== n || (n > 0 && (wr_addr_q[0] !== a0 || wr_data_q[0] !== d0))
+                       || (n > 1 && (wr_addr_q[1] !== a1 || wr_data_q[1] !== d1))) begin
+            $display("FAIL: %0s: %0d writes, [0] %0d %010x, [1] %0d %010x", what, wr_n,
+                     wr_addr_q[0], wr_data_q[0], wr_addr_q[1], wr_data_q[1]);
+            fails = fails + 1;
+        end else
+            $display("ok    %0s: %0d writes", what, wr_n);
+        wr_n = 0;
+    end
+endtask
+
+task automatic want_on(input [8*40-1:0] what, input want);
+    begin
+        #(BIT_NS * 20);
+        if (desk_on !== want) begin
+            $display("FAIL: %0s: desk_on %b", what, desk_on); fails = fails + 1;
+        end else
+            $display("ok    %0s: desk_on %b", what, desk_on);
+    end
+endtask
+
+// ------------------------------------------------------------ pad model
+// The next unsolicited frame, which must be a joypad report.
+task automatic next_pad(output [15:0] j1, output [15:0] j2);
+    reg [7:0] b;
+    reg [15:0] len;
+    begin
+        get_byte(b);
+        if (b != 8'hAA) begin $display("FAIL: frame start %02x", b); $finish; end
+        get_byte(b); len[15:8] = b;
+        get_byte(b); len[7:0] = b;
+        get_byte(b);
+        if (b != 8'h03 || len != 5) begin
+            $display("FAIL: unsolicited frame type %02x len %0d", b, len); $finish;
+        end
+        get_byte(b); j1[15:8] = b;
+        get_byte(b); j1[7:0] = b;
+        get_byte(b); j2[15:8] = b;
+        get_byte(b); j2[7:0] = b;
+    end
+endtask
+
+// Read reports until one carries `want`, within `limit` reports; any report
+// carrying a bit of `never` on the way fails.
+task automatic want_pad(input [8*40-1:0] what, input [15:0] want, input [15:0] never,
+                        input integer limit);
+    reg [15:0] j1, j2;
+    integer n;
+    begin
+        n = 0;
+        j1 = ~want;
+        while (j1 !== want && n < limit) begin
+            next_pad(j1, j2);
+            n = n + 1;
+            if ((j1 & never) != 0) begin
+                $display("FAIL: %0s: report %04x has %04x", what, j1, never); fails = fails + 1;
+            end
+        end
+        if (j1 !== want) begin
+            $display("FAIL: %0s: no report of %04x in %0d", what, want, limit); fails = fails + 1;
+        end else
+            $display("ok    %0s: %04x after %0d report(s)", what, j1, n);
+    end
+endtask
+
+// How long the reported word carried LB, from iosys's latched report: frame
+// timing would add whatever frame was on the wire ahead of the clearing one.
+time lb_rise = 0, lb_len = 0;
+always @(posedge iosys.joy1_reg[10]) lb_rise = $time;
+always @(negedge iosys.joy1_reg[10]) lb_len = $time - lb_rise;
+
+task automatic ticks(input integer n);
+    #(CLK_NS * REPORT_CLOCKS * n);
+endtask
+
 initial begin : main
     integer i;
     reg [31:0] d, d0;
+    reg [15:0] j1, j2;
+    time t0;
     for (i = 0; i < 131072; i = i + 1) bsram[i] = i[7:0] ^ 8'h5a;
     #(CLK_NS * 20);
     resetn = 1;
@@ -257,6 +398,84 @@ initial begin : main
         begin #(BIT_NS * 10 * 17); joy1 = 12'h001; end
     join
     if (joy_frames == 0) begin $display("FAIL: no joypad frame seen"); fails = fails + 1; end
+
+    // ---- desk frames
+    want_on("power-up", 0);
+    desk_cursor(8'd3, 8'd2);
+    desk_cells(2, {280'd0, cell_bytes(8'h41, 16'h7fff, 16'h0000),
+                           cell_bytes(8'hC2, 16'h801f, 16'h7c00)});
+    // The top bits of char and colours are not stored.
+    want_writes("cells at (3,2)", 2, 12'd163, {7'h41, 15'h7fff, 15'h0000},
+                                     12'd164, {7'h42, 15'h001f, 15'h7c00});
+    desk_cursor(8'd79, 8'd44);
+    desk_cells(2, {280'd0, cell_bytes(8'h20, 16'h1234, 16'h4321),
+                           cell_bytes(8'h21, 16'h1111, 16'h2222)});
+    want_writes("last cell, then stop", 1, 12'd3599, {7'h20, 15'h1234, 15'h4321}, 0, 0);
+    desk_cursor(8'd80, 8'd0);
+    desk_cells(1, {320'd0, cell_bytes(8'h20, 16'h0, 16'h0)});
+    want_writes("cursor off the grid", 0, 0, 0, 0, 0);
+    frame1(8'h15, 8'h01);
+    want_on("enabled, not shown", 0);
+    frame1(8'h08, 8'h01);
+    want_on("enabled and shown", 1);
+    frame1(8'h15, 8'h00);
+    want_on("disabled", 0);
+    frame1(8'h15, 8'h01);
+    want_on("re-enabled, still shown", 1);
+    check("read after desk",  8'h01, 8'h01, 32'h44, 32'h0, 0, 0, 32'hcafebabe);
+    frame1(8'h08, 8'h00);
+    want_on("hidden", 0);
+
+    // ---- joypad report.  From here every frame from the FPGA is a report.
+    joy1 = 12'h000;
+    want_pad("released", 16'h0000, 16'h0000, 30);
+    joy1 = 12'h010;                                 // UP
+    want_pad("up", 16'h0010, 16'h0000, 3);
+    joy1 = 12'h003;                                 // B and Y
+    want_pad("B -> A, Y -> B", 16'h0101, 16'h0000, 3);
+    joy1 = 12'h0c0;                                 // LEFT and RIGHT
+    want_pad("left+right", 16'h00c0, 16'h0000, 3);
+    joy1 = 12'h000;
+    want_pad("released", 16'h0000, 16'h0000, 3);
+
+    // Raw SNES L is the desk toggle's bit in TinyTang's word: never sent.
+    joy1 = 12'h400;
+    ticks(3);
+    joy1 = 12'h000;
+    next_pad(j1, j2);
+    if (j1 !== 16'h0000) begin
+        $display("FAIL: raw L: report %04x", j1); fails = fails + 1;
+    end else
+        $display("ok    raw L: not reported; next report (the resend) %04x", j1);
+
+    // A tap of HOME: LB for 13 ticks, then clear.
+    home = 1; ticks(3); home = 0;
+    want_pad("HOME tap", 16'h0400, 16'h0000, 2);
+    want_pad("tap over", 16'h0000, 16'h0000, 2);
+    if (lb_len < CLK_NS * REPORT_CLOCKS * 12.5 || lb_len > CLK_NS * REPORT_CLOCKS * 13.5) begin
+        $display("FAIL: tap held %0t", lb_len); fails = fails + 1;
+    end else
+        $display("ok    tap held %0t (13 ticks)", lb_len);
+
+    // HOME held with another button is a chord, not a tap.
+    home = 1; ticks(2); joy1 = 12'h001; ticks(2); home = 0; ticks(2); joy1 = 12'h000;
+    want_pad("HOME+B pressed", 16'h0100, 16'h0400, 2);
+    want_pad("HOME+B released", 16'h0000, 16'h0400, 2);
+    ticks(20);
+    next_pad(j1, j2);
+    if (j1 !== 16'h0000) begin
+        $display("FAIL: HOME chord: later report %04x", j1); fails = fails + 1;
+    end else
+        $display("ok    HOME chord: no LB");
+
+    // Nothing changes: a report every 25 ticks anyway.
+    next_pad(j1, j2);
+    t0 = last_t;
+    next_pad(j1, j2);
+    if (last_t - t0 < CLK_NS * REPORT_CLOCKS * 24 || last_t - t0 > CLK_NS * REPORT_CLOCKS * 26) begin
+        $display("FAIL: resend interval %0t", last_t - t0); fails = fails + 1;
+    end else
+        $display("ok    resend every %0t (25 ticks)", last_t - t0);
 
     if (fails == 0) $display("PASS (%0d joypad frames skipped)", joy_frames);
     else            $display("FAIL: %0d checks", fails);

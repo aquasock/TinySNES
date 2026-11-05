@@ -145,6 +145,7 @@ sources=(
     "$src/src/snestang_top.v"
     "$src/src/tinysnes_dbg.v"
     "$src"/src/snes2hdmi.v
+    "$src"/src/desk_layer.v
     "$src/src/smc_parser.v"
     "$src/src/sdram_cl2_2ch.v"
     "$src/src/sdram_bist.v"

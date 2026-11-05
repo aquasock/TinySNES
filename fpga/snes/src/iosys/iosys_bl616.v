@@ -11,7 +11,10 @@ module iosys_bl616 #(
     parameter FREQ=21_477_000,
     parameter [14:0] COLOR_LOGO=15'b00000_10101_00000,
     parameter [15:0] CORE_ID=1,     // 1: nestang, 2: snestang
-    parameter [7:0] LOADING_STATE=0
+    parameter [7:0] LOADING_STATE=0,
+    // Clocks between joypad report ticks: 20 ms, the rate TinyTang expects.
+    // A bench shortens it so a report does not take a simulated 20 ms.
+    parameter integer REPORT_CLOCKS=FREQ/50
 )
 (
     input clk,                      // main logic clock
@@ -28,6 +31,18 @@ module iosys_bl616 #(
     input [11:0] joy2,              // DS2/SNES joystick 2
     output reg [15:0] hid1,         // USB HID joystick 1
     output reg [15:0] hid2,         // USB HID joystick 2
+    input home,                     // Wii Classic HOME, 1 = pressed
+
+    // TinyDesk overlay, drawn by desk_layer in snes2hdmi.  desk_on is 1 while
+    // the desk should be shown and the game's pads should read idle.  Each cell
+    // written by a 0x14 frame toggles desk_wr_tog with its address and data
+    // already set; they then hold for the rest of that cell's five bytes
+    // (~25 us), long enough for the pixel clock to synchronise the toggle and
+    // take them without a handshake.
+    output desk_on,
+    output reg        desk_wr_tog,
+    output reg [11:0] desk_wr_addr,
+    output reg [36:0] desk_wr_data, // {char[6:0], fg[14:0], bg[14:0]}, colours {b,g,r}
 
     // ROM loading interface
     output [7:0] rom_loading,   // 0-to-1 loading starts, 1-to-0 loading is finished
@@ -122,6 +137,18 @@ endfunction
 // that is left in place rather than removed, because deleting it is a separate
 // change to a vendor-primitive wrapper and this one is about the picture.
 assign overlay = 1'b0;
+
+// TinyDesk.  0x08 is TinyTang's overlay show/hide (tang_osd_toggle) and 0x15 its
+// desk enable; the desk is drawn only while both are set, the condition TinyNES
+// uses.  Both power up clear so a game is never hidden behind a desk that
+// nothing has painted.
+localparam integer DESK_CELLS = 80 * 45;
+reg desk_overlay = 1'b0;
+reg desk_enable = 1'b0;
+reg [11:0] desk_cursor = 12'd0;
+reg [7:0] desk_x = 8'd0;
+reg [2:0] desk_nth = 3'd0;     // byte of the current 0x14 cell
+assign desk_on = desk_overlay & desk_enable;
 
 reg [7:0] rom_loading_reg = LOADING_STATE;
 assign rom_loading = rom_loading_reg;
@@ -245,11 +272,16 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // 0x0c <scancode>            send PS/2 scancode (len specified by frame header)
 // 0x0d <string>              debug printf. core ignores this.
 // 0x10 <extended request>    TinySNES: debug register read/write with CRC-16
+// 0x13 x[7:0] y[7:0]         TinyDesk: move the cell cursor to (x, y) of 80x45
+// 0x14 <cells>               TinyDesk: 5 bytes per cell from the cursor on,
+//                            char[7:0] fg[15:0] bg[15:0], colours 15-bit {b,g,r}
+// 0x15 x[7:0]                TinyDesk: x[0] enables the desk (0x08 then shows it)
 //
 // Response payloads from FPGA to BL616:
 // 0x01 core_id[7:0]          core ID
 // 0x02 <string>              core config string (len specified by frame header)
-// 0x03 joy1[15:0] joy2[15:0] every 20ms, send DS2/SNES joypad state to BL616
+// 0x03 joy1[15:0] joy2[15:0] joypad state in TinyTang's pad word (see below),
+//                            on a change at a 20 ms tick and every 500 ms
 // 0x04 lba[15:0] <data_512>  write a sector to disk
 // 0x05 lba[15:0]             read a sector from disk (followed by command 0x0a)
 // 0x10 <extended response>   TinySNES: debug register reply with CRC-16
@@ -270,6 +302,11 @@ always @(posedge clk) begin
         we <= 0;
         cursor_x <= 0;
         cursor_y <= 0;
+        desk_overlay <= 0;
+        desk_enable <= 0;
+        desk_cursor <= 0;
+        desk_nth <= 0;
+        desk_wr_tog <= 0;
     end else begin
         rom_do_valid <= 0;
         we <= 0;
@@ -309,6 +346,7 @@ always @(posedge clk) begin
                 else
                     recv_state <= RECV_IDLE;
                 data_cnt <= 0;
+                desk_nth <= 0;
             end
             
             RECV_PARAM: if (rx_valid) begin
@@ -348,13 +386,31 @@ always @(posedge clk) begin
                         rom_do_valid <= 1;      // pulse data valid
                     end
                     8: begin
-                        // Overlay control is accepted and ignored.  The display
-                        // is tied off above; dropping the write rather than the
-                        // whole command keeps the frame length and the byte
-                        // count unchanged, so the host's protocol state machine
-                        // sees exactly what it saw before.
-                        ;
+                        // Overlay show/hide.  Drives the desk only; the legacy
+                        // SNESTang text page stays tied off above.
+                        if (data_cnt == 0)
+                            desk_overlay <= rx_data[0];
                     end
+                    8'h13: case (data_cnt)          // desk cursor, x then y
+                        0: desk_x <= rx_data;
+                        1: desk_cursor <= (desk_x < 80 && rx_data < 45) ?
+                                          {rx_data[5:0], 6'd0} + {2'd0, rx_data[5:0], 4'd0} + {4'd0, desk_x} :
+                                          DESK_CELLS[11:0];
+                        default: ;
+                    endcase
+                    8'h14: begin                    // desk cells
+                        desk_nth <= desk_nth == 3'd4 ? 3'd0 : desk_nth + 3'd1;
+                        if (desk_nth == 3'd4 && desk_cursor < DESK_CELLS) begin
+                            // data_reg holds the cell's first four bytes.
+                            desk_wr_addr <= desk_cursor;
+                            desk_wr_data <= {data_reg[30:24], data_reg[22:16], data_reg[15:8],
+                                             data_reg[6:0], rx_data};
+                            desk_wr_tog <= ~desk_wr_tog;
+                            desk_cursor <= desk_cursor + 12'd1;
+                        end
+                    end
+                    8'h15: if (data_cnt == 0)       // desk enable
+                        desk_enable <= rx_data[0];
                     9: begin
                         case (data_cnt)
                             0: hid1[15:8] <= rx_data;
@@ -504,8 +560,26 @@ always @* begin
         default: debug_tx_byte = tx_crc[7:0];
     endcase
 end
-localparam JOY_UPDATE_INTERVAL = 50_000_000 / 50; // 20ms interval for 50Hz
-reg [$clog2(JOY_UPDATE_INTERVAL+1)-1:0] joy_timer;
+// Joypad report, in TinyTang's pad word (tang_pad.h) rather than the raw SNES
+// word, as TinyNES sends it: D-pad, Classic B as A (0x100), Classic Y as B
+// (0x001), and LB (0x400) only for a tap of HOME.  The raw word has SNES L at
+// 0x400, which TinyTang's desk task reads as the desk toggle, so it is not
+// passed through.  A report goes out at a 20 ms tick when the word changed and
+// at every 25th tick regardless, so a dropped frame cannot leave a button stuck.
+localparam integer REFRESH_TICKS = 25;      // 500 ms
+localparam [7:0] TAP_TICKS = 8'd13;         // LB held ~260 ms for a HOME tap
+function [15:0] pad_word;
+    input [11:0] j;                         // (R L X A RT LT DN UP START SELECT Y B)
+    pad_word = {7'd0, j[0], j[7:4], 3'd0, j[1]};
+endfunction
+reg [$clog2(REPORT_CLOCKS+1)-1:0] tick_count = 0;
+wire tick = tick_count == REPORT_CLOCKS - 1;
+reg [4:0] refresh = 5'd0;
+reg [7:0] tap = 8'd0;
+reg home_prev = 1'b0, home_alone = 1'b0;
+wire [15:0] joy1_now = pad_word(joy1) | (tap != 8'd0 ? 16'h0400 : 16'h0000);
+wire [15:0] joy2_now = pad_word(joy2);
+reg pad_pending = 1'b0;
 reg [15:0] joy1_reg = 16'd0;
 reg [15:0] joy2_reg = 16'd0;
 reg [15:0] resp_frame_len;
@@ -513,7 +587,14 @@ reg [15:0] resp_frame_len;
 // UART TX: command responses, joystick updates and FDD requests
 always @(posedge clk) begin
     if (!resetn) begin
-        joy_timer <= 0;
+        tick_count <= 0;
+        refresh <= 0;
+        tap <= 0;
+        home_prev <= 0;
+        home_alone <= 0;
+        pad_pending <= 0;
+        joy1_reg <= 0;
+        joy2_reg <= 0;
         send_state <= 0;
     end else begin
         tx_valid <= 0;
@@ -521,17 +602,35 @@ always @(posedge clk) begin
         fdd_read_start <= 0;
         fdd_write_finish <= 0;
         
-        // Joypad state transmission logic
-        joy_timer <= joy_timer == 0 ? 0 : joy_timer - 1;
+        // Joypad report: decide at each tick, send when the sender is idle.
+        tick_count <= tick ? 0 : tick_count + 1'b1;
+        if (tick) begin
+            if (tap != 8'd0)
+                tap <= tap - 8'd1;
+            refresh <= refresh == REFRESH_TICKS - 1 ? 5'd0 : refresh + 5'd1;
+            if (joy1_now != joy1_reg || joy2_now != joy2_reg || refresh == REFRESH_TICKS - 1) begin
+                pad_pending <= 1'b1;
+                joy1_reg <= joy1_now;
+                joy2_reg <= joy2_now;
+            end
+        end
+
+        // A tap of HOME: pressed and released with nothing else held.  After
+        // the tick, so a new tap wins over the count running down.
+        home_prev <= home;
+        if (home && !home_prev)
+            home_alone <= joy1 == 12'd0;
+        else if (home && joy1 != 12'd0)
+            home_alone <= 1'b0;
+        if (!home && home_prev && home_alone)
+            tap <= TAP_TICKS;
 
         // UART transmission state machine
         case (send_state)
             SEND_IDLE: begin
                 send_idx <= 0;
-                if (joy_timer == 0 && (joy1 != joy1_reg || joy2 != joy2_reg)) begin
-                    joy_timer <= JOY_UPDATE_INTERVAL;
-                    joy1_reg <= joy1;
-                    joy2_reg <= joy2;
+                if (pad_pending) begin
+                    pad_pending <= 1'b0;
                     send_state_next <= SEND_JOYPAD;
                     send_state <= SEND_HEADER;
                     resp_frame_len <= 5;

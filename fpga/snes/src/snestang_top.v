@@ -1825,6 +1825,9 @@ end
 
 wire sysclkf_ce, sysclkr_ce;
 wire overlay;
+// TinyDesk shown (iosys_bl616).  The game keeps running behind it but reads
+// idle pads, since the pad drives TinyTang's pointer while the desk is up.
+wire desk_on;
 
 `ifdef CHIP_DSPn
 parameter USE_DSPn=1;
@@ -1878,7 +1881,7 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
     .DOTCLK(dotclk), .RGB_OUT(rgb_out), .HBLANKn(hblankn),
     .VBLANKn(vblankn), .X_OUT(x_out), .Y_OUT(y_out),
 
-    .JOY1_DI(overlay?2'b11:snes_joy1_di), .JOY2_DI(overlay?2'b11:snes_joy2_di), .JOY_STRB(snes_joy_strb), 
+    .JOY1_DI(desk_on?2'b11:snes_joy1_di), .JOY2_DI(desk_on?2'b11:snes_joy2_di), .JOY_STRB(snes_joy_strb), 
     .JOY1_CLK(snes_joy1_clk), .JOY2_CLK(snes_joy2_clk), 
 
     .AUDIO_L(audio_l), .AUDIO_R(audio_r), .AUDIO_READY(audio_ready), .AUDIO_EN(audio_en),
@@ -2993,6 +2996,7 @@ assign led = 8'hff;
 // constrained in tinysnes.cst.  The pads are declared unconditionally -- they
 // are top-level inouts either way -- and only the master inside is optional.
 wire [11:0] wii_buttons;
+wire        wii_home;
 wire        pad_sda_low, pad_scl_low;
 wire        pad_present, pad_classic;
 wire [15:0] pad_reads;
@@ -3016,6 +3020,7 @@ wii_pad #(
     .present(pad_present), .classic(pad_classic),
     .reads(pad_reads), .fails(pad_fails),
     .buttons(wii_buttons),
+    .home(wii_home),
     .dbg_bytes(pad_dbg_bytes),
     .dbg_format3(pad_dbg_fmt3)
 );
@@ -3024,6 +3029,7 @@ wii_pad #(
 assign usb1_dp = 1'bz;
 assign usb1_dn = 1'bz;
 assign wii_buttons = 12'h000;
+assign wii_home = 1'b0;
 assign pad_sda_low = 1'b0;
 assign pad_scl_low = 1'b0;
 assign pad_present = 1'b0;
@@ -3065,6 +3071,9 @@ assign snes_joy2_di[1] = 0;  // P4
 wire [14:0] overlay_color;
 wire [7:0] overlay_x;
 wire [7:0] overlay_y;
+wire desk_wr_tog;
+wire [11:0] desk_wr_addr;
+wire [36:0] desk_wr_data;
 
 wire [7:0] dbg_dat_out_loader;
 
@@ -3312,6 +3321,7 @@ snes2hdmi s2h(
     .xs(x_out), .ys(y_out), 
     .overlay(overlay), .overlay_x(overlay_x), .overlay_y(overlay_y),
     .overlay_color(overlay_color), 
+    .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr), .desk_wr_data(desk_wr_data),
     .audio_l(audio_l), .audio_r(audio_r), .audio_ready(audio_ready), .audio_en(audio_en),
     .clk_pixel(hclk),.clk_5x_pixel(hclk5),.locked(1'b1),
     .tmds_clk_n(tmds_clk_n), .tmds_clk_p(tmds_clk_p),
@@ -3322,7 +3332,9 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
     .clk(mclk), .hclk(hclk), .resetn(resetn),
     .overlay(overlay), .overlay_x(overlay_x), .overlay_y(overlay_y),
     .overlay_color(overlay_color),
-    .joy1(joy1_btns_ds2 | joy1_btns_snes | joy1_usb), .joy2(joy2_btns_ds2 | joy2_btns_snes | joy2_usb), .hid1(hid1), .hid2(hid2),
+    .joy1(joy1_btns_ds2 | joy1_btns_snes | joy1_usb | wii_buttons), .joy2(joy2_btns_ds2 | joy2_btns_snes | joy2_usb), .hid1(hid1), .hid2(hid2),
+    .home(wii_home),
+    .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr), .desk_wr_data(desk_wr_data),
     .uart_tx(UART_TXD), .uart_rx(UART_RXD),
     .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid),
     .debug_address(dbg_bus_addr), .debug_wdata(dbg_bus_wdata),
@@ -3335,6 +3347,7 @@ assign dbg_bus_addr  = 32'd0;
 assign dbg_bus_wdata = 32'd0;
 assign dbg_bus_valid = 1'b0;
 assign dbg_bus_write = 1'b0;
+assign desk_on = 1'b0;
 
 // test loader with embedded rom
 test_loader test_loader (

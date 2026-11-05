@@ -20,12 +20,14 @@ cd "$out"
 echo "=== building boot-screen bench ==="
 verilator --binary --timing -j 0 -Wno-fatal -Wno-lint -Wno-UNUSED -Wno-UNDRIVEN \
     -DTINYSNES_RGB_TAP \
+    -DTINYSNES_DESK_FONT="\"$src/src/desk_font.hex\"" \
     -I"$src" -I"$src/src" \
     --top-module bootscreen_tb \
     --Mdir obj_dir \
     -o bootscreen_sim \
     "$root/tools/tests/hdmi_stub.sv" \
     "$src/src/snes2hdmi.v" \
+    "$src/src/desk_layer.v" \
     "$root/tools/tests/bootscreen_tb.sv"
 
 echo "=== running ==="
