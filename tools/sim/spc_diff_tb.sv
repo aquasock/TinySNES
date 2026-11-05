@@ -24,8 +24,18 @@
 //
 // Each core gets its own copy of the memory, initialised identically, so a
 // divergence in one cannot corrupt the other's stimulus.  At the end of a run the
-// two images must still be identical, which catches a write that carried the
-// wrong data even if both cores issued the same number of writes.
+// two images must still be identical, byte for byte including the stack page,
+// which catches a write that carried the wrong data even if both cores issued the
+// same number of writes.
+//
+// History worth keeping.  The first version of this bench found that the core ran
+// the power-on interrupt sequence twice, leaving SP at $FA where MiSTer leaves
+// $FD.  While that defect existed the bench measured the resulting SP offset and
+// reported affected runs as DIVERGE instead of PASS, so a green summary could not
+// absorb them.  The defect was fixed in spc700.v (states 8 to 15 now terminate
+// for every opcode except DIV and MUL), so that apparatus has been deleted rather
+// than left in place: SP is now compared directly, the stack page is inside the
+// image compare, and a regression appears as an ordinary FAIL at instruction 0.
 //
 // Termination.  Neither core is expected to run forever on random bytes: random
 // code reaches STP or a tight loop quickly.  A run ends after +cycles clocks, or
@@ -132,9 +142,6 @@ SPC700_ref mister (
 integer wr_d = 0, wr_r = 0;          // writes issued, per core
 integer n_d  = 0, n_r  = 0;          // instructions retired, per core
 integer cmps = 0, mism = 0;
-integer sp_off = 0;                  // established from the reset divergence
-integer mem_skipped = 0;
-integer known_reset = 0;             // comparisons explained by that offset
 integer cmp_n = 0;                   // next instruction index to compare
 integer drift_max = 0;
 reg     done = 0;
@@ -207,37 +214,7 @@ always @(negedge clk) if (resetn && !done) begin
         end
         sd = snap_d[cmp_n % QR];
         sr = snap_r[cmp_n % QR];
-        // One documented divergence, measured rather than assumed: this core
-        // runs the power-on interrupt sequence twice, so it pushes six bytes and
-        // leaves SP at 0xFA where MiSTer's pushes three and leaves 0xFD.  Every
-        // other register agrees at the reset boundary and the fault is confined
-        // to SP -- with the probe in this file: STATES 1..7 push 00->FF->FE->FD
-        // and read $FFFE, then STATES 8..15 push again FD->FC->FB->FA and read
-        // $FFFE a second time, before the first cartridge instruction runs.
-        // This is a defect in fpga/snes/src/spc700/spc700.v, not a bench
-        // artifact, and it predates this bench; it is recorded as an open defect
-        // in the log rather than fixed here, because changing the SPC700's reset
-        // path is a microarchitectural change outside this cycle's scope.
-        //
-        // Rather than skip every comparison (which would hide everything else),
-        // the bench measures the offset once and then holds both cores to it: if
-        // the two SPs ever differ by anything other than that constant, that is a
-        // real mismatch and still fails.
-        // Measured at the FIRST instruction boundary, where the reset sequence
-        // has just finished and every other register is still untouched.  Doing
-        // it here rather than at the first mismatch matters: by the time a stack
-        // cascade shows up in A, SP and A have both moved and the offset can no
-        // longer be read cleanly off the comparison.
-        if (cmp_n == 0 && sp_off == 0 && sd[31:24] !== sr[31:24]) begin
-            sp_off = sd[31:24] - sr[31:24];
-            if (!quiet)
-                $display("NOTE  seed %0d: reset SP offset %0d (dut %02x ref %02x), held constant",
-                         seed, sp_off, sd[31:24], sr[31:24]);
-        end
-        if (sd[55:32] === sr[55:32] && sd[23:0] === sr[23:0]
-            && sd[31:24] === (sr[31:24] + sp_off[7:0])) begin
-            known_reset = known_reset + 1;
-        end else if (sd !== sr || wc_d[cmp_n % QR] !== wc_r[cmp_n % QR]) begin
+        if (sd !== sr || wc_d[cmp_n % QR] !== wc_r[cmp_n % QR]) begin
             mism = mism + 1;
             if (mism <= 8 || !quiet)
                 $display("FAIL insn %0d  dut b%04x psw%02x sp%02x y%02x x%02x a%02x w%0d  ref b%04x psw%02x sp%02x y%02x x%02x a%02x w%0d",
@@ -322,25 +299,15 @@ initial begin : main
     rdy = 1;
     #50;
 
-    // Both cores stopped at the same instruction, so the images must agree --
-    // except where the reset divergence of SP predicts they cannot.  Both cores
-    // push and pop against their own SP for the whole run, and those differ by
-    // `sp_off`, so the stack page is expected to hold different bytes.  It is
-    // excluded (and counted, and named) rather than silently ignored; the other
-    // 63 KiB and every register are still compared, and SP itself is held to the
-    // constant offset, so a second stack fault would still be caught.
-    mem_skipped = 0;
+    // Both cores stopped at the same instruction, so every byte of the two
+    // images must agree.  This is a full 64 KiB compare with no exclusions: the
+    // stack page is included, which it was not while the reset defect shifted SP.
     for (i = 0; i < MEM; i = i + 1)
-        if (sp_off != 0 && i >= 16'h0100 && i <= 16'h01ff) begin
-            mem_skipped = mem_skipped + 1;
-        end else if (mem_d[i] !== mem_r[i]) begin
+        if (mem_d[i] !== mem_r[i]) begin
             $display("FAIL: memory differs at %04x: dut %02x ref %02x", i, mem_d[i], mem_r[i]);
             mism = mism + 1;
             i = MEM;
         end
-    if (mem_skipped != 0 && !quiet)
-        $display("NOTE  seed %0d: %0d stack-page bytes excluded from the image compare",
-                 seed, mem_skipped);
 
     // A run that ended for a legitimate reason -- STP, or the DIV-overflow stop
     // -- can legitimately be short, because a random program hits 0xEF within a
@@ -372,21 +339,11 @@ initial begin : main
     else if (mism == 0)
         $display("PASS  seed %0d: %0d instructions compared, %0d writes, max drift %0d",
                  seed, cmps, wr_d, drift_max);
-    else if (sp_off != 0)
-        // The reset defect was observed in this run, and it shifts the stack, so
-        // a program that reads its own stack can diverge in A or in flags through
-        // no fault of its own.  Such runs are reported as DIVERGE rather than
-        // FAIL so the two are never conflated, and the sweep counts them
-        // separately.  A run with no reset divergence is still held to the strict
-        // standard, which is what keeps this honest: the excuse is only available
-        // to a run where the defect actually fired.
-        $display("DIVERGE seed %0d: %0d mismatches after a known reset divergence (SP offset %0d)",
-                 seed, mism, sp_off);
     else
         $display("FAIL  seed %0d: %0d mismatches in %0d comparisons (%0d insns retired)",
                  seed, mism, cmps, n_d);
-    $display("RESULT seed=%0d cmps=%0d mism=%0d insns=%0d writes=%0d drift=%0d spoff=%0d",
-             seed, cmps, mism, n_d, wr_d, drift_max, sp_off);
+    $display("RESULT seed=%0d cmps=%0d mism=%0d insns=%0d writes=%0d drift=%0d",
+             seed, cmps, mism, n_d, wr_d, drift_max);
     $finish;
 end
 

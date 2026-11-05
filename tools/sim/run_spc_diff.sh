@@ -72,7 +72,7 @@ run_one() {
     [[ $2 == "1" ]] && arg=("+stalls=1")
     [[ $fill != "-1" ]] && arg+=("+fill=$fill")
     vvp -n "$out/tb" "+seed=$s" "+cycles=$cycles" "+quiet=$quiet" "${arg[@]}" 2>&1 | \
-        grep -E '^(FAIL|PASS|SKIP|DIVERGE|RESULT)'
+        grep -E '^(FAIL|PASS|SKIP|RESULT)'
 }
 
 if [[ $sweep -eq 0 ]]; then
@@ -93,15 +93,13 @@ done | xargs -P "$jobs" -I{} bash -c '
     run_one "$s" "$stall" > "'"$out"'/logs/$s.txt" 2>&1 || true
 '
 
-pass=0; fail=0; skip=0; diverge=0; insns=0; cmp_total=0
+pass=0; fail=0; skip=0; insns=0; cmp_total=0
 for ((s = 1; s <= sweep; s++)); do
     f="$out/logs/$s.txt"
     if grep -q '^PASS' "$f" 2>/dev/null; then
         pass=$((pass + 1))
     elif grep -q '^SKIP' "$f" 2>/dev/null; then
         skip=$((skip + 1))
-    elif grep -q '^DIVERGE' "$f" 2>/dev/null; then
-        diverge=$((diverge + 1))
     else
         fail=$((fail + 1))
         echo "--- seed $s"; grep -E '^(FAIL|RESULT)' "$f" 2>/dev/null | head -3
@@ -112,5 +110,5 @@ for ((s = 1; s <= sweep; s++)); do
     cmp_total=$((cmp_total + ${c:-0}))
 done
 
-echo "sweep: $pass passed, $fail failed, $skip skipped as too short, $diverge divergent via the known reset defect, $cmp_total instructions compared ($insns retired)"
+echo "sweep: $pass passed, $fail failed, $skip skipped as too short, $cmp_total instructions compared ($insns retired)"
 [[ $fail -eq 0 ]]

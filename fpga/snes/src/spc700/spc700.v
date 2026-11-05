@@ -141,6 +141,27 @@ always @* begin
     default :
       NextState = 4'b0000;
     endcase
+
+    // TinySNES: states 8 to 15 exist only for DIV and MUL, and anything that
+    // reaches them must end there.  MiSTer's microcode table carries sixteen
+    // rows per opcode, the upper eight all "XX", and its state control resolves
+    // "XX" to `NextState <= 0`; this core's mcode.vh carries eight rows per
+    // opcode and `MCODE0[{IR, STATE[2:0]}]` drops STATE[3], so a state of 8 or
+    // more wraps back onto rows 0 to 7 and re-executes the instruction's own
+    // microcode instead of stopping.  That is reachable: at power-on STATE is 0
+    // and the branch decoder below examines D_IN, the byte at the address the
+    // address bus happens to hold rather than an instruction, so a value like
+    // $50 (BVC) sets JumpTaken before any opcode has been fetched.  BRK never
+    // reassigns JumpTaken, so it survives to BRK's last row whose state control
+    // is 2'b10, takes the branch to state 8, and states 8 to 15 push PCH, PCL
+    // and PSW a second time -- the power-on sequence shrinking SP to $FA instead
+    // of $FD and reading $FFFE twice.  It fires on 10 of 2300 random programs,
+    // because it depends on the byte at $0000 looking like a taken branch.
+    // Ending non-DIV/MUL states at 7 reproduces MiSTer's padding exactly, costs
+    // at most the one redundant state MiSTer also spends, and closes the whole
+    // class rather than the single path that reaches it.
+    if (STATE[3] && IR != 8'h9E && IR != 8'hCF)
+      NextState = 4'b0000;
 end
 
 always @(posedge CLK) begin
