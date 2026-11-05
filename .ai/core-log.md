@@ -174,3 +174,37 @@ Super Mario Kart's left-edge stripe, the PAL behaviour of both audio servos, wir
 - User Test: PASS
 
 ---
+
+## 6 COMMIT Unreleased 2026-11-04T18:49:02-07:00
+
+#### Coming From:
+
+Unreleased c1a189f
+
+#### Purpose:
+
+Find and fix the sound effects in Star Fox, such as the training-mode ring chime and possibly the lasers, that played seconds late.
+
+#### Outcome:
+
+A lockstep differential test ran this SPC700 against MiSTer's (srg320's VHDL from the MiSTer SNES core, converted with GHDL using `--latches`) on identical random 64 KB programs, comparing registers at every opcode fetch, every memory write and the cycle count of every instruction, and it found eight defects in the inherited core. In `fpga/snes/src/spc700/mcode.vh`, the table the build compiles, `8E POP PSW` had its last two rows swapped so the stack was never read into PSW, `0F BRK` pushed PSW to the program-counter address without decrementing SP, `6E DBNZ d,r` updated N and Z, `0E TSET1 !a` and `4E TCLR1 !a` took N and Z from an AND instead of the compare A minus memory, `CA MOV1 m.b,C` combined the carry bit with SP instead of the byte read, `5A CMPW YA,d` took five cycles instead of four and `8A EOR1 C,m.b` four instead of five. The TSET1 and TCLR1 rows now use a new ALU control 34 in `mcode.v` that compares without touching C, `spc700.v` now selects the carry-to-bit mask with T on the source bus and moves the CMPW 16-bit zero combine to state 3, and `muldiv.v` now performs DIV with the chip's nine-step rotate-and-subtract, which gives the hardware's results when Y is at least twice X, where the old restoring divider saturated A to FF; those results match bsnes. The changed rows were mirrored in `mcode.txt`. After the fixes 2,300 random programs, 300 of them with random RDY stalls, ran without a register, write or cycle mismatch, and a four-second Star Fox simulation showed its sound driver executing DBNZ, EOR1, TSET1, TCLR1 and DIV. The build `build/spc2/tinysnes.bin`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, SHA-256 `e2e09c4c4ed2313620a57e98534ad8c6d4e30fc672ca91207d79dd4f60a384f4`, met timing, was deployed by `tools/tang_deploy.py` as `/root/cores/console138k/tinysnes-dbg.bin` and redeployed after a board reboot, and the user reported Star Fox's sound as perfect. The differential bench lived only in `/tmp/mspc` and was not committed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, confirmed `.ai/core.md` was not changed, inspected the `.ai/` diff as this entry alone, and validated it as entry 6 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, permitted Status values, no self-referencing hash and a count of six against the 100-entry limit.
+
+#### Next Steps:
+
+Committing the SPC700 differential bench as a reproducible tool alongside `tools/sim/gsu_ref`, checking F-Zero for missing channels, Super Mario Kart's left-edge stripe, the PAL behaviour of both audio servos, wiring the audio FIFO counters to the debug bus, the stale `i2s_out.sv` header and the open items carried in entry 3 remain.
+
+#### Files Modified:
+
+- fpga/snes/src/spc700/mcode.vh
+- fpga/snes/src/spc700/mcode.txt
+- fpga/snes/src/spc700/mcode.v
+- fpga/snes/src/spc700/spc700.v
+- fpga/snes/src/spc700/muldiv.v
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

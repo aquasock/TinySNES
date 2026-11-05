@@ -201,10 +201,10 @@ assign DB = MC.BUS_CTRL[1:0] == 2'b00 && MC.BUS_CTRL[4] == 1'b0 ? D_IN :
             MC.BUS_CTRL[1:0] == 2'b00 && MC.BUS_CTRL[4] == 1'b1 ? T : 
             MC.BUS_CTRL[1:0] == 2'b01 ? SB : 
             MC.BUS_CTRL[1:0] == 2'b10 ? BitMask : 
-            MC.BUS_CTRL[1:0] == 2'b11 && MC.BUS_CTRL[4:2] != 3'b111 ? BitToC : 
-            MC.BUS_CTRL[1:0] == 2'b11 && MC.BUS_CTRL[4:2] == 3'b111 ? CToBit : 
+            MC.BUS_CTRL[1:0] == 2'b11 && MC.BUS_CTRL[4:2] != 3'b011 ? BitToC : 
+            MC.BUS_CTRL[1:0] == 2'b11 && MC.BUS_CTRL[4:2] == 3'b011 ? CToBit : 
             8'h00;
-assign w16 = (IR == 8'hBA && STATE == 4'b0100) || (IR == 8'h3A && STATE == 4'b0100) || (IR == 8'h1A && STATE == 4'b0100) || (IR == 8'h7A && STATE == 4'b0100) || (IR == 8'h5A && STATE == 4'b0100) || (IR == 8'hDA && STATE == 4'b0100) || (IR == 8'h9A && STATE == 4'b0100) ? 1'b1 : 1'b0;
+assign w16 = (IR == 8'hBA && STATE == 4'b0100) || (IR == 8'h3A && STATE == 4'b0100) || (IR == 8'h1A && STATE == 4'b0100) || (IR == 8'h7A && STATE == 4'b0100) || (IR == 8'h5A && STATE == 4'b0011) || (IR == 8'hDA && STATE == 4'b0100) || (IR == 8'h9A && STATE == 4'b0100) ? 1'b1 : 1'b0;
 SPC700_ALU ALU(
     .CLK(CLK), .RST_N(RST_N), .EN(EN),
     

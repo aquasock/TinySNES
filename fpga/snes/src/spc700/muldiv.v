@@ -21,18 +21,18 @@ reg tV, tZ, tS;
 reg [15:0] mulRes, mulTemp;
 reg [15:0] mulA;
 reg [7:0] mulY;
-reg [15:0] divt;
-reg [8:0] quotient;
-reg [15:0] remainder;
+reg [16:0] divTemp;
+wire [16:0] divRot = {divTemp[15:0], divTemp[16]};
+// Hardware DIV: 9 rotate/subtract steps on {Y,A}; the overflow case (Y >= 2X) yields the chip's odd results.
+wire divGe = divRot >= {X, 9'b0};
+wire [16:0] divShifted = {divTemp[15:0], divTemp[16] ^ divGe};
 
 always @(posedge CLK) begin
     if(RST_N == 1'b0) begin
       mulA <= {16{1'b0}};
       mulY <= {8{1'b0}};
       mulRes <= {16{1'b0}};
-      divt <= {16{1'b0}};
-      remainder <= {16{1'b0}};
-      quotient <= {9{1'b0}};
+      divTemp <= {17{1'b0}};
     end else begin
       if(EN == 1'b1) begin
         if(CTRL.secOp == 4'b1110) begin
@@ -41,22 +41,13 @@ always @(posedge CLK) begin
           mulY <= {1'b0,mulY[7:1]};
         end
         else if(CTRL.secOp == 4'b1111) begin
-          if(remainder >= divt) begin
-            remainder <= remainder - divt;
-            quotient <= {quotient[7:0],1'b1};
-          end
-          else begin
-            quotient <= {quotient[7:0],1'b0};
-          end
-          divt <= {1'b0,divt[15:1]};
+          divTemp <= divShifted[0] ? divShifted - {X, 9'b0} : divShifted;
         end
         else begin
           mulA <= {8'b00000000,A};
           mulY <= Y;
           mulRes <= {16{1'b0}};
-          divt <= {X,8'b00000000};
-          remainder <= {Y,A};
-          quotient <= {9{1'b0}};
+          divTemp <= {1'b0, Y, A};
         end
       end
     end
@@ -82,15 +73,15 @@ always @* begin
       tS = mulTemp[15];
     end
     else if(CTRL.secOp == 4'b1111) begin
-      tResult = {remainder[7:0],quotient[7:0]};
-      if(quotient[7:0] == 0) begin
+      tResult = {divTemp[16:9], divTemp[7:0]};
+      if(divTemp[7:0] == 0) begin
         tZ = 1'b1;
       end
       else begin
         tZ = 1'b0;
       end
-      tV = quotient[8];
-      tS = quotient[7];
+      tV = divTemp[8];
+      tS = divTemp[7];
     end
     else begin
       tResult = {16{1'b0}};
