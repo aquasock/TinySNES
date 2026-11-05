@@ -345,10 +345,18 @@ always @* begin : ram_addrgen
         else 
             ADDR_INC = 2'b10;
 
+        // TinySNES: ECHO_ADDR, not the live ECHO_POS.  ECHO_ADDR is captured
+        // once per sample at VS_ADSR1 with VS.V==0, so the read here and the
+        // write at step 29/30 address the same slot: read the oldest sample,
+        // then overwrite it with the new one.  Addressing from ECHO_POS put
+        // the read 4 bytes before the write, because VS_ESA advances ECHO_POS
+        // by 4 at step 24, between the two.  This mirrors MiSTer's DSP.vhd,
+        // where all four echo RAM accesses use ECHO_ADDR.  In this core
+        // ECHO_ADDR was assigned every sample and never read.
         if (RS == RS_ECHORDL) 
-            RAM_A = {TESA,8'h00} + ECHO_POS + 16'(ADDR_INC);
+            RAM_A = ECHO_ADDR + 16'(ADDR_INC);
         else 
-            RAM_A = {TESA,8'h00} + ECHO_POS + 16'(ADDR_INC) + 16'd1;
+            RAM_A = ECHO_ADDR + 16'(ADDR_INC) + 16'd1;
 
         RAM_WE = 1'b0;
         RAM_OE = 1'b1;
@@ -365,10 +373,10 @@ always @* begin : ram_addrgen
         end
 
         if (RS == RS_ECHOWRL) begin
-            RAM_A = {TESA,8'h00} + ECHO_POS + 16'(ADDR_INC);
+            RAM_A = ECHO_ADDR + 16'(ADDR_INC);
             RAM_DO = EOUT[LR][7:0];
         end else begin
-            RAM_A = {TESA,8'h00} + ECHO_POS + 16'(ADDR_INC) + 16'd1;
+            RAM_A = ECHO_ADDR + 16'(ADDR_INC) + 16'd1;
             RAM_DO = EOUT[LR][15:8];
         end
 
