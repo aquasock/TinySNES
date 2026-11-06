@@ -68,6 +68,9 @@ module iosys_bl616 #(
     output reg [1:0] video_aspect,
     output reg       video_overscan,
 
+    // The master volume, frame 0x1C.  See AUDIO_GAIN below; 256 is unity.
+    output reg [8:0] audio_gain,
+
     // PCXT management interface
     output reg [15:0] mgmt_address,
     output reg        mgmt_read,
@@ -148,6 +151,13 @@ localparam [7:0] PAD_MAP = 8'h1a;
 // for them.  Out of reset it is 4:3 with the extra lines shown, which is the
 // geometry and the line count this core had before the setting existed.
 localparam [7:0] VIDEO_MODE = 8'h1b;
+// The master volume, frame 0x1C: two payload bytes carrying gain[15:0] little-
+// endian, of which this core uses gain[8:0] and clamps anything above 256 to
+// unity in audio_volume.  Out of reset it is 256, so a core that never receives
+// the frame plays every sample as it arrived.  The percentage-to-gain curve is
+// computed on the BL616 and not here, so the slider the player sees and the
+// number this register holds cannot drift apart (see audio_volume.v).
+localparam [7:0] AUDIO_GAIN = 8'h1c;
 // Largest reply that still fits the BL616's 256-byte frame payload, counting
 // its four-byte header and the two-byte CRC.
 localparam [7:0] SAVE_READ_MAX = 8'd250;
@@ -344,6 +354,9 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 //                            the pad word takes source map[i], 12..15 = none
 // 0x1b x[7:0]                TinySNES: x[1:0] aspect (0 4:3, 1 8:7, 2 1:1),
 //                            x[2] show the PPU's extra fifteen lines
+// 0x1c gain[15:0]            TinySNES: master volume, little-endian; the low
+//                            nine bits are gain out of unity 256, and above
+//                            256 is clamped to unity.  256 out of reset.
 // 0x19 addr[23:0] n[7:0]     TinySNES: reply with n bytes of cartridge SRAM
 //                            from addr, then a CRC-16.  Refused unless loading,
 //                            and a refusal is a reply with no data bytes.
@@ -389,6 +402,7 @@ always @(posedge clk) begin
                     4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd0};
         video_aspect <= 2'd0;       // 4:3
         video_overscan <= 1'b1;     // show the extra lines when offered
+        audio_gain <= 9'd256;       // unity: every sample as it arrived
     end else begin
         rom_do_valid <= 0;
         we <= 0;
@@ -498,6 +512,15 @@ always @(posedge clk) begin
                         video_aspect   <= rx_data[1:0];
                         video_overscan <= rx_data[2];
                     end
+                    AUDIO_GAIN: case (data_cnt)     // master volume, low byte first
+                        // Only gain[8:0] exists, so the second byte contributes
+                        // its bit 0 as gain[8] and nothing else.  Keeping the
+                        // register nine bits wide rather than sixteen means the
+                        // clamp in audio_volume is the only limit on it.
+                        0: audio_gain <= {1'b0, rx_data};
+                        1: audio_gain <= {rx_data[0], audio_gain[7:0]};
+                        default: ;
+                    endcase
                     PAD_MAP: begin                  // pad map: 12 nibbles, 6 bytes
                         case (data_cnt)
                             0: pad_map[47:40] <= rx_data;

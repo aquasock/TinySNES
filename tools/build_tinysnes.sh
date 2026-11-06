@@ -126,6 +126,7 @@ sources=(
     "$src/src/smp.v"
     "$src/src/ppu.v"
     "$src/src/pad_remap.v"
+    "$src/src/audio_volume.v"
     "$src/src/dsp.v"
     "$src/src/swram.v"
     "$src"/src/spc700/alu.v

@@ -276,9 +276,15 @@ wire [8:0] x_out /*verilator public*/, y_out /*verilator public*/;
 wire v224_mode;
 wire       hblankn,vblankn;
 
+// The S-DSP's own pair, and the pair the two outputs actually play.  They are
+// separated by audio_volume, which applies the master volume once; every
+// consumer reads the post-volume wires, so HDMI and the Pmod cannot disagree.
+wire [15:0] dsp_l, dsp_r;
+wire        dsp_ready;
 wire [15:0] audio_l /*verilator public*/, audio_r /*verilator public*/;
 wire audio_ready /*verilator public*/;
 wire audio_en /*XXX synthesis syn_keep=1 */;
+wire [8:0]  audio_gain/*XXX synthesis syn_keep=1 */;
 
 wire snes_joy_strb;
 wire snes_joy1_clk, snes_joy2_clk;
@@ -1887,7 +1893,7 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
     .JOY1_DI(desk_on?2'b11:snes_joy1_di), .JOY2_DI(desk_on?2'b11:snes_joy2_di), .JOY_STRB(snes_joy_strb), 
     .JOY1_CLK(snes_joy1_clk), .JOY2_CLK(snes_joy2_clk), 
 
-    .AUDIO_L(audio_l), .AUDIO_R(audio_r), .AUDIO_READY(audio_ready), .AUDIO_EN(audio_en),
+    .AUDIO_L(dsp_l), .AUDIO_R(dsp_r), .AUDIO_READY(dsp_ready), .AUDIO_EN(audio_en),
 
     .JOY1_P6(), .JOY2_P6(), .JOY2_P6_in(), .DOT_CLK_CE(DOT_CLK_CE), .EXT_RTC(),
     .SPC_MODE(), .IO_ADDR(), .IO_DAT(), .IO_WR(), 
@@ -3147,6 +3153,19 @@ assign i2s_dbg_taken = 16'd0, i2s_dbg_overwritten = 16'd0, i2s_dbg_underrun = 16
 wire [11:0] pad_mapped;
 pad_remap pad0_map (.map(pad_map), .src(wii_buttons), .out(pad_mapped));
 
+// The master volume, from the desktop window's Audio page (frame 0x1C).  It is
+// applied here, between the S-DSP and both of its consumers, so HDMI and the
+// Pmod I2S2 play the same level by construction rather than by two places
+// remembering to scale.  `audio_gain` is 256 at unity, which the module turns
+// into a bit-exact pass-through: a core that never receives the frame sounds
+// exactly as every earlier build did.
+audio_volume volume (
+    .clk(mclk), .resetn(resetn),
+    .audio_l(dsp_l), .audio_r(dsp_r), .audio_ready(dsp_ready),
+    .gain(audio_gain),
+    .out_l(audio_l), .out_r(audio_r), .out_ready(audio_ready)
+);
+
 // output button presses to SNES
 controller_adapter joy1_adapter (
     .clk(mclk), .snes_joy_strb(snes_joy_strb), 
@@ -3433,6 +3452,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
     .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
     .pad_map(pad_map),
     .video_aspect(video_aspect), .video_overscan(video_overscan),
+    .audio_gain(audio_gain),
     .debug_address(dbg_bus_addr), .debug_wdata(dbg_bus_wdata),
     .debug_valid(dbg_bus_valid), .debug_write(dbg_bus_write), .debug_rdata(dbg_bus_rdata)
 );
@@ -3458,6 +3478,9 @@ assign pad_map   = {4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
 // setting existed: 4:3, and the PPU's extra lines shown when it offers them.
 assign video_aspect   = 2'd0;
 assign video_overscan = 1'b1;
+// No UART host in the bench either, so the volume stays at unity and the audio
+// path behaves as it did before the setting existed.
+assign audio_gain     = 9'd256;
 
 // test loader with embedded rom
 test_loader test_loader (

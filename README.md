@@ -85,6 +85,13 @@ Three changes go beyond that, and each has a measurement behind it:
   looks unchanged. The extra-lines row has no evidence behind it yet: it only
   takes effect on a cartridge that sets SETINI bit 2, and none tested here is
   known to.
+- **Desk audio volume: working.** The desk's Audio page sets one master volume
+  and a mute, sent to the core in frame `0x1C` and stored in `/tinysnes.ini`.
+  `audio_volume.v` applies the gain once, between the S-DSP and both of its
+  consumers, so HDMI and the Pmod I2S2 cannot disagree. The BL616 computes the
+  gain, squaring the percentage out of unity 256 the way TinyNES does, and 100
+  percent is a bit-exact pass-through, so a build that never receives the frame
+  sounds exactly as it did before.
 - **Not tested:** the OSD above the desk (`iosys_bl616.v`), which is tied off.
 - **Saves: the mechanic works, persistence does not exist.** A game writes its
   save to the cartridge SRAM in SDRAM and reads it back correctly, so saving and

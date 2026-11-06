@@ -706,3 +706,41 @@ The extra-lines row is the one part of this feature still without evidence and i
 - User Test: PASS
 
 ---
+
+## 22 COMMIT Unreleased 2026-11-06T09:55:50-07:00
+
+#### Coming From:
+
+Unreleased 8af22c3
+
+#### Purpose:
+
+Give the desktop window's Audio page a real master volume and mute, in the shape TinyNES already ships, so that page stops being the last placeholder.
+
+#### Outcome:
+
+The volume is applied once, in the new `fpga/snes/src/audio_volume.v`, between the S-DSP and both of its consumers, so HDMI and the Pmod I2S2 cannot disagree about level because they read the same two wires rather than each remembering to scale. That point is the S-DSP's `AUDIO_L`/`AUDIO_R`, which are now `dsp_l`/`dsp_r`, and every consumer in `snestang_top.v` reads the module's output instead. The gain is 9 bits out of unity 256 and is computed on the BL616, not in fabric: `tang_audio_gain` in `ports/bl616/tang_settings_ini.c` squares the percentage, rounded rather than truncated, which is TinyNES's curve and belongs where it can be tested instead of being duplicated as a lookup table that would drift from the slider it is supposed to describe. Frame `0x1C` carries it as two little-endian bytes, the low byte first, and resets to 256 so a core that never receives the frame is a bit-exact pass-through; `audio_volume` clamps anything above 256 to unity and that clamp has exactly one home, which is why the register stores 511 when sent 511 and the link bench asserts that rather than the clamped value. The arithmetic was checked before any hardware: `tools/tests/audio_volume_tb.sv` with `tools/tests/run_audio_volume_tb.sh` runs 209,818 checks and its strongest is that gain 256 reproduces all 65,536 input samples unchanged on both channels, compared against a pass-through rather than against a restatement of the formula. Three mutations confirm it can fail -- dropping the rounding term gives 5,438 errors, shifting by 7 instead of 8 gives 209,810, and removing the clamp gives 2. One correction to the record is worth carrying because it changes what a future cycle should do: entry 20's Next Steps said the scaling would have to happen inside `dsp.v` rather than after it, and that is overstated. `CLAMP16` at `VS_EVOLL`/`VS_EVOLR` has already quantized the output to 16 bits, so post-DSP scaling costs at most half an LSB of re-rounding, which stays far below the DSP's own BRR/ADPCM noise floor until the volume is near 5 percent; doing the multiply before `CLAMP16` would be marginally tidier and would cost a deviation to an upstream file, so this is a hygiene call and not a precision one, and `dsp.v` is untouched. On the firmware side `tang_snes_ini.h` grew a `tang_audio_t`, `[audio]` is read through the same `tang_audio_apply` that `/tinynes.ini` and `/tinygbc.ini` use so the three cannot drift on what `volume` or `mute` means, the writer emits the section, `tang_snes_apply_audio` sends the frame beside the pad map and the picture at launch, and `tinysnes_app.cpp` replaces its placeholder with TinyNES's page: a 5 percent slider, a percentage label that appends "muted", a Mute checkbox, Save, and the note that the value is taken when the next game starts. Adding the frame broke `tb_snes_load.c`, which asserts an exact frame sequence, so its expectations moved by one -- the settings frames are now three before the hold rather than two, which shifted `frame_count`, `osd_first_index`, `restored()` and the three `frame_fail_at` indices used to inject failures; those are expectation changes and the test's own logic is unchanged. `tb_snes_ini.c` gained the `[audio]` round trip, the clamping of a volume past the top, and the four named gain values. The core build is `build/audio1/tinysnes.bin`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, passing every gate at dbg.clk 26.491 against 21.505 MHz, fclk 213.950 against 64.516, hclk 109.938 against 74.250 and the GSU cache clock 415.800 against 65.000, with the clock-edge check passing and both chip assertions satisfied. Its SHA-256 is `6b7489d022b65cc97b51b1a014e59cc2029f900501e134bd3e2cd43bcadfb26e` over 5,238,252 bytes. The arithmetic is evidenced in the routed netlist rather than assumed present: LUT4 rose from 44,860 to 45,362 and ALU from 5,208 to 5,272 against the previous board-tested build, which is the size of two signed 16 by 9 multiplies, while BSRAM stayed at 255 of 340 and DFF moved by 36. The lint stage printed `no new multiple drivers (7 known)` and exited 0, and the i2s, i2s_out and HDMI audio benches and the full-core link bench all pass unchanged. The firmware is `build/build_out/tinytang_bl616.bin`, SHA-256 `77a3432ad9213cc7033c09ebcfcae7ea9db817eef353bfc313e6b4d554907058` at 698,944 bytes, identity `b73a7dd-dirty.30d9470`, with `tang_audio_gain` and `tang_snes_apply_audio` present in the ELF, and TinyTang's host gate passes 44 of 44. The core was deployed by `tools/tang_deploy.py` with all three verification points matching and `tangload: core loaded`, the firmware by `tools/tinytang_flash.py` followed by a power cycle through the operator's relay script, after which the board reported the new identity and core 2 answering. The operator tested it and reports the volume working perfectly, and the card corroborates the path independently: `/tinysnes.ini` now carries an `[audio]` section reading `volume = 20` and `mute = no`, a value neither the defaults nor this cycle wrote, so the slider, the label, Save and the writer all ran on hardware and the multi-argument case of the frame's byte order reached the core. One defect was found and deliberately not fixed because it is older than this cycle: `tools/sim/run_board_sim.sh` no longer compiles, because `ppu.v:1182` writes `27'h7FFFFFC0`, a 35-bit literal in a 27-bit width, which Verilator rejects, so the board-level bench has been unbuildable since entry 16's Mode 7 widening landed in `28a6d18`. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff and confirmed it adds this entry and nothing else, confirmed `.ai/core.md` was not changed, confirmed entries 1 to 21 were not rewritten, and validated this entry as entry 22 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, nine eligible Files Modified paths, permitted Status values, no self-referencing hash and a count of twenty-two against the 100-entry limit.
+
+#### Next Steps:
+
+Fix the board-level bench first, because it is the only bench that instantiates the real SDRAM controller and it has been unbuildable since entry 16, which means the last several cycles ran without the one simulation that models the board's own memory path; the fix is `ppu.v:1182`'s literal, and the reason it went unnoticed is worth naming, which is that no cycle from 16 onward invoked `run_board_sim.sh` and nothing in the build or the host gate requires it. The volume itself has one property still unproven on hardware and it cannot be settled by ear: that the mute silences both outputs and that a gain near unity does not audibly change anything, which a capture-card measurement through `tools/ab_capture.sh` would answer rather than a listening test. Player 2 on the Audio page is not a question, since the page carries one master volume for the machine; but the Input page's Player 2 toggle remains drawn and inert, which entry 19 left for the operator and is unchanged here. Everything else open is unchanged and independent: the low-frequency artefact of entry 15, the pops, the GSU cache clock reaching no spine tap, the LoRa conflict on PMOD0 pins 9 and 10, the pad remap proven on player 1 with the Wii Classic Controller only, the extra-lines row of entry 20 that still needs a cartridge setting SETINI bit 2, and the ExHiROM decode in `smc_parser.v`.
+
+#### Files Modified:
+
+- README.md
+- fpga/snes/src/audio_volume.v
+- fpga/snes/src/iosys/iosys_bl616.v
+- fpga/snes/src/snestang_top.v
+- tools/build_tinysnes.sh
+- tools/sim/dbg_link_tb.sv
+- tools/sim/run_board_sim.sh
+- tools/tests/audio_volume_tb.sv
+- tools/tests/run_audio_volume_tb.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---

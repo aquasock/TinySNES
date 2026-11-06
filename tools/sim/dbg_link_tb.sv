@@ -53,6 +53,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000), .REPORT_CLOCKS(REPORT_CLOCKS)) ios
     .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
     .pad_map(pad_map),
     .video_aspect(video_aspect), .video_overscan(video_overscan),
+    .audio_gain(audio_gain),
     .debug_address(bus_addr), .debug_wdata(bus_wdata),
     .debug_valid(bus_valid), .debug_write(bus_write), .debug_rdata(bus_rdata)
 );
@@ -75,6 +76,7 @@ wire  [7:0] sav_wdata, sav_rdata;
 wire [47:0] pad_map;
 wire [1:0]  video_aspect;
 wire        video_overscan;
+wire  [8:0] audio_gain;
 wire  [7:0] rom_loading_w;
 reg  [7:0]  sav_mem [0:131071];
 reg  [7:0]  sav_q;
@@ -484,6 +486,27 @@ task automatic want_video(input [8*40-1:0] what, input [1:0] aspect,
     end
 endtask
 
+// ------------------------------------------------------------ master volume
+// Frame 0x1c: two payload bytes, gain[7:0] then gain[8].  The clamp above unity
+// lives in audio_volume, not here, so this register reports what it was sent.
+task automatic gain_send(input [15:0] g);
+    begin
+        send_byte(8'hAA); send_byte(8'h00); send_byte(8'h03); send_byte(8'h1c);
+        send_byte(g[7:0]); send_byte(g[15:8]);
+        #(BIT_NS * 20);
+    end
+endtask
+
+task automatic want_gain(input [8*40-1:0] what, input [8:0] want);
+    begin
+        if (audio_gain !== want) begin
+            $display("FAIL: %0s: gain %0d, want %0d", what, audio_gain, want);
+            fails = fails + 1;
+        end else
+            $display("ok    %0s: gain %0d", what, audio_gain);
+    end
+endtask
+
 // ------------------------------------------------------------ pad model
 // The next unsolicited frame, which must be a joypad report.
 task automatic next_pad(output [15:0] j1, output [15:0] j2);
@@ -691,6 +714,30 @@ initial begin : main
     want_video("aspect 3 is stored, renders as 4:3", 2'd3, 1'b0);
     video_send(8'h04);                        // back to the default
     want_video("restored", 2'd0, 1'b1);
+
+    // ---- master volume, frame 0x1c.  Two payload bytes, low first.  The reset
+    // value is 256, which audio_volume turns into a bit-exact pass-through, so
+    // a host that never sends the frame hears exactly what it heard before.
+    want_gain("power-up unity", 9'd256);
+    gain_send(16'h0100);                      // 256: unity, sent explicitly
+    want_gain("explicit unity", 9'd256);
+    gain_send(16'h0080);                      // 128: half
+    want_gain("half", 9'd128);
+    gain_send(16'h0000);                      // silence
+    want_gain("silence", 9'd0);
+    gain_send(16'h0001);                      // the smallest step above zero
+    want_gain("one", 9'd1);
+    // Only gain[8:0] exists, so the high byte contributes bit 8 and nothing
+    // else.  Above 256 the register keeps what it was sent and audio_volume is
+    // what clamps, so the clamp has exactly one home; 511 here is the register
+    // doing its part, and the volume bench is what proves the clamp.
+    gain_send(16'hffff);
+    want_gain("above unity stored, clamped later", 9'd511);
+    // Byte order is low first: 0x0200 must therefore be 2, not 512.
+    gain_send(16'h0002);
+    want_gain("2", 9'd2);
+    gain_send(16'h0100);                      // back to the default
+    want_gain("restored", 9'd256);
 
     // ---- pad map.  The register powers up at identity, which is the wiring
     // every build before this one had, so a host that never sends 0x1a gets a
