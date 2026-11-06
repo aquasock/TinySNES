@@ -642,3 +642,37 @@ Player 2 is the one thing on the page that is drawn but cannot work, and it shou
 - User Test: PASS
 
 ---
+
+## 20 COMMIT Unreleased 2026-11-05T23:29:41-07:00
+
+#### Coming From:
+
+Unreleased 9a09b6a
+
+#### Purpose:
+
+Give the picture a runtime aspect and a choice about the PPU's extra fifteen lines, so the desktop window's Video page has real settings rather than a placeholder.
+
+#### Outcome:
+
+Two video settings now reach the core, and one option that does not belong on this console was deliberately left out. `snes2hdmi.v` had three localparams chosen for one geometry -- `XSTART` and `XSTOP` computed from a 960-pixel width, and a fixed `ycnt_next = ycnt + 224` -- so the shape of the picture was fixed at synthesis. They are now a function of two inputs: `aspect` picks the output width (4:3 is 960 pixels, 8:7 is 940, 1:1 is 823, all from a 256-pixel line scaled to a 720-line frame), and `show_overscan` decides whether a 239-line game's extra fifteen lines are drawn or cropped. The height itself comes from a third input, `v224`, and that is the cycle's one piece of luck: the PPU already exposes its overscan state as `V224` (`~OVERSCAN`, SETINI bit 2) and `SNES.v` already carries it out as `V224_MODE`, but `main.v` tied it off as `.V224_MODE()`. So no PPU change was needed at all, only connecting a signal that was already there, which is worth recording because the estimate before the work was a PPU cycle. `main.v` now exposes it and `snestang_top.v` feeds it to `snes2hdmi`. Frame 0x1B carries the two settings in one byte, bits 1:0 the aspect and bit 2 the overscan, and it resets to 4:3 with the extra lines shown -- which is the exact geometry and line count this core had before the setting existed, so a host that never sends the frame sees no change. Two decisions were made about what the page should contain and both are recorded in the source rather than only here. A palette setting was rejected: the NES needs one because its composite output leaves the colours ambiguous and its emulators ship competing interpretations, while this console's CGRAM is digital BGR555 with one correct rendering and the path from it is a bit shift, so a palette selector would invent an ambiguity the hardware does not have. And the fifteen extra lines were preferred over scanlines or a scale factor because they are a defect until someone decides: the line buffer only ever captured `ys[7:0] < 224`, so a game that sets SETINI bit 2 had its bottom fifteen lines silently cropped with nothing on screen to explain it. The build is `build/video/tinysnes.bin`, SHA-256 `ce199fa616ace3fe09f9e7eca4ebdaf3bbe3070311d61a2e986429de08c42d60`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, passing every gate at dbg.clk 29.239 against 21.505 MHz, fclk 255.885 against 64.516, hclk 98.377 against 74.250 and the GSU cache clock 320.821 against 65.000, with the clock-edge check passing and both chip assertions satisfied. It was deployed by `tools/tang_deploy.py` to `/root/cores/console138k/tinysnes.bin` with all three verification points matching over 5,238,252 bytes. It is **not confirmed on the board**: the operator deployed at the end of the session and did not power-cycle or look at a picture before stopping, so the geometry and the line count are proven only by synthesis, timing and the link bench. The firmware half is the TinyTang repository's entry 11. The link bench gained eleven checks: the power-up default, each aspect, the overscan bit in both states with the aspect held still, bits above 2 ignored, and aspect 3 stored as 3 rather than clamped -- because the display's own case statement is what turns anything without its own arm into 4:3, and clamping in the register would hide a host sending a value the core does not define. Three of those expectations were written wrong the first time and the bench caught all three: bit 2 must be set for the extra lines, not clear, and the aspect-3 case as described. A fourth defect was found in the bench itself and is older than this cycle. The HOME+B chord test began failing once the new frames were added, and stashing this cycle's changes and running the committed tree passed, which proved the pad path was untouched and the cause was phase. `REPORT_CLOCKS` shortens a 20 ms report tick to 4.65 us in the bench while a nine-byte report at 2 Mbaud still takes 45 us on the wire, so one report spans about ten bench ticks and a button held for two can change twice before its own report has finished sending, while the sender reads `joy1_reg` live; on the board a report is 0.2 percent of a tick and the question cannot arise. The chord is now held fourteen ticks per state with that arithmetic written into the comment, so the test is not one phase-shift away from failing again. The lint stage added in entry 17 and repaired in entry 19 printed its line and returned `no new multiple drivers (7 known)` on a build that reused a cached netlist, which is the specific thing it failed to do in entry 19. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, confirmed entries 1 to 19 were not rewritten, and validated this entry as entry 20 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, five eligible Files Modified paths, permitted Status values, no self-referencing hash and a count of twenty against the 100-entry limit.
+
+#### Next Steps:
+
+The board is deployed and unconfirmed, which is the first thing the next cycle should settle: power-cycle, open the Video page, and check that the picture is unchanged before anything is saved, because the defaults are meant to reproduce the previous geometry exactly and any difference before a Save is a defect in the default rather than in the setting. Then step the aspect to 8:7 and 1:1, which must both be visibly and proportionally narrower, and save so the setting persists through a launch. The extra-lines row is the one that cannot be tested on demand, because it needs a cartridge that actually sets SETINI bit 2: the symptom to watch for is a title whose bottom fifteen lines are missing today, and a row that changes nothing is as likely to mean no cartridge here uses 239 lines as to mean the row is broken. If a game is found that does, it should be recorded by name, because nothing else will exercise that path. `Audio` is the last placeholder page and the same question it raises is the one entry 19 recorded for Player 2: what a page may draw when the core cannot honour it. That matters more for audio than for video, because the S-DSP mixer could apply a master volume but the volume would have to be scaled inside the DSP rather than after it, which is a core change and not a frame. The remap remains proven on player 1 with the Wii Classic Controller only, and player 2 is still drawn but inert by the operator's decision. Everything else stands: the low-frequency artefact of entry 15, the pops, the GSU cache clock reaching no spine tap, and the LoRa conflict on PMOD0 pins 9 and 10.
+
+#### Files Modified:
+
+- fpga/snes/src/iosys/iosys_bl616.v
+- fpga/snes/src/main.v
+- fpga/snes/src/snes2hdmi.v
+- fpga/snes/src/snestang_top.v
+- tools/sim/dbg_link_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: NOT RUN
+
+---

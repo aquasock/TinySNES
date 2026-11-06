@@ -64,6 +64,10 @@ module iosys_bl616 #(
     // word carries the buttons.  Identity out of reset.
     output reg [47:0] pad_map,
 
+    // The picture's shape, frame 0x1B.  See VIDEO_MODE below.
+    output reg [1:0] video_aspect,
+    output reg       video_overscan,
+
     // PCXT management interface
     output reg [15:0] mgmt_address,
     output reg        mgmt_read,
@@ -139,6 +143,11 @@ localparam [7:0] SAVE_READ  = 8'h19;
 // which is not loaded while this core runs.  A remapping UI can therefore only
 // be honoured here.
 localparam [7:0] PAD_MAP = 8'h1a;
+// The picture's shape: one byte, bits 1:0 the aspect (0 4:3, 1 8:7, 2 1:1)
+// and bit 2 whether the PPU's extra fifteen lines are shown when a game asks
+// for them.  Out of reset it is 4:3 with the extra lines shown, which is the
+// geometry and the line count this core had before the setting existed.
+localparam [7:0] VIDEO_MODE = 8'h1b;
 // Largest reply that still fits the BL616's 256-byte frame payload, counting
 // its four-byte header and the two-byte CRC.
 localparam [7:0] SAVE_READ_MAX = 8'd250;
@@ -333,6 +342,8 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 //                            from addr on.  Refused unless loading; no reply.
 // 0x1a map[47:0]             TinySNES: 12 nibbles, the pad map; button i of
 //                            the pad word takes source map[i], 12..15 = none
+// 0x1b x[7:0]                TinySNES: x[1:0] aspect (0 4:3, 1 8:7, 2 1:1),
+//                            x[2] show the PPU's extra fifteen lines
 // 0x19 addr[23:0] n[7:0]     TinySNES: reply with n bytes of cartridge SRAM
 //                            from addr, then a CRC-16.  Refused unless loading,
 //                            and a refusal is a reply with no data bytes.
@@ -376,6 +387,8 @@ always @(posedge clk) begin
         // value is visible rather than computed.
         pad_map <= {4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
                     4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd0};
+        video_aspect <= 2'd0;       // 4:3
+        video_overscan <= 1'b1;     // show the extra lines when offered
     end else begin
         rom_do_valid <= 0;
         we <= 0;
@@ -481,6 +494,10 @@ always @(posedge clk) begin
                     end
                     8'h15: if (data_cnt == 0)       // desk enable
                         desk_enable <= rx_data[0];
+                    VIDEO_MODE: if (data_cnt == 0) begin // aspect and overscan
+                        video_aspect   <= rx_data[1:0];
+                        video_overscan <= rx_data[2];
+                    end
                     PAD_MAP: begin                  // pad map: 12 nibbles, 6 bytes
                         case (data_cnt)
                             0: pad_map[47:40] <= rx_data;

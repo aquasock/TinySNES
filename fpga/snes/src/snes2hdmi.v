@@ -132,6 +132,22 @@ module snes2hdmi (
     input [8:0] xs, // {x,dotclk}
     input [8:0] ys, // {field,y}
 
+    // The picture's shape, from the desktop window's Video page (iosys frame
+    // 0x1B).  `aspect` picks how wide the 256-pixel line is drawn and
+    // `show_overscan` whether the PPU's extra fifteen lines are shown when a
+    // game asks for them; `v224` says whether it did.
+    //
+    // Aspect is a real choice on this console rather than a palette question:
+    // the pixels are digital BGR555 with one correct rendering, but their
+    // shape is not fixed.  The three settings are the ones every emulator
+    // offers, and the widths come from the 224-line picture scaled to 720:
+    //   4:3  960 px, the SNES's own display aspect
+    //   8:7  940 px, the pixel aspect ratio the hardware documents
+    //   1:1  823 px, square pixels
+    input [1:0] aspect,
+    input       show_overscan,
+    input       v224,
+
     input overlay,
     output [7:0] overlay_x,
     output [7:0] overlay_y,
@@ -272,6 +288,27 @@ module snes2hdmi (
     localparam DYN_SDIV_SEL_X5 = 2;
     
     localparam CLKFRQ = 74250;
+
+    // The geometry used to be three localparams chosen for 4:3 at 224 lines.
+    // It is now a function of the two settings above: the width from the
+    // aspect, and the height from whether the frame is 224 or 239 lines and
+    // whether the operator wants the extra ones shown.
+    reg [10:0] disp_w;                  // output pixels the 256-wide line fills
+    reg [8:0]  disp_h;                  // source lines this frame carries
+    reg [10:0] xstart, xstop;
+
+    always @* begin
+        case (aspect)
+            2'd1:    disp_w = 11'd940;  // 8:7
+            2'd2:    disp_w = 11'd823;  // 1:1
+            default: disp_w = 11'd960;  // 4:3
+        endcase
+        // A 224-line game has no extra lines to show; a 239-line one has them
+        // cropped unless the operator asked for them.
+        disp_h = (v224 || !show_overscan) ? 9'd224 : 9'd239;
+        xstart = (11'd1280 - disp_w) >> 1;
+        xstop  = xstart + disp_w;
+    end
 
     localparam AUDIO_BIT_WIDTH = 16;
 
@@ -591,7 +628,7 @@ assign linefill_dbg = lf_dbg;
         r_dotclk <= dotclk;
         r_vblank <= vblank;
         mem_portA_we <= 1'b0;
-        if (dotclk && ~r_dotclk && ~hblank && ~vblank && ys[7:0] < 224) begin       // on posedge of dotclk, read a pixel
+        if (dotclk && ~r_dotclk && ~hblank && ~vblank && ys[7:0] < disp_h[7:0]) begin   // on posedge of dotclk, read a pixel
             mem_portA_addr <= {ys[BUF_WIDTH-1:0], xs[8:1]};
             mem_portA_wdata <= rgb5;
             mem_portA_we <= 1'b1;
@@ -670,8 +707,6 @@ assign linefill_dbg = lf_dbg;
     assign mem_portB_addr = {yy[BUF_WIDTH-1:0], xx};
     assign overlay_x = xx;
     assign overlay_y = yy;
-    localparam XSTART = (1280 - 960) / 2;   // 960:720 = 4:3
-    localparam XSTOP = (1280 + 960) / 2;
 
     // address calculation
     // Assume the video occupies fully on the Y direction, we are upscaling the video by `720/height`.
@@ -681,21 +716,21 @@ assign linefill_dbg = lf_dbg;
         reg [10:0] xcnt_next;
         reg [10:0] ycnt_next;
         xcnt_next = xcnt + 256;
-        ycnt_next = ycnt + 224;
+        ycnt_next = ycnt + disp_h;
 
         active_t = 0;
-        if (cx == XSTART - 1) begin
+        if (cx == xstart - 1) begin
             active_t = 1;
             active <= 1;
-        end else if (cx == XSTOP - 1) begin
+        end else if (cx == xstop - 1) begin
             active_t = 0;
             active <= 0;
         end
 
         if (active_t | active) begin        // increment xx
             xcnt <= xcnt_next;
-            if (xcnt_next >= 960) begin
-                xcnt <= xcnt_next - 960;
+            if (xcnt_next >= disp_w) begin
+                xcnt <= xcnt_next - disp_w;
                 xx <= xx + 1;
             end
         end

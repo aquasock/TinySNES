@@ -109,6 +109,10 @@ module main (
 	output            VBLANKn,
     output     [8:0]  X_OUT,
     output     [8:0]  Y_OUT,
+    // The PPU's 224/239-line mode, which SETINI bit 2 selects.  It was tied
+    // off here; snes2hdmi needs it to know how many lines a frame carries, or
+    // a game that turns on the extra fifteen would have them cropped.
+    output            V224_MODE,
 
 	input       [1:0] JOY1_DI,
 	input       [1:0] JOY2_DI,
@@ -222,7 +226,7 @@ SNES SNES
 
 	.BLEND(BLEND), .PAL(PAL), .DIS_SHORTLINE(DIS_SHORTLINE),
 	.HIGH_RES(HIGH_RES), .FIELD_OUT(FIELD), .INTERLACE(INTERLACE), .DOTCLK(DOTCLK),
-	.V224_MODE(),
+	.V224_MODE(V224_MODE),
 
 	.RGB_OUT(RGB_OUT), .HDE(HBLANKn), .VDE(VBLANKn), .HSYNC(), .VSYNC(),
     .X_OUT(X_OUT), .Y_OUT(Y_OUT),

@@ -271,6 +271,9 @@ wire       PAL = 1'b0;
 wire       dotclk  /*verilator public*/;
 wire [14:0] rgb_out  /*verilator public*/;
 wire [8:0] x_out /*verilator public*/, y_out /*verilator public*/;
+// 1 while the PPU is in 224-line mode; 0 when the game has asked for the extra
+// fifteen lines.  snes2hdmi sizes its frame from this.
+wire v224_mode;
 wire       hblankn,vblankn;
 
 wire [15:0] audio_l /*verilator public*/, audio_r /*verilator public*/;
@@ -1879,7 +1882,7 @@ main #(.USE_DSPn(USE_DSPn), .USE_GSU(USE_GSU)) main (
 
     .BLEND(BLEND), .PAL(PAL), .HIGH_RES(), .FIELD(), .INTERLACE(), .DIS_SHORTLINE(),
     .DOTCLK(dotclk), .RGB_OUT(rgb_out), .HBLANKn(hblankn),
-    .VBLANKn(vblankn), .X_OUT(x_out), .Y_OUT(y_out),
+    .VBLANKn(vblankn), .X_OUT(x_out), .Y_OUT(y_out), .V224_MODE(v224_mode),
 
     .JOY1_DI(desk_on?2'b11:snes_joy1_di), .JOY2_DI(desk_on?2'b11:snes_joy2_di), .JOY_STRB(snes_joy_strb), 
     .JOY1_CLK(snes_joy1_clk), .JOY2_CLK(snes_joy2_clk), 
@@ -3066,6 +3069,9 @@ assign led = 8'hff;
 wire [11:0] wii_buttons;
 wire        wii_home;
 wire [47:0] pad_map;
+// The picture's shape, from iosys frame 0x1B.
+wire [1:0] video_aspect;
+wire       video_overscan;
 wire        pad_sda_low, pad_scl_low;
 wire        pad_present, pad_classic;
 wire [15:0] pad_reads;
@@ -3403,7 +3409,8 @@ snes2hdmi s2h(
     // display defines suppress the boot screen inside snes2hdmi.
     .rom_loaded(loaded),
     .dotclk(dotclk), .hblank(~hblankn),.vblank(~vblankn),.rgb5(rgb_out),
-    .xs(x_out), .ys(y_out), 
+    .xs(x_out), .ys(y_out),
+    .aspect(video_aspect), .show_overscan(video_overscan), .v224(v224_mode),
     .overlay(overlay), .overlay_x(overlay_x), .overlay_y(overlay_y),
     .overlay_color(overlay_color), 
     .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr), .desk_wr_data(desk_wr_data),
@@ -3425,6 +3432,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
     .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid),
     .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
     .pad_map(pad_map),
+    .video_aspect(video_aspect), .video_overscan(video_overscan),
     .debug_address(dbg_bus_addr), .debug_wdata(dbg_bus_wdata),
     .debug_valid(dbg_bus_valid), .debug_write(dbg_bus_write), .debug_rdata(dbg_bus_rdata)
 );
@@ -3446,6 +3454,10 @@ assign sav_we    = 1'b0;
 // source i, which is the wiring every earlier bench ran with.
 assign pad_map   = {4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
                     4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd0};
+// No UART host in the bench, so the picture keeps the shape it had before the
+// setting existed: 4:3, and the PPU's extra lines shown when it offers them.
+assign video_aspect   = 2'd0;
+assign video_overscan = 1'b1;
 
 // test loader with embedded rom
 test_loader test_loader (

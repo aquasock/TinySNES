@@ -52,6 +52,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000), .REPORT_CLOCKS(REPORT_CLOCKS)) ios
     .rom_loading(rom_loading_w), .rom_do(), .rom_do_valid(),
     .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
     .pad_map(pad_map),
+    .video_aspect(video_aspect), .video_overscan(video_overscan),
     .debug_address(bus_addr), .debug_wdata(bus_wdata),
     .debug_valid(bus_valid), .debug_write(bus_write), .debug_rdata(bus_rdata)
 );
@@ -72,6 +73,8 @@ wire        sav_we;
 wire [16:0] sav_addr;
 wire  [7:0] sav_wdata, sav_rdata;
 wire [47:0] pad_map;
+wire [1:0]  video_aspect;
+wire        video_overscan;
 wire  [7:0] rom_loading_w;
 reg  [7:0]  sav_mem [0:131071];
 reg  [7:0]  sav_q;
@@ -456,6 +459,31 @@ task automatic want_remap(input [8*40-1:0] what, input [11:0] src,
     end
 endtask
 
+// ------------------------------------------------------------ video mode
+// Frame 0x1b: bits 1:0 the aspect, bit 2 whether the PPU's extra lines show.
+// Out of reset it is 4:3 with them shown, which is the geometry and the line
+// count this core had before the setting existed -- so the default is checked
+// before anything is sent.
+task automatic video_send(input [7:0] v);
+    begin
+        send_byte(8'hAA); send_byte(8'h00); send_byte(8'h02); send_byte(8'h1b);
+        send_byte(v);
+        #(BIT_NS * 20);
+    end
+endtask
+
+task automatic want_video(input [8*40-1:0] what, input [1:0] aspect,
+                          input overscan);
+    begin
+        if (video_aspect !== aspect || video_overscan !== overscan) begin
+            $display("FAIL: %0s: aspect %0d overscan %b, want %0d %b",
+                     what, video_aspect, video_overscan, aspect, overscan);
+            fails = fails + 1;
+        end else
+            $display("ok    %0s: aspect %0d, overscan %b", what, video_aspect, overscan);
+    end
+endtask
+
 // ------------------------------------------------------------ pad model
 // The next unsolicited frame, which must be a joypad report.
 task automatic next_pad(output [15:0] j1, output [15:0] j2);
@@ -642,6 +670,28 @@ initial begin : main
     #(BIT_NS * 20);
     save_read_check("read after release", 24'h000100, 8'd16, 0, 1);
 
+    // ---- video mode.  The reset value is the geometry and line count every
+    // build before this had, so a host that never sends 0x1b is unaffected.
+    want_video("power-up 4:3, extra lines shown", 2'd0, 1'b1);
+    video_send(8'h06);                        // 1:1 with the extra lines
+    want_video("1:1, extra lines shown", 2'd2, 1'b1);
+    video_send(8'h05);                        // 8:7 with the extra lines
+    want_video("8:7, extra lines shown", 2'd1, 1'b1);
+    video_send(8'h00);                        // 4:3, extra lines cropped
+    want_video("4:3, extra lines cropped", 2'd0, 1'b0);
+    video_send(8'h04);                        // 4:3, extra lines shown
+    want_video("4:3, extra lines shown", 2'd0, 1'b1);
+    // Bits above 2 are not part of the setting and must not change anything.
+    video_send(8'hf8);                        // 4:3, cropped, high bits set
+    want_video("high bits ignored", 2'd0, 1'b0);
+    // Three is stored as three, not clamped: snes2hdmi's case statement is
+    // what turns anything without its own arm into 4:3, and clamping here
+    // would hide a host that sent a value the core does not define.
+    video_send(8'h03);
+    want_video("aspect 3 is stored, renders as 4:3", 2'd3, 1'b0);
+    video_send(8'h04);                        // back to the default
+    want_video("restored", 2'd0, 1'b1);
+
     // ---- pad map.  The register powers up at identity, which is the wiring
     // every build before this one had, so a host that never sends 0x1a gets a
     // pad it cannot tell apart from before.
@@ -718,9 +768,18 @@ initial begin : main
         $display("ok    tap held %0t (13 ticks)", lb_len);
 
     // HOME held with another button is a chord, not a tap.
-    home = 1; ticks(2); joy1 = 12'h001; ticks(2); home = 0; ticks(2); joy1 = 12'h000;
-    want_pad("HOME+B pressed", 16'h0100, 16'h0400, 2);
-    want_pad("HOME+B released", 16'h0000, 16'h0400, 2);
+    //
+    // Each state is held ~14 ticks rather than 2, because the bench's tick is
+    // a 4300th of the board's: REPORT_CLOCKS shortens a 20 ms report tick to
+    // 4.65 us, while the 9-byte report itself still takes 45 us on the wire.
+    // One report therefore spans about ten bench ticks, so a button held for
+    // two can change twice before its own report has finished sending, and
+    // the sender reads joy1_reg live.  On the board a report is 0.2% of a
+    // tick and the question cannot arise; here it has to be given room.
+    home = 1; ticks(14); joy1 = 12'h001; ticks(14);
+    home = 0; ticks(14); joy1 = 12'h000;
+    want_pad("HOME+B pressed", 16'h0100, 16'h0400, 3);
+    want_pad("HOME+B released", 16'h0000, 16'h0400, 3);
     ticks(20);
     next_pad(j1, j2);
     if (j1 !== 16'h0000) begin
