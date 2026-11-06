@@ -44,6 +44,10 @@ title refuses to run. That is a design limit, not a fault.
 
 ## Defect 1 — tile gap in a scaled or rotated background
 
+**STATUS: fixed in core-log entry 16. This section is retained as recorded, with
+a correction appended, because the reasoning below was wrong in its central
+conclusion and the way it was wrong is the useful part.**
+
 Three sightings, two engines:
 
 - Donkey Kong Country: the shrinking logo
@@ -53,11 +57,19 @@ Three sightings, two engines:
 DKC and DKC2 share an engine, so they are one data point seen twice. Chrono
 Trigger is the independent sighting and carries the weight.
 
-Mode 7 is ruled out. F-Zero is Mode 7 on every scanline and is clean, so the
-Mode 7 matrix path is not the cause. All three affected scenes draw a
-transformed background through something else.
+> **Correction, 2026-11-05.** The paragraph that stood here read "Mode 7 is
+> ruled out. F-Zero is Mode 7 on every scanline and is clean, so the Mode 7
+> matrix path is not the cause." That was wrong, and the test that supported it
+> was invalid. F-Zero *magnifies* the Mode 7 plane, so consecutive output pixels
+> step less than one texel and a sub-texel position error never changes which
+> texel is fetched — a defect that only crosses a texel boundary under
+> minification or rotation cannot appear there. The operator then identified all
+> three affected surfaces as Mode 7 planes: Zelda's map, Chrono Trigger's
+> pendulum, and the Rare logo. A test that cannot fail is not evidence, and
+> treating it as evidence cost a build cycle. The three candidates listed below
+> were all wrong for the same reason: none of them is Mode 7.
 
-Candidates, in the order worth checking:
+Candidates as originally recorded, all superseded:
 
 1. HDMA-driven per-line register writes. All three scenes animate a transform
    that updates once per scanline rather than scrolling a tilemap, so a
@@ -66,7 +78,44 @@ Candidates, in the order worth checking:
 2. The offset-per-tile / per-tile scroll path.
 3. Colour math or mosaic applied to a transformed background.
 
-Not investigated. Nothing was changed.
+### What the defect actually was
+
+The operator measured three seam positions by eye in a screenshot of the
+pendulum — x = 908.5, 938, 968 in a 1280-wide capture — giving a spacing of
+29.5 and 30 screen pixels. The game area spans 956 screen pixels for 256 SNES
+pixels, so 3.734 screen pixels per SNES pixel, and 29.75 / 3.734 = 7.97. The
+seams repeat every 8 SNES pixels: one character cell.
+
+In `ppu.v` the Mode 7 sample position was computed combinationally and the three
+fields taken from it were latched on **every master clock**, outside the
+`DOT_CLKR_CE` enable:
+
+```verilog
+M7_TILE_N      <= M7_TILE;            // every master clock
+M7_TILE_COL    <= M7_VRAM_X[10:8];
+M7_TILE_ROW    <= M7_VRAM_Y[10:8];
+M7_TILE_OUTSIDE<= M7_IS_OUTSIDE;
+```
+
+`M7_TILE` arrives from the VRAM read, which has latency. Latching four times per
+Dot instead of once let the character number and the 3-bit in-character column
+(`[10:8]`, which rolls over every 8 pixels) describe different screen positions,
+so the pixel address `{M7_TILE_N, M7_TILE_ROW, M7_TILE_COL}` mixed a character
+from one position with a row/column from the next. One wrong column per
+character cell, following the transform — exactly the observed seam.
+
+MiSTer's `PPU.vhd` registers `M7_VRAM_X/Y` at `DOT_CLKR_CE` and latches the tile
+number and row/column at the same enable, so every field describes one position.
+The fix moves both `M7_VRAM_X/Y` and those three latches inside the enable, and
+additionally widens the accumulators from 24-bit to 27-bit signed to match
+upstream. The widening alone was built and deployed first and did **not** change
+the symptom; the enable movement is the fix. Bits 10:8 and 17:11 sit at the same
+positions in both widths, so the derived addressing is unchanged either way.
+
+Confirmed by the operator on `build/m7pipe/tinysnes.bin`,
+SHA-256 `1ff104073dc24794dfe37106e51fd8668bde600efe20e15c448289ea4a40f6d7`:
+Chrono Trigger's pendulum clean, Zelda's Mode 7 map clean at every zoom, DKC's
+shrinking logo clean.
 
 ## Defect 2 — low-frequency artefact
 

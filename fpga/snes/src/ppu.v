@@ -163,7 +163,15 @@ reg [7:0] M7_PIX_DATA;
 
 reg [23:0] MPY;       // Multiplication Result
 reg [7:0] M7_SCREEN_X;
-reg [23:0] M7_TEMP_X, M7_TEMP_Y;
+// Mode 7 sample-position accumulators are 27-bit signed, matching MiSTer's
+// PPU.vhd.  At 24 bits a single product of M7A (16-bit) and a clipped origin
+// coordinate (11-bit signed) can reach 2^24, so the top bits were being lost
+// and the truncated position drifted by up to a quarter texel per term.
+// Minification and rotation are where that crosses a texel boundary, which is
+// why the seams appeared on scaled and rotated planes and not on F-Zero's
+// magnified one.  Bits 17:11 (VRAM tile) and 10:8 (pixel within tile) sit at
+// the same positions in both widths, so the derived addressing is unchanged.
+reg signed [26:0] M7_TEMP_X, M7_TEMP_Y;
 reg [7:0] M7_TILE_N;
 reg [2:0] M7_TILE_ROW, M7_TILE_COL;
 reg M7_TILE_OUTSIDE;
@@ -907,7 +915,7 @@ assign HIRES = BG_MODE == 3'b101 || BG_MODE == 3'b110 ? 1'b1 : 1'b0;
 assign BF = BF_TBL[BG_MODE][H_CNT[2:0]];
 
 reg [7:0] M7_TILE;                  
-reg [23:0] M7_VRAM_X, M7_VRAM_Y;
+reg signed [26:0] M7_VRAM_X, M7_VRAM_Y;
 reg M7_IS_OUTSIDE;
 
 reg signed [8:0] M7_X, M7_Y;
@@ -1114,10 +1122,13 @@ always @* begin : bg_addr_gen
 
     MPY = 24'(signed'(M7A) * signed'(M7B[15:8]));
 
-    M7_VRAM_X = M7_TEMP_X + 24'(signed'(M7A) * M7_X);
-    M7_VRAM_Y = M7_TEMP_Y + 24'(signed'(M7C) * M7_X);
+    // M7_VRAM_X/Y are registered on the dot clock enable, in the sequential
+    // block below, rather than computed combinationally here.  MiSTer's
+    // PPU.vhd registers them at DOT_CLKR_CE and then latches the tile number
+    // and the row/column at the same enable, so every field of the pixel
+    // address below describes one and the same screen position.
 
-    if (M7_VRAM_X[23:18] == 6'b0 && M7_VRAM_Y[23:18] == 6'b0) 
+    if (M7_VRAM_X[26:18] == 9'b0 && M7_VRAM_Y[26:18] == 9'b0) 
         M7_IS_OUTSIDE = 1'b0;
     else 
         M7_IS_OUTSIDE = 1'b1;
@@ -1161,21 +1172,32 @@ always @(posedge CLK) begin
                 M7_SCREEN_X <= 0;
             
             if (H_CNT == M7_XY_LATCH) begin
-                M7_TEMP_X <= (24'(signed'(M7X)) << 8) + 
-                        (24'(signed'(M7A) * Mode7Clip(ORG_X)) & 24'hFFFFC0) + 
-                        (24'(signed'(M7B) * Mode7Clip(ORG_Y)) & 24'hFFFFC0) + 
-                        (24'(signed'(M7B) * M7_Y) & 24'hFFFFC0);
-                M7_TEMP_Y <= (24'(signed'(M7Y)) << 8) + 
-                        (24'(signed'(M7C) * Mode7Clip(ORG_X)) & 24'hFFFFC0) + 
-                        (24'(signed'(M7D) * Mode7Clip(ORG_Y)) & 24'hFFFFC0) + 
-                        (24'(signed'(M7D) * M7_Y) & 24'hFFFFC0);
+                M7_TEMP_X <= (27'(signed'(M7X)) << 8) + 
+                        (27'(signed'(M7A) * Mode7Clip(ORG_X)) & 27'h7FFFFFC0) + 
+                        (27'(signed'(M7B) * Mode7Clip(ORG_Y)) & 27'h7FFFFFC0) + 
+                        (27'(signed'(M7B) * M7_Y) & 27'h7FFFFFC0);
+                M7_TEMP_Y <= (27'(signed'(M7Y)) << 8) + 
+                        (27'(signed'(M7C) * Mode7Clip(ORG_X)) & 27'h7FFFFFC0) + 
+                        (27'(signed'(M7D) * Mode7Clip(ORG_Y)) & 27'h7FFFFFC0) + 
+                        (27'(signed'(M7D) * M7_Y) & 27'h7FFFFFC0);
             end
-        end
 
-        M7_TILE_N <= M7_TILE;
-        M7_TILE_COL <= M7_VRAM_X[10:8];
-        M7_TILE_ROW <= M7_VRAM_Y[10:8];
-        M7_TILE_OUTSIDE <= M7_IS_OUTSIDE;
+            // The sample position and the three fields taken from it are all
+            // clocked on DOT_CLKR_CE, as PPU.vhd does.  Latching them on every
+            // master clock instead let the tile number lag the row and column
+            // by the VRAM read latency, so for part of each dot the pixel
+            // address mixed a character number from one position with a
+            // row/column from the next.  That produced a one-pixel seam at
+            // every character boundary, which is what the scaled and rotated
+            // Mode 7 planes were showing.
+            M7_VRAM_X <= M7_TEMP_X + 27'(signed'(M7A) * M7_X);
+            M7_VRAM_Y <= M7_TEMP_Y + 27'(signed'(M7C) * M7_X);
+
+            M7_TILE_N <= M7_TILE;
+            M7_TILE_COL <= M7_VRAM_X[10:8];
+            M7_TILE_ROW <= M7_VRAM_Y[10:8];
+            M7_TILE_OUTSIDE <= M7_IS_OUTSIDE;
+        end
     end
 end
 
