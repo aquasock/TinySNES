@@ -48,7 +48,8 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000), .REPORT_CLOCKS(REPORT_CLOCKS)) ios
     .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr),
     .desk_wr_data(desk_wr_data),
     .uart_tx(uart_tx), .uart_rx(uart_rx),
-    .rom_loading(), .rom_do(), .rom_do_valid(),
+    .rom_loading(rom_loading_w), .rom_do(), .rom_do_valid(),
+    .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
     .debug_address(bus_addr), .debug_wdata(bus_wdata),
     .debug_valid(bus_valid), .debug_write(bus_write), .debug_rdata(bus_rdata)
 );
@@ -62,6 +63,20 @@ always @(posedge clk) begin
     bsram_q <= bsram[peek_addr];
     wram_q  <= ~bsram[peek_addr];
 end
+
+// The cartridge SRAM as the board's top level models it: one synchronous array
+// on the same master clock, chosen by whichever owns the port.
+wire        sav_we;
+wire [16:0] sav_addr;
+wire  [7:0] sav_wdata, sav_rdata;
+wire  [7:0] rom_loading_w;
+reg  [7:0]  sav_mem [0:131071];
+reg  [7:0]  sav_q;
+always @(posedge clk) begin
+    if (sav_we) sav_mem[sav_addr] <= sav_wdata;
+    sav_q <= sav_mem[sav_addr];
+end
+assign sav_rdata = sav_q;
 
 tinysnes_dbg #(.TRACE_AW(10)) dbg (
     .clk(clk), .resetn(resetn),
@@ -294,6 +309,100 @@ task automatic want_on(input [8*40-1:0] what, input want);
     end
 endtask
 
+// ------------------------------------------------------- battery save model
+// A block of `n` bytes from `addr`, with byte i equal to addr[7:0]+i+seed so a
+// mistake in the address shows up as a wrong byte rather than a wrong length.
+function automatic [7:0] sav_byte(input [23:0] addr, input integer i, input integer seed);
+    sav_byte = (addr[7:0] + i[7:0] + seed[7:0]);
+endfunction
+
+task automatic save_write(input [23:0] addr, input integer n, input integer seed);
+    integer i;
+    reg [15:0] len;
+    begin
+        // frame_len counts the type byte plus the payload: 3 address bytes and
+        // n data bytes, so 4 + n.  One short and the receiver drops the last
+        // data byte as the start of a new frame.
+        len = 4 + n;
+        send_byte(8'hAA); send_byte(len[15:8]); send_byte(len[7:0]); send_byte(8'h18);
+        send_byte(addr[23:16]); send_byte(addr[15:8]); send_byte(addr[7:0]);
+        for (i = 0; i < n; i = i + 1) send_byte(sav_byte(addr, i, seed));
+    end
+endtask
+
+// Ask for n bytes and check them plus the reply CRC.  `refuse` expects a reply
+// carrying no data bytes at all, which is how the core answers when the host is
+// not holding it in reset.  Joypad reports that land first are skipped, as
+// tools/tinysnes_dbg.py does, because one can arrive while the reply is queued.
+task automatic save_read_check(input [8*34-1:0] what, input [23:0] addr,
+                               input [7:0] n, input integer seed, input refuse);
+    reg [7:0] b;
+    reg [15:0] len, c;
+    integer i, cnt, bad, done;
+    begin
+        bad = 0; done = 0;
+        send_byte(8'hAA); send_byte(8'h00); send_byte(8'h05); send_byte(8'h19);
+        send_byte(addr[23:16]); send_byte(addr[15:8]); send_byte(addr[7:0]); send_byte(n);
+        while (!done) begin
+            get_byte(b);
+            if (b != 8'hAA) begin
+                $display("FAIL: %0s: frame start %02x", what, b); $finish;
+            end
+            get_byte(b); len[15:8] = b;
+            get_byte(b); len[7:0] = b;
+            get_byte(b);
+            if (b == 8'h03) begin
+                for (i = 1; i < len; i = i + 1) get_byte(b);
+                joy_frames = joy_frames + 1;
+            end else if (b != 8'h19) begin
+                $display("FAIL: %0s: reply type %02x", what, b);
+                bad = 1; done = 1;
+            end else begin
+                // frame_len counts the type byte, so the payload is len-1 and
+                // is the data bytes plus the two CRC bytes.  Checked against
+                // the request rather than inferred from `len`, because an
+                // inferred expectation agrees with a wrong header.
+                if (len != (refuse ? 16'd3 : (n + 16'd3))) begin
+                    $display("FAIL: %0s: frame_len %0d, want %0d", what, len,
+                             refuse ? 3 : n + 3);
+                    bad = 1;
+                end
+                cnt = len - 1 - 2;
+                if (refuse && cnt != 0) begin
+                    $display("FAIL: %0s: refused read returned %0d bytes", what, cnt);
+                    bad = 1;
+                end else if (!refuse && cnt != n) begin
+                    $display("FAIL: %0s: %0d bytes, want %0d", what, cnt, n);
+                    bad = 1;
+                end
+                c = crc16(16'hffff, 8'h19);
+                for (i = 0; i < cnt; i = i + 1) begin
+                    get_byte(b);
+                    c = crc16(c, b);
+                    if (!refuse && i < n && b !== sav_byte(addr, i, seed)) begin
+                        if (bad == 0)
+                            $display("FAIL: %0s: byte %0d is %02x, want %02x",
+                                     what, i, b, sav_byte(addr, i, seed));
+                        bad = 1;
+                    end
+                end
+                get_byte(b);
+                if (b !== c[15:8]) begin
+                    $display("FAIL: %0s: crc hi %02x, want %02x", what, b, c[15:8]); bad = 1;
+                end
+                get_byte(b);
+                if (b !== c[7:0]) begin
+                    $display("FAIL: %0s: crc lo %02x, want %02x", what, b, c[7:0]); bad = 1;
+                end
+                done = 1;
+            end
+        end
+        if (bad) fails = fails + 1;
+        else if (refuse) $display("ok    %0s: refused, no data bytes", what);
+        else $display("ok    %0s: %0d bytes", what, n);
+    end
+endtask
+
 // ------------------------------------------------------------ pad model
 // The next unsolicited frame, which must be a joypad report.
 task automatic next_pad(output [15:0] j1, output [15:0] j2);
@@ -448,6 +557,38 @@ initial begin : main
     frame1(8'h08, 8'h00);
     want_on("hidden", 0);
 
+    // ---- battery save.  The window is refused unless the loader holds the
+    // core in reset, so the refusal comes first and proves the gate.
+    save_read_check("read while running", 24'h000100, 8'd16, 0, 1);
+    frame1(8'h06, 8'h01);
+    #(BIT_NS * 20);
+    if (rom_loading_w !== 8'd1) begin
+        $display("FAIL: rom_loading %0d after 0x06 0x01", rom_loading_w); fails = fails + 1;
+    end else
+        $display("ok    loading asserted");
+    save_write(24'h000100, 16, 0);
+    save_read_check("read back 16", 24'h000100, 8'd16, 0, 0);
+    // A block that crosses the 17-bit window, to catch an address that only
+    // carries the low byte.
+    save_write(24'h01FF00, 4, 3);
+    save_read_check("read back 0x1FF00", 24'h01FF00, 8'd4, 3, 0);
+    // The largest reply the BL616 frame allows.
+    save_write(24'h000000, 250, 7);
+    save_read_check("read back 250", 24'h000000, 8'd250, 7, 0);
+    // A zero-length read is refused rather than answered with a bare CRC.
+    save_read_check("zero length", 24'h000000, 8'd0, 0, 1);
+    // The write is what lands in the array, not a read that happened to match.
+    if (sav_mem[17'h000100] !== 8'h00 || sav_mem[17'h00010f] !== 8'h0f ||
+        sav_mem[17'h01ff00] !== 8'h03) begin
+        $display("FAIL: array [100] %02x [10f] %02x [1ff00] %02x",
+                 sav_mem[17'h000100], sav_mem[17'h00010f], sav_mem[17'h01ff00]);
+        fails = fails + 1;
+    end else
+        $display("ok    bytes present in the array");
+    frame1(8'h06, 8'h00);
+    #(BIT_NS * 20);
+    save_read_check("read after release", 24'h000100, 8'd16, 0, 1);
+
     // ---- joypad report.  From here every frame from the FPGA is a report.
     joy1 = 12'h000;
     want_pad("released", 16'h0000, 16'h0000, 30);
@@ -469,6 +610,13 @@ initial begin : main
         $display("FAIL: raw L: report %04x", j1); fails = fails + 1;
     end else
         $display("ok    raw L: not reported; next report (the resend) %04x", j1);
+
+    // HOME held with SELECT is the exit-and-save gesture: bit 15 of the pad
+    // word, and no LB, because the chord must not also open the desk.
+    home = 1; joy1 = 12'h004; ticks(3);
+    want_pad("HOME+SELECT exit", 16'h8000, 16'h0400, 3);
+    home = 0; joy1 = 12'h000; ticks(3);
+    want_pad("exit released", 16'h0000, 16'h0400, 3);
 
     // A tap of HOME: LB for 13 ticks, then clear.
     home = 1; ticks(3); home = 0;

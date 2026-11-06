@@ -49,6 +49,17 @@ module iosys_bl616 #(
     output reg [7:0] rom_do,        // first 64 bytes are snes header + 32 bytes after snes header 
     output reg rom_do_valid,        // strobe for rom_do
 
+    // Battery-save window onto the cartridge SRAM, frames 0x18 and 0x19.
+    // The address, data and write strobe are presented together and sampled by
+    // the array on one master clock, so the host must hold the core in reset
+    // (rom_loading non-zero) while it uses them; both frames are refused
+    // otherwise.  sav_rdata is the array's registered output, one clock behind
+    // sav_addr, which is what lets the read reply stream bytes back to back.
+    output      [16:0] sav_addr,
+    output reg  [7:0] sav_wdata,
+    output reg        sav_we,
+    input       [7:0] sav_rdata,
+
     // PCXT management interface
     output reg [15:0] mgmt_address,
     output reg        mgmt_read,
@@ -101,6 +112,18 @@ localparam [7:0] EXT_VERSION = 8'h01;
 localparam [7:0] EXT_CAPABILITIES = 8'h00;
 localparam [7:0] EXT_READ32 = 8'h01;
 localparam [7:0] EXT_WRITE32 = 8'h02;
+
+// Battery-save frames.  0x18 carries a 24-bit address in its first three
+// payload bytes and then a run of data bytes to store from that address on;
+// it replies with nothing, because the host verifies a block by reading it
+// back with 0x19 rather than by trusting a write acknowledgement.  0x19
+// carries the same address and then a byte count, and its reply is that many
+// bytes followed by a CRC-16 over the type byte and the data.
+localparam [7:0] SAVE_WRITE = 8'h18;
+localparam [7:0] SAVE_READ  = 8'h19;
+// Largest reply that still fits the BL616's 256-byte frame payload, counting
+// its four-byte header and the two-byte CRC.
+localparam [7:0] SAVE_READ_MAX = 8'd250;
 
 function [15:0] crc16_byte;
     input [15:0] crc;
@@ -238,6 +261,18 @@ reg [15:0] response_sequence;
 reg [31:0] response_address;
 reg [31:0] response_data;
 
+// Battery-save frame state.
+reg [23:0] sav_base = 24'd0;    // address carried by the frame's first 3 bytes
+reg [15:0] sav_len  = 16'd0;    // bytes to send back for a 0x19
+
+// One owner per direction, because a register written from two always blocks is
+// a multiple driver: the synthesiser picks one assignment and drops the other
+// silently, and on the board that left the address frozen so a 16-byte read
+// returned the same byte sixteen times.  The write address belongs to the
+// receive handler and the read address to the sender, and the port is the mux.
+reg [16:0] sav_wr_addr = 17'd0;
+reg [16:0] sav_rd_addr = 17'd0;
+
 // mgmt_* multiplex
 reg mgmt_rx;
 reg [15:0] mgmt_address_rx;
@@ -276,6 +311,11 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // 0x14 <cells>               TinyDesk: 5 bytes per cell from the cursor on,
 //                            char[7:0] fg[15:0] bg[15:0], colours 15-bit {b,g,r}
 // 0x15 x[7:0]                TinyDesk: x[0] enables the desk (0x08 then shows it)
+// 0x18 addr[23:0] <data>     TinySNES: store the data bytes in cartridge SRAM
+//                            from addr on.  Refused unless loading; no reply.
+// 0x19 addr[23:0] n[7:0]     TinySNES: reply with n bytes of cartridge SRAM
+//                            from addr, then a CRC-16.  Refused unless loading,
+//                            and a refusal is a reply with no data bytes.
 //
 // Response payloads from FPGA to BL616:
 // 0x01 core_id[7:0]          core ID
@@ -307,6 +347,11 @@ always @(posedge clk) begin
         desk_cursor <= 0;
         desk_nth <= 0;
         desk_wr_tog <= 0;
+        sav_wr_addr <= 0;
+        sav_wdata <= 0;
+        sav_we <= 1'b0;
+        sav_base <= 0;
+        sav_len <= 0;
     end else begin
         rom_do_valid <= 0;
         we <= 0;
@@ -316,6 +361,7 @@ always @(posedge clk) begin
         kbd_data_valid <= 0;
         debug_valid <= 0;
         debug_write <= 0;
+        sav_we <= 1'b0;
 
         case (recv_state)
 
@@ -411,6 +457,36 @@ always @(posedge clk) begin
                     end
                     8'h15: if (data_cnt == 0)       // desk enable
                         desk_enable <= rx_data[0];
+                    SAVE_WRITE: begin               // battery save: store bytes
+                        case (data_cnt)
+                            0: sav_base[23:16] <= rx_data;
+                            1: sav_base[15:8] <= rx_data;
+                            2: sav_base[7:0] <= rx_data;
+                            default: if (rom_loading_reg != 8'd0) begin
+                                sav_wr_addr <= sav_base[16:0] + (data_cnt - 16'd3);
+                                sav_wdata <= rx_data;
+                                sav_we    <= 1'b1;
+                            end
+                        endcase
+                    end
+                    SAVE_READ: begin                // battery save: read bytes
+                        case (data_cnt)
+                            0: sav_base[23:16] <= rx_data;
+                            1: sav_base[15:8] <= rx_data;
+                            2: sav_base[7:0] <= rx_data;   // the sender latches it
+                            3: begin
+                                // A refusal is a reply with no data bytes, so
+                                // the host still gets a frame back and can tell
+                                // a refused read from a timed-out one.
+                                sav_len <= (rom_loading_reg != 8'd0 &&
+                                            rx_data != 8'd0 &&
+                                            rx_data <= SAVE_READ_MAX) ? {8'd0, rx_data}
+                                                                     : 16'd0;
+                                recv_state <= RECV_RESPONSE_REQ;
+                            end
+                            default: ;
+                        endcase
+                    end
                     9: begin
                         case (data_cnt)
                             0: hid1[15:8] <= rx_data;
@@ -507,7 +583,8 @@ always @(posedge clk) begin
 
             RECV_RESPONSE_REQ:                      // request to send config string
                 case (cmd_reg)
-                    1,2,EXT_COMMAND: begin          // 1: core ID, 2: config string, 0x10: debug reply
+                    1,2,EXT_COMMAND,SAVE_READ: begin    // 1: core ID, 2: config string,
+                                                        // 0x10: debug reply, 0x19: save read
                         response_type <= cmd_reg;
                         response_req ^= 1;
                         recv_state <= RECV_RESPONSE_ACK;
@@ -536,9 +613,27 @@ localparam SEND_FDD_READ = 5;
 localparam SEND_HEADER = 6;
 localparam SEND_DONE = 7;
 localparam SEND_DEBUG = 8;          // header type byte is EXT_COMMAND, not the state
+localparam SEND_SAVE_READ = 9;      // header type byte is SAVE_READ, not the state
+
+// One owner per direction, because a register written from two always blocks is
+// a multiple driver: the synthesiser keeps one assignment and drops the other
+// silently.  On the board that left the address frozen, so a 16-byte read
+// returned the same byte sixteen times even though the reply and its CRC were
+// well formed.  The write address belongs to the receive handler and the read
+// address to the sender; the port is this mux.
+assign sav_addr = (send_state == SEND_SAVE_READ) ? sav_rd_addr : sav_wr_addr;
 
 reg [3:0] send_state, send_state_next;
-reg [$clog2(STR_LEN+1)-1:0] send_idx;
+// Eight bits, because a save read replies with up to 250 data bytes plus the
+// two CRC bytes while the config string only needed seven.
+reg [7:0] send_idx;
+
+// Every state number below 0x10 doubles as its own frame type, which is why
+// SEND_JOYPAD is 3 and SEND_CONFIG_STRING is 2.  The two states whose type
+// byte is above the state range get it from this mux instead.
+wire [7:0] resp_type_byte = send_state_next == SEND_DEBUG     ? EXT_COMMAND
+                          : send_state_next == SEND_SAVE_READ ? SAVE_READ
+                          : {4'b0, send_state_next};
 reg [15:0] tx_crc;
 reg [7:0] debug_tx_byte;
 always @* begin
@@ -577,7 +672,13 @@ wire tick = tick_count == REPORT_CLOCKS - 1;
 reg [4:0] refresh = 5'd0;
 reg [7:0] tap = 8'd0;
 reg home_prev = 1'b0, home_alone = 1'b0;
-wire [15:0] joy1_now = pad_word(joy1) | (tap != 8'd0 ? 16'h0400 : 16'h0000);
+// HOME with SELECT is the exit-and-save gesture, reported as bit 15 of the pad
+// word.  It is a level, not a tap, so the app sees it for as long as the two
+// are held.  SELECT being down means `home_alone` never arms, so the desk does
+// not open at the same moment the exit is asked for.
+wire save_exit = home & joy1[2];            // joy1[2] is SELECT
+wire [15:0] joy1_now = pad_word(joy1) | (tap != 8'd0 ? 16'h0400 : 16'h0000)
+                     | (save_exit ? 16'h8000 : 16'h0000);
 wire [15:0] joy2_now = pad_word(joy2);
 reg pad_pending = 1'b0;
 reg [15:0] joy1_reg = 16'd0;
@@ -596,6 +697,7 @@ always @(posedge clk) begin
         joy1_reg <= 0;
         joy2_reg <= 0;
         send_state <= 0;
+        sav_rd_addr <= 0;
     end else begin
         tx_valid <= 0;
         mgmt_read <= 0;
@@ -649,6 +751,15 @@ always @(posedge clk) begin
                         send_state_next <= SEND_DEBUG;
                         send_state <= SEND_HEADER;
                         resp_frame_len <= 16;
+                    end else if (response_type == SAVE_READ) begin
+                        send_state_next <= SEND_SAVE_READ;
+                        send_state <= SEND_HEADER;
+                        sav_rd_addr <= sav_base[16:0];
+                        // frame_len counts the type byte as well as the
+                        // payload, so it is the data bytes plus the two CRC
+                        // bytes plus one.  Two short and the receiver takes
+                        // the last CRC byte as the start of a new frame.
+                        resp_frame_len <= sav_len + 16'd3;
                     end else if (response_type == 2) begin
                         send_state_next <= SEND_CONFIG_STRING;
                         send_state <= SEND_HEADER;
@@ -670,9 +781,8 @@ always @(posedge clk) begin
                         1: tx_data <= resp_frame_len[15:8];
                         2: tx_data <= resp_frame_len[7:0];
                         3: begin
-                            tx_data <= send_state_next == SEND_DEBUG ? EXT_COMMAND
-                                                                     : {4'b0, send_state_next};
-                            tx_crc <= crc16_byte(16'hffff, EXT_COMMAND);
+                            tx_data <= resp_type_byte;
+                            tx_crc <= crc16_byte(16'hffff, resp_type_byte);
                             send_state <= send_state_next;
                             send_idx <= 0;
                         end
@@ -694,6 +804,29 @@ always @(posedge clk) begin
                         send_state <= SEND_IDLE;
                         response_ack <= response_req;
                     end
+                end
+            end
+
+            // A save read streams the array's registered output.  sav_addr was
+            // set to the base address while the request was parsed and is
+            // advanced once per byte sent, so the byte put on the wire at index
+            // i is the array's answer for base+i: the output lags the address
+            // by one clock and the UART takes hundreds, so it is always settled.
+            SEND_SAVE_READ: begin
+                if (tx_ready && ~tx_valid) begin
+                    if (send_idx < sav_len[7:0]) begin
+                        tx_data <= sav_rdata;
+                        tx_crc <= crc16_byte(tx_crc, sav_rdata);
+                        sav_rd_addr <= sav_rd_addr + 17'd1;
+                    end else if (send_idx == sav_len[7:0]) begin
+                        tx_data <= tx_crc[15:8];
+                    end else begin
+                        tx_data <= tx_crc[7:0];
+                        send_state <= SEND_IDLE;
+                        response_ack <= response_req;
+                    end
+                    tx_valid <= 1;
+                    send_idx <= send_idx + 1;
                 end
             end
 

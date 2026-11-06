@@ -2029,11 +2029,26 @@ assign      ARAM_Q = ARAM_ADDR[0] ? aram_dout[15:8] : aram_dout[7:0];
 wire        bsram_wr = ~BSRAM_CE_N & ~BSRAM_WE_N;
 reg  [7:0]  bsram_mem [0:131071];
 reg  [7:0]  bsram_dout;
+
+// Battery-save window.  While `loading` holds the core in reset the 65816 and
+// the GSU are both idle, so the loader can drive the array directly through
+// iosys's frames 0x18 and 0x19 without arbitrating against either of them.
+// Outside a load the core owns the port exactly as before.
+wire        sav_we;
+wire [16:0] sav_addr;
+wire  [7:0] sav_wdata;
+wire  [7:0] sav_rdata;
+wire        sav_sel     = loading;
+wire [16:0] bsram_a     = sav_sel ? sav_addr  : BSRAM_ADDR[16:0];
+wire        bsram_we    = sav_sel ? sav_we    : bsram_wr;
+wire  [7:0] bsram_din   = sav_sel ? sav_wdata : BSRAM_D;
+
 always @(posedge mclk) begin
-    if (bsram_wr) bsram_mem[BSRAM_ADDR[16:0]] <= BSRAM_D;
-    bsram_dout <= bsram_mem[BSRAM_ADDR[16:0]];
+    if (bsram_we) bsram_mem[bsram_a] <= bsram_din;
+    bsram_dout <= bsram_mem[bsram_a];
 end
-assign      BSRAM_Q = bsram_dout;
+assign      BSRAM_Q   = bsram_dout;
+assign      sav_rdata = bsram_dout;
 
 wire        aram_rd = ~ARAM_CE_N & ~ARAM_OE_N;
 wire        aram_wr = ~ARAM_CE_N & ~ARAM_WE_N;
@@ -3396,6 +3411,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
     .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr), .desk_wr_data(desk_wr_data),
     .uart_tx(UART_TXD), .uart_rx(UART_RXD),
     .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid),
+    .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
     .debug_address(dbg_bus_addr), .debug_wdata(dbg_bus_wdata),
     .debug_valid(dbg_bus_valid), .debug_write(dbg_bus_write), .debug_rdata(dbg_bus_rdata)
 );
@@ -3407,6 +3423,12 @@ assign dbg_bus_wdata = 32'd0;
 assign dbg_bus_valid = 1'b0;
 assign dbg_bus_write = 1'b0;
 assign desk_on = 1'b0;
+
+// No UART host in the bench, so the save window is tied off and the array's
+// port stays with the core.
+assign sav_addr  = 17'd0;
+assign sav_wdata = 8'd0;
+assign sav_we    = 1'b0;
 
 // test loader with embedded rom
 test_loader test_loader (

@@ -8,7 +8,9 @@
 #
 #   tools/build_tinysnes.sh [out-dir]
 #
-#   TINYSNES_STAGE     synth | pnr | pack | all (default all)
+#   TINYSNES_STAGE     synth | lint | pnr | pack | all (default all)
+#                      lint parses the sources and runs yosys `check`, which
+#                      refuses a register written from two always blocks
 #   TINYSNES_BUILD_DIR output directory (default build/tinysnes)
 #   TINYSNES_SEED      placement seed (default 1; not yet proven on hardware)
 #   NEXTPNR_HIMBAECHEL, APICULA_FORK, OSS_CAD_SUITE, PYDEPS  see TinyNES
@@ -22,7 +24,7 @@ root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 src="$root/fpga/snes"
 out="${TINYSNES_BUILD_DIR:-$root/build/tinysnes}"
 stage="${TINYSNES_STAGE:-all}"
-case "$stage" in synth|pnr|pack|all) ;; *) echo "TINYSNES_STAGE must be synth, pnr, pack or all" >&2; exit 2 ;; esac
+case "$stage" in synth|lint|pnr|pack|all) ;; *) echo "TINYSNES_STAGE must be synth, lint, pnr, pack or all" >&2; exit 2 ;; esac
 
 suite="${OSS_CAD_SUITE:-$HOME/oss-cad-suite}"
 nextpnr="${NEXTPNR_HIMBAECHEL:-$HOME/tools/nextpnr-mathieufro/nextpnr-himbaechel}"
@@ -218,9 +220,28 @@ else
     synth_gowin -family gw5a -top snestang_top"
 fi
 
+read_cmds="read_verilog -lib $shim/cells_xtra_gw5a.v
+    read_slang --single-unit --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 -I $src/src/chip/DSP ${hdmi_slang[*]} ${sources[*]}"
+
+# A register written from two always blocks is a multiple driver: yosys keeps
+# one assignment and drops the other without failing, so the netlist is wrong
+# in a way no other gate can see.  On the board that left iosys's save address
+# frozen and a 16-byte battery-save read returned the same byte sixteen times,
+# with a correct reply length and a correct CRC.  `check -assert` names it.
+if [[ "$stage" == lint ]]; then
+    echo "=== 0. multiple drivers ==="
+    # `check` without -assert: the log is the evidence, and the baseline beside
+    # tools/multi_driver_check.py decides which names are function locals.
+    yosys -Q -T -q -l "$out/lint.log" -p "
+    $read_cmds
+    check
+" || { echo "lint: yosys failed; see $out/lint.log" >&2; exit 1; }
+    "$suite/py3bin/python3" "$root/tools/multi_driver_check.py" "$out/lint.log" || exit 1
+    exit 0
+fi
+
 yosys -Q -T -q -l "$out/synth.log" -p "
-    read_verilog -lib $shim/cells_xtra_gw5a.v
-    read_slang --single-unit --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 -I $src/src/chip/DSP ${hdmi_slang[*]} ${sources[*]}
+    $read_cmds
     $synth_cmds
     write_json $out/tinysnes.json
 " || { echo "synthesis failed; see $out/synth.log" >&2; exit 1; }

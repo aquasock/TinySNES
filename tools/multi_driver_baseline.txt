@@ -1,0 +1,19 @@
+# Signals yosys reports as multiple drivers that are not faults.
+#
+# Every name here is a function-local variable.  yosys turns a function's
+# variables into processes and reuses the variable's name for each inlined
+# copy, so two calls to the same function look like one register with two
+# drivers.  Each call has its own copy in the netlist and they do not interact;
+# the hardware is correct.  tools/multi_driver_check.py checks this list.
+#
+# Anything NOT in this file fails the lint stage (TINYSNES_STAGE=lint).  A new
+# name is a decision: look at it, and only add it here if it is a function
+# local.  A register written from two always blocks is a real fault -- it froze
+# iosys's battery-save address on 2026-11-05.
+iosys.crc16_byte.bit_index
+iosys.crc16_byte.crc
+iosys.crc16_byte.data
+iosys.crc16_byte.value
+main.SNES.PPU.FlipPlane.bp
+main.SNES.PPU.FlipPlane.flip
+main.SNES.dsp.CLAMP16.a
