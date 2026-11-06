@@ -676,3 +676,33 @@ The board is deployed and unconfirmed, which is the first thing the next cycle s
 - User Test: NOT RUN
 
 ---
+
+## 21 COMMIT Unreleased 2026-11-06T06:53:13-07:00
+
+#### Coming From:
+
+Unreleased 3b917be
+
+#### Purpose:
+
+Close the hardware test that entry 20 deployed but did not confirm, because that session ended at deployment without a power cycle or a look at a picture.
+
+#### Outcome:
+
+No source or bitstream changed and nothing was rebuilt; this cycle records the hardware result entry 20 left open, which also closes the same unconfirmed user test in the TinyTang repository's entry 11, whose Video page is the half that draws the settings and sends frame `0x1B`. The operator ran the deployed build `build/video/tinysnes.bin`, SHA-256 `ce199fa616ace3fe09f9e7eca4ebdaf3bbe3070311d61a2e986429de08c42d60`, which `tools/tang_deploy.py` had already placed at `/root/cores/console138k/tinysnes.bin` with all three verification points matching over 5,238,252 bytes, and reported the video settings working and accepted the cycle. That settles entry 20's own first instruction, which was to confirm the picture was unchanged before anything was saved, because its defaults are meant to reproduce the previous geometry exactly and any difference before a Save would have been a defect in the default rather than in the setting; entry 20 could not take that reading because it stopped at deployment. It is also a result the core alone could not have produced, since the setting is only reachable through the desk's Video page in firmware, so the two halves are confirmed together rather than the core being assumed to work from the link bench alone. The board is still running the firmware from TinyTang's `81ca971`, the entry 11 build, because TinyTang has since advanced only to `b73a7dd`, which built no firmware and did not touch the board. The operator's report is a whole-feature acceptance rather than a per-row transcript, so the three aspect widths and a saved setting surviving a launch are covered only as part of the feature working and were not measured separately, and the row for the PPU's extra fifteen lines stays unproven for the reason entry 20 gives: it acts only on a cartridge that sets SETINI bit 2, and no cartridge in the operator's library is known to, so the row may have had nothing to act on and a row that changes nothing reads the same whether it is correct or not. `README.md` gained a status entry for the feature, which is the only engineering file this cycle touched. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff and confirmed it adds this entry and nothing else, confirmed `.ai/core.md` was not changed, confirmed entries 1 to 20 were not rewritten -- entry 20 in particular still records `User Test: NOT RUN` as it did when it was committed, with this entry carrying the later result rather than editing it -- and validated this entry as entry 21 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, one eligible Files Modified path, permitted Status values, no self-referencing hash and a count of twenty-one against the 100-entry limit.
+
+#### Next Steps:
+
+The extra-lines row is the one part of this feature still without evidence and it cannot be settled from the desk, so the work is to find a cartridge that sets SETINI bit 2, record it by name because nothing else in the library will exercise that path, and check the bottom fifteen lines against a bsnes reference through `tools/ref_emu.py` rather than by eye. `README.md` has drifted behind the log in two places that a documentation pass should take rather than a future cycle rediscovering: its Saves entry still says no save file exists and a power cycle loses everything, which entries 17 and 18 overtook when the card path was proven on hardware, and its TinyDesk entry still describes the rest of the UI as an unbuilt ROM browser and core menu, which the TinyTang desk's Input and Video pages have overtaken. Everything else open is unchanged and independent of this cycle: the low-frequency artefact of entry 15, the pops, the GSU cache clock reaching no spine tap, the LoRa conflict on PMOD0 pins 9 and 10, the pad remap proven on player 1 with the Wii Classic Controller only, and the ExHiROM decode in `smc_parser.v`.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: PASS
+
+---

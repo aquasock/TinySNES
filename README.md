@@ -76,6 +76,15 @@ Three changes go beyond that, and each has a measurement behind it:
   the picture and a tap of the Wii Classic Controller's HOME button opens and
   closes it; game input is held idle while it is shown. The rest of the UI -- a
   ROM browser and a core menu -- is not built.
+- **Desk video settings: working.** The desk's Video page sets the picture's
+  aspect and whether a 239-line game's extra fifteen lines are drawn or
+  cropped, sent to the core in frame `0x1B` and stored in `/tinysnes.ini` at the
+  card root. Aspect is 4:3 at 960 pixels, 8:7 at 940 and 1:1 at 823, all from a
+  256-pixel line scaled to 720 rows. The defaults reproduce the geometry this
+  core had before the setting existed, so a build that never receives the frame
+  looks unchanged. The extra-lines row has no evidence behind it yet: it only
+  takes effect on a cartridge that sets SETINI bit 2, and none tested here is
+  known to.
 - **Not tested:** the OSD above the desk (`iosys_bl616.v`), which is tied off.
 - **Saves: the mechanic works, persistence does not exist.** A game writes its
   save to the cartridge SRAM in SDRAM and reads it back correctly, so saving and
