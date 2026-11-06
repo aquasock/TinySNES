@@ -575,3 +575,33 @@ The lint stage is the durable result of this cycle and should be run in the stan
 - User Test: PASS
 
 ---
+
+## 18 COMMIT Unreleased 2026-11-05T21:43:58-07:00
+
+#### Coming From:
+
+Unreleased d217d83
+
+#### Purpose:
+
+Close the one claim entry 17 left unverified, the SuperFX expansion-byte save size, which the operator tested on a real Yoshi's Island cartridge.
+
+#### Outcome:
+
+No source changed. Entry 17 recorded that the sizing rule was right on seven cartridges but that none of them took the SuperFX branch, where a cartridge leaves header byte 0x18 zero and puts its real SRAM size in the expansion byte three bytes before the header, and named a Yoshi's Island save as the test that path needed. The operator took it: `Super Mario World 2 - Yoshi's Island (USA) (Rev 1)` saved from the desk app and the firmware wrote `/sd/root/saves/snes/Super Mario World 2 - Yoshi's Island (USA) (Rev 1).sav` at 32,768 bytes, which is the predicted size and is not the 1 KiB a zero 0x18 would give without the fallback. Read back off the card the file has 256 distinct byte values and 7,877 nonzero bytes spread from offset 0 to 32,379, so it is a real save and not the repeated-byte garbage the broken core of entry 17 wrote, and no `.part` file was left behind, so the read-back verify and the rename both completed. `fpga` then reported the desktop core answering, which means the exit gesture returned to the desk rather than leaving the game held in reset. This also closes the same claim in the TinyTang repository's entry 7, whose Next Steps named it, and it is recorded here rather than by rewriting either settled entry. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, confirmed entries 1 to 17 were not rewritten, and validated this entry as entry 18 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, `None.` under Files Modified because no engineering file changed, permitted Status values, no self-referencing hash and a count of eighteen against the 100-entry limit.
+
+#### Next Steps:
+
+Every part of the battery-save path is now hardware-proven and no part of it needs re-testing: the sizing rule on both the ordinary and the SuperFX branch, the 250-byte block write with its per-block CRC, the `.part` and CRC-32 verify and rename, the restore from card to cartridge SRAM, and persistence across a reboot, which the operator confirmed twice. The two files the broken core wrote remain on the card as `Zelda-bad.sav` and `ADnD-bad.sav` and can be deleted whenever the operator wants the space. The next cycle is the desktop window's tabs, which is TinyTang's work and is not in this repository. What is still open here is unchanged: the low-frequency artefact of entry 15, scoped there as a bsnes band-limited comparison rather than more reading of `dsp.v`; the pops, which are broadband and independent of content; the GSU cache clock reaching no spine tap, which every board-tested build has run under; and the LoRa conflict on PMOD0 pins 9 and 10. The lint stage added in entry 17 should be in the standard recipe from now on, since it is the only gate here that can see a register with two drivers.
+
+#### Files Modified:
+
+None.
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: PASS
+
+---
