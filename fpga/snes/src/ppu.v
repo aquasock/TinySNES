@@ -1173,13 +1173,13 @@ always @(posedge CLK) begin
             
             if (H_CNT == M7_XY_LATCH) begin
                 M7_TEMP_X <= (27'(signed'(M7X)) << 8) + 
-                        (27'(signed'(M7A) * Mode7Clip(ORG_X)) & 27'h7FFFFFC0) + 
-                        (27'(signed'(M7B) * Mode7Clip(ORG_Y)) & 27'h7FFFFFC0) + 
-                        (27'(signed'(M7B) * M7_Y) & 27'h7FFFFFC0);
+                        (27'(signed'(M7A) * Mode7Clip(ORG_X)) & 27'h7FFFFC0) + 
+                        (27'(signed'(M7B) * Mode7Clip(ORG_Y)) & 27'h7FFFFC0) + 
+                        (27'(signed'(M7B) * M7_Y) & 27'h7FFFFC0);
                 M7_TEMP_Y <= (27'(signed'(M7Y)) << 8) + 
-                        (27'(signed'(M7C) * Mode7Clip(ORG_X)) & 27'h7FFFFFC0) + 
-                        (27'(signed'(M7D) * Mode7Clip(ORG_Y)) & 27'h7FFFFFC0) + 
-                        (27'(signed'(M7D) * M7_Y) & 27'h7FFFFFC0);
+                        (27'(signed'(M7C) * Mode7Clip(ORG_X)) & 27'h7FFFFC0) + 
+                        (27'(signed'(M7D) * Mode7Clip(ORG_Y)) & 27'h7FFFFC0) + 
+                        (27'(signed'(M7D) * M7_Y) & 27'h7FFFFC0);
             end
 
             // The sample position and the three fields taken from it are all

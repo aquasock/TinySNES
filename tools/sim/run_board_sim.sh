@@ -31,8 +31,26 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 src="$root/fpga/snes"
 
-rom="${1:?usage: run_board_sim.sh <rom.sfc> [--frames N] [--maxcyc N] [--out DIR] [--arg +X]...}"
-shift || true
+# `--lint` checks that these sources still elaborate and exits without needing
+# a cartridge or a run.  It exists because this bench stopped compiling for
+# several cycles without anyone noticing (core-log entry 23: ppu.v wrote a
+# 31-bit literal at a 27-bit width, which Verilator rejects and yosys silently
+# truncates, so the bitstream stayed correct while the only bench that models
+# the board's SDRAM controller was dead).  tools/tests/check_board_sim_lint.sh
+# runs it, so the same list cannot drift from the list that builds the bench.
+lint_only=0
+if [[ "${1:-}" == "--lint" ]]; then
+    lint_only=1
+    shift || true
+fi
+
+rom=""
+if (( lint_only == 0 )); then
+    rom="${1:?usage: run_board_sim.sh <rom.sfc> [--frames N] [--maxcyc N] [--out DIR] [--arg +X]...\n       run_board_sim.sh --lint}"
+    shift || true
+else
+    shift || true
+fi
 
 frames=60
 maxcyc=100000000
@@ -48,18 +66,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-[[ -f "$rom" ]] || { echo "no such rom: $rom" >&2; exit 2; }
-# Resolve before cd'ing, for the reason run_gsu_sim.sh records: a relative path
-# made $readmemh fail silently and the ROM read back as zeros.
-out="$(cd -- "$(dirname -- "$out")" 2>/dev/null && pwd)/$(basename -- "$out")"
-mkdir -p "$out"
+if (( lint_only == 0 )); then
+    [[ -f "$rom" ]] || { echo "no such rom: $rom" >&2; exit 2; }
+    # Resolve before cd'ing, for the reason run_gsu_sim.sh records: a relative
+    # path made $readmemh fail silently and the ROM read back as zeros.
+    out="$(cd -- "$(dirname -- "$out")" 2>/dev/null && pwd)/$(basename -- "$out")"
+    mkdir -p "$out"
 
-hex="$out/rom.hex"
-if [[ ! -f "$hex" || "$rom" -nt "$hex" ]]; then
-    echo "converting $rom to $hex"
-    od -An -v -tx1 "$rom" | tr -s ' ' '\n' | grep -v '^$' > "$hex"
+    hex="$out/rom.hex"
+    if [[ ! -f "$hex" || "$rom" -nt "$hex" ]]; then
+        echo "converting $rom to $hex"
+        od -An -v -tx1 "$rom" | tr -s ' ' '\n' | grep -v '^$' > "$hex"
+    fi
+    romlen=$(stat -c %s "$rom")
 fi
-romlen=$(stat -c %s "$rom")
 
 sources=(
     # Packages first, in dependency order: Verilator parses files in the order
@@ -110,6 +130,18 @@ cd "$out"
 # directory the binary runs from (same note as run_gsu_sim.sh).
 cp -f "$src"/src/chip/DSP/*.hex "$out"/ 2>/dev/null || true
 
+if (( lint_only == 1 )); then
+    echo "=== linting board bench sources ==="
+    verilator --lint-only --timing -Wno-fatal -Wno-lint -Wno-UNUSED -Wno-UNDRIVEN \
+        -DVERILATOR -DCONFIG_V -DCHIP_GSU -DCHIP_DSPn -DMCU_BL616 -DTINYSNES_CPU_PROBE \
+        -I"$src" -I"$src/src" -I"$src/src/65C816" -I"$src/src/spc700" \
+        -I"$src/src/chip/GSU" -I"$src/src/chip/DSP" -I"$src/src/iosys" \
+        --top-module board_tb \
+        "${sim[@]}" "${sources[@]}"
+    echo "board bench sources: OK"
+    exit 0
+fi
+
 echo "=== building board bench ==="
 verilator --binary --timing -j 0 -Wno-fatal -Wno-lint -Wno-UNUSED -Wno-UNDRIVEN \
     -DVERILATOR -DCONFIG_V -DCHIP_GSU -DCHIP_DSPn -DMCU_BL616 -DTINYSNES_CPU_PROBE \
@@ -124,7 +156,11 @@ echo "=== running ==="
 ./obj_dir/board_sim \
     "+hex=$hex" "+romlen=$romlen" \
     "+stopframes=$frames" "+maxcycles=$maxcyc" \
-    "+ppm=$out/frames.ppm" "+tracedump=$out/trace" "${extra[@]}" 2>&1 | tee "$out/run.log"
+    "+tracedump=$out/trace" "${extra[@]}" 2>&1 | tee "$out/run.log"
 
 echo
-echo "picture: $out/frames.ppm"
+# No picture: this bench reports counts.  `frames` in trace_meta.txt is the
+# machine's own frame counter, and a run that reaches the bound with a nonzero
+# count and `rom_acc` climbing has booted the cartridge.
+echo "counters: $out/trace_meta.txt"
+echo "trace:    $out/trace_{rl,op,mm}.hex" 

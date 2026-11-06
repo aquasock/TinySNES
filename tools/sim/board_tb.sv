@@ -37,9 +37,16 @@
 // -------
 //   tools/sim/run_board_sim.sh <rom.sfc> [--frames N] [--out DIR]
 //
-// The run writes <out>/frames.ppm, one PPM of the last frame captured, and
-// prints a line per frame with the machine's gates and the coprocessor's
-// counters.  A picture with content in it is the pass condition.
+// The run prints a line per sample interval with the machine's gates and the
+// coprocessor's counters, and at the end a one-line summary of the SDRAM
+// traffic and the CPU-port and BSRAM handshake counts, plus `frames` from the
+// machine's own debug counters in <out>/trace_meta.txt.  A run whose summary
+// shows `loaded=1 enable=1` with `rom_acc` climbing and a nonzero frame count
+// has booted the cartridge; a run that never leaves `pc=0000 rom_acc=0` has
+// not loaded at all, which is a bench or plusarg problem rather than a machine
+// fault and must not be read as one.  There is no picture: the PPM capture was
+// removed and this bench reports counts, so judge a run by the counters and by
+// `tools/tinysnes_dbg.py analyze` over the trace dump.
 
 `timescale 1ns/1ps
 

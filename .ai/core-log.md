@@ -744,3 +744,37 @@ Fix the board-level bench first, because it is the only bench that instantiates 
 - User Test: PASS
 
 ---
+
+## 23 COMMIT Unreleased 2026-11-06T10:41:21-07:00
+
+#### Coming From:
+
+Unreleased 17a2310
+
+#### Purpose:
+
+Close the three exact carry-over items this cycle could settle without a design decision -- the board-level bench that had not compiled since entry 16, the README's false statement about saves, and the absence of any gate that would have noticed the first.
+
+#### Outcome:
+
+The bench defect was a single wrong digit repeated six times. Entry 16 widened the Mode 7 address terms from 24 to 27 bits and wrote `27'h7FFFFFC0`; the value it meant is `0x7FFFFC0`, which is the 24-bit original's `0xFFFFC0` widened with the same low six bits held clear, and `0x7FFFFFC0` carries one extra `F` and is 31 bits wide. Yosys truncates a width-and-value mismatch to the declared width, so the bitstream was always computing the right mask and the hardware was never wrong; Verilator refuses the literal outright with "Too many digits for 27 bit number", which is why only the bench died. That asymmetry is the whole reason this survived several cycles, and it is worth more than the fix: a silicon- and synthesis-clean tree can still carry a bench that no longer elaborates, because two tools disagree about whether an over-wide literal is an error. The correction is therefore provably a no-op rather than a behaviour change, and the rebuild proves it rather than asserting it -- `build/hyg1/tinysnes.bin` is byte-identical to the deployed `build/audio1/tinysnes.bin` at SHA-256 `6b7489d022b65cc97b51b1a014e59cc2029f900501e134bd3e2cd43bcadfb26e`, so nothing was deployed and the operator's instruction not to deploy was also the correct engineering call. The rebuild passed every gate at the same margins as the audio cycle, dbg.clk 26.491 against 21.505 MHz, fclk 213.950 against 64.516, hclk 109.938 against 74.250 and the GSU cache clock 415.800 against 65.000, with the clock-edge check and both chip assertions satisfied. With the literal fixed the bench builds and boots: a 60-frame Zelda run reported `loaded=1 hdr=1 enable=1`, the program counter advancing through `82d9` and `82da`, `rom_acc` climbing past 670,000 and the machine's own debug counter reading 108 frames, against 2,684,433 SDRAM reads and 523,782 writes at the run bound, which is the first time since entry 16 that the board's own memory path has been simulated at all. Getting there needed `+byteclk=4`, which the script already documents: at the realistic 108 clocks per byte a 1 MiB image needs about 5.3 seconds of simulated time and the default 2-second bound expires mid-load, so the first run sat at `pc=0000 rom_acc=0` and looked like a machine fault when it was an argument. That is now recorded in the bench's own header, because the failure mode is a plausible-looking dead machine rather than an error. Two further false claims in the bench were removed rather than worked around: `board_tb.sv` and `run_board_sim.sh` both promised a `frames.ppm` to judge the run by, and no such writer exists -- the script passed a `+ppm=` plusarg that nothing read, which is the same silent-no-op class as the gating defects of entries 17 and 19, so the header now says plainly that the bench reports counts and names what a booted run looks like. The gate is new: `tools/tests/check_board_sim_lint.sh` runs `run_board_sim.sh --lint`, a mode added to that script so the file list it checks is the same list that builds the bench and the two cannot drift. It elaborates the whole top level in about 0.7 seconds, which is why it can be run every cycle where a forty-second Verilator build could not, and it was verified both ways: with the committed tree it exits 0, and with the `27'h7FFFFFC0` literal put back it exits 1 naming `ppu.v` at 1176, 1177 and 1178. The second item is the README's Saves entry, which still said persistence did not exist, that there was no save file and that a power cycle lost it -- flatly contradicted by entries 17 and 18 and by the three `.sav` files on the card. It now records what was measured: the HOME plus SELECT exit stores SRAM to `/root/saves/snes/<stem>.sav` through frames `0x18` and `0x19`, a launch restores it before releasing reset, the write is verified and renamed so a full card costs the old file rather than the new one, the size comes from the cartridge header with the SuperFX expansion-byte fallback, and Zelda's 8 KiB and Yoshi's Island's 32 KiB are both confirmed on hardware. The one measurement worth keeping was kept and its wrong conclusion inverted: a save also survives a core reload through cell retention across the unrefreshed `tangload` gap, which is not persistence, and the entry now says the `.sav` is what persistence is. The operator was not asked to re-test anything, because nothing the machine does changed. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff and confirmed it adds this entry and nothing else, confirmed `.ai/core.md` was not changed, confirmed entries 1 to 22 were not rewritten, and validated this entry as entry 23 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, five eligible Files Modified paths, permitted Status values, no self-referencing hash and a count of twenty-three against the 100-entry limit.
+
+#### Next Steps:
+
+The gate exists but nothing calls it, which is the same trap one level up: `check_board_sim_lint.sh` will rot exactly as the bench did unless a routine invokes it, and TinySNES has no test runner at all -- seven `run_*_tb.sh` scripts and now this one, with no `tools/tests/run_all.sh` to run them the way TinyTang's does. Building that runner is the next unit of work and it is small: it should discover `tools/tests/*.sh`, report one line each, and be what a cycle runs before committing, with the slow ones opt-in. Until it exists, `check_board_sim_lint.sh` should be run by hand every cycle that touches `fpga/snes`, because it costs under a second and its absence is what let entry 16 through. The bench itself has now been shown to build, load and boot but not to pass anything: its verdict is a set of counters a human reads, and turning those into a pass condition -- a run that must reach `loaded=1` with a nonzero frame count inside a bounded time -- is worth doing so the gate can eventually be the bench rather than a lint of it. Everything carried from entry 22 is otherwise unchanged: the low-frequency artefact of entry 15, the pops, the GSU cache clock reaching no spine tap, the LoRa conflict on PMOD0 pins 9 and 10, the extra-lines row of entry 20, the pad remap proven on player 1 only, the Input page's inert Player 2 toggle, and the ExHiROM decode in `smc_parser.v`.
+
+#### Files Modified:
+
+- README.md
+- fpga/snes/src/ppu.v
+- tools/sim/board_tb.sv
+- tools/sim/run_board_sim.sh
+- tools/tests/check_board_sim_lint.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

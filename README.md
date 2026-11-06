@@ -93,15 +93,20 @@ Three changes go beyond that, and each has a measurement behind it:
   percent is a bit-exact pass-through, so a build that never receives the frame
   sounds exactly as it did before.
 - **Not tested:** the OSD above the desk (`iosys_bl616.v`), which is tied off.
-- **Saves: the mechanic works, persistence does not exist.** A game writes its
-  save to the cartridge SRAM in SDRAM and reads it back correctly, so saving and
-  loading inside a session both work. Nothing in the tree writes that SRAM out to
-  the card, so there is no save file, and a power cycle loses it. One measurement
-  is worth keeping because it is easy to mistake for persistence: a save survived
-  a core reload, for the several seconds `tangload` takes to reprogram the FPGA
-  with the SDRAM left unrefreshed, and was gone after a reboot on the same card
-  and the same build. Cell retention across an unrefreshed gap is not a save
-  path; do not read it as one.
+- **Saves: working, and they survive a power cycle.** A game writes its save to
+  the cartridge SRAM in SDRAM and reads it back correctly, so saving and loading
+  inside a session both work. Holding HOME with SELECT stores that SRAM to
+  `/root/saves/snes/<stem>.sav` on the card through frames `0x18` and `0x19` and
+  returns to the desk, and a launch restores the file before releasing the core
+  from reset. The write goes through a temporary, is read back and CRC-checked,
+  and only then renamed over the previous save, so a full card costs the old
+  file rather than the new one. The size comes from the cartridge header, with
+  the SuperFX expansion-byte fallback for titles that leave byte `0x18` zero;
+  Zelda's 8 KiB and Yoshi's Island's 32 KiB are both confirmed on hardware, the
+  latter across a reboot. One measurement is worth keeping because it is easy to
+  mistake for the save path: a save also survives a core reload, for the several
+  seconds `tangload` takes to reprogram the FPGA with the SDRAM left unrefreshed.
+  Cell retention across an unrefreshed gap is not persistence; the `.sav` is.
 
 ## Build
 
