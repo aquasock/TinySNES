@@ -8,5 +8,6 @@ out="$(mkdir -p "$root/build/tmp" && mktemp -d "$root/build/tmp/dbglink.XXXXXX")
 trap 'rm -rf "$out"' EXIT
 iverilog -g2012 -DSIM -o "$out/tb" -s dbg_link_tb \
     "$root/tools/sim/dbg_link_tb.sv" \
+    "$src/pad_remap.v" \
     "$src/iosys/iosys_bl616.v" "$src/iosys/uart_fixed.v" "$src/tinysnes_dbg.v"
 vvp -n "$out/tb"

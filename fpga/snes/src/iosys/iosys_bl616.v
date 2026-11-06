@@ -60,6 +60,10 @@ module iosys_bl616 #(
     output reg        sav_we,
     input       [7:0] sav_rdata,
 
+    // The pad map, frame 0x1A: twelve 4-bit selectors, in the order the pad
+    // word carries the buttons.  Identity out of reset.
+    output reg [47:0] pad_map,
+
     // PCXT management interface
     output reg [15:0] mgmt_address,
     output reg        mgmt_read,
@@ -121,6 +125,20 @@ localparam [7:0] EXT_WRITE32 = 8'h02;
 // bytes followed by a CRC-16 over the type byte and the data.
 localparam [7:0] SAVE_WRITE = 8'h18;
 localparam [7:0] SAVE_READ  = 8'h19;
+// The pad map: twelve 4-bit selectors packed into six bytes, one per SNES
+// button in the order the pad word carries them (R L X A RT LT DN UP START
+// SELECT Y B).  Selector i says which SOURCE button drives output button i,
+// and 12 to 15 mean that button is not produced at all.  Identity --
+// 0,1,2,...,11 -- is the wiring every earlier build had and what the register
+// resets to, so a host that never sends this frame gets a pad it cannot tell
+// apart from before.
+//
+// This has to live in fabric because the pad never reaches the BL616: the Wii
+// Classic Controller is read by wii_pad.sv over I2C on USB-A's data pair, and
+// the BL616's own wiipad command goes through the desktop core's I2C engine,
+// which is not loaded while this core runs.  A remapping UI can therefore only
+// be honoured here.
+localparam [7:0] PAD_MAP = 8'h1a;
 // Largest reply that still fits the BL616's 256-byte frame payload, counting
 // its four-byte header and the two-byte CRC.
 localparam [7:0] SAVE_READ_MAX = 8'd250;
@@ -313,6 +331,8 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // 0x15 x[7:0]                TinyDesk: x[0] enables the desk (0x08 then shows it)
 // 0x18 addr[23:0] <data>     TinySNES: store the data bytes in cartridge SRAM
 //                            from addr on.  Refused unless loading; no reply.
+// 0x1a map[47:0]             TinySNES: 12 nibbles, the pad map; button i of
+//                            the pad word takes source map[i], 12..15 = none
 // 0x19 addr[23:0] n[7:0]     TinySNES: reply with n bytes of cartridge SRAM
 //                            from addr, then a CRC-16.  Refused unless loading,
 //                            and a refusal is a reply with no data bytes.
@@ -352,6 +372,10 @@ always @(posedge clk) begin
         sav_we <= 1'b0;
         sav_base <= 0;
         sav_len <= 0;
+        // Identity: output i takes source i.  Written as a literal so the reset
+        // value is visible rather than computed.
+        pad_map <= {4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
+                    4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd0};
     end else begin
         rom_do_valid <= 0;
         we <= 0;
@@ -457,6 +481,17 @@ always @(posedge clk) begin
                     end
                     8'h15: if (data_cnt == 0)       // desk enable
                         desk_enable <= rx_data[0];
+                    PAD_MAP: begin                  // pad map: 12 nibbles, 6 bytes
+                        case (data_cnt)
+                            0: pad_map[47:40] <= rx_data;
+                            1: pad_map[39:32] <= rx_data;
+                            2: pad_map[31:24] <= rx_data;
+                            3: pad_map[23:16] <= rx_data;
+                            4: pad_map[15:8]  <= rx_data;
+                            5: pad_map[7:0]   <= rx_data;
+                            default: ;
+                        endcase
+                    end
                     SAVE_WRITE: begin               // battery save: store bytes
                         case (data_cnt)
                             0: sav_base[23:16] <= rx_data;

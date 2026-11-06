@@ -3065,6 +3065,7 @@ assign led = 8'hff;
 // are top-level inouts either way -- and only the master inside is optional.
 wire [11:0] wii_buttons;
 wire        wii_home;
+wire [47:0] pad_map;
 wire        pad_sda_low, pad_scl_low;
 wire        pad_present, pad_classic;
 wire [15:0] pad_reads;
@@ -3129,10 +3130,21 @@ assign pmod1_dac = 4'b0000;
 assign i2s_dbg_taken = 16'd0, i2s_dbg_overwritten = 16'd0, i2s_dbg_underrun = 16'd0;
 `endif
 
+// The pad map, frame 0x1A.  Twelve 4-bit selectors, one per button of the SNES
+// pad word, each naming which source button drives it; 12 to 15 drop the
+// button.  Applied here, between the pad and the adapter, because the pad word
+// is formed in fabric -- see the note on PAD_MAP in iosys_bl616.v.
+//
+// Only the game's copy is mapped.  iosys's joypad report and its HOME+SELECT
+// exit chord read the unmapped word deliberately: the exit gesture is the way
+// out of a game, and it must not move because a player rebound a button.
+wire [11:0] pad_mapped;
+pad_remap pad0_map (.map(pad_map), .src(wii_buttons), .out(pad_mapped));
+
 // output button presses to SNES
 controller_adapter joy1_adapter (
     .clk(mclk), .snes_joy_strb(snes_joy_strb), 
-    .snes_buttons(joy1_btns_ds2 | joy1_btns_snes | hid1 | joy1_usb | {4'b0, wii_buttons}), .snes_joy_clk(snes_joy1_clk), .snes_joy_di(snes_joy1_di[0])
+    .snes_buttons(joy1_btns_ds2 | joy1_btns_snes | hid1 | joy1_usb | {4'b0, pad_mapped}), .snes_joy_clk(snes_joy1_clk), .snes_joy_di(snes_joy1_di[0])
 );
 controller_adapter joy2_adapter (
     .clk(mclk), .snes_joy_strb(snes_joy_strb), 
@@ -3412,6 +3424,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
     .uart_tx(UART_TXD), .uart_rx(UART_RXD),
     .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid),
     .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
+    .pad_map(pad_map),
     .debug_address(dbg_bus_addr), .debug_wdata(dbg_bus_wdata),
     .debug_valid(dbg_bus_valid), .debug_write(dbg_bus_write), .debug_rdata(dbg_bus_rdata)
 );
@@ -3429,6 +3442,10 @@ assign desk_on = 1'b0;
 assign sav_addr  = 17'd0;
 assign sav_wdata = 8'd0;
 assign sav_we    = 1'b0;
+// No UART host in the bench, so the pad map stays at identity: output i takes
+// source i, which is the wiring every earlier bench ran with.
+assign pad_map   = {4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
+                    4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd0};
 
 // test loader with embedded rom
 test_loader test_loader (

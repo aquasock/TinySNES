@@ -4,8 +4,9 @@
 // It checks the reply framing and CRC against an independent model, every
 // opcode and error status, the register bank, the knob, a BSRAM peek, a trace
 // buffer written by synthetic GSU events, the audio FIFO counters the bank
-// gained for the Pmod I2S and HDMI paths, and that a joypad frame sent while a
-// reply is pending no longer swallows the reply.  It also drives TinyTang's desk
+// gained for the Pmod I2S and HDMI paths, that a joypad frame sent while a
+// reply is pending no longer swallows the reply, and frame 0x1a's pad map
+// against the pad_remap module the top level instantiates.  It also drives TinyTang's desk
 // frames (0x13 cursor, 0x14 cells, 0x15 enable, 0x08 show) and checks the cell
 // writes and desk_on they produce, and checks the joypad report: TinyTang's pad
 // word, LB only for a tap of HOME, and the periodic resend.  The report tick is
@@ -50,6 +51,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000), .REPORT_CLOCKS(REPORT_CLOCKS)) ios
     .uart_tx(uart_tx), .uart_rx(uart_rx),
     .rom_loading(rom_loading_w), .rom_do(), .rom_do_valid(),
     .sav_addr(sav_addr), .sav_wdata(sav_wdata), .sav_we(sav_we), .sav_rdata(sav_rdata),
+    .pad_map(pad_map),
     .debug_address(bus_addr), .debug_wdata(bus_wdata),
     .debug_valid(bus_valid), .debug_write(bus_write), .debug_rdata(bus_rdata)
 );
@@ -69,6 +71,7 @@ end
 wire        sav_we;
 wire [16:0] sav_addr;
 wire  [7:0] sav_wdata, sav_rdata;
+wire [47:0] pad_map;
 wire  [7:0] rom_loading_w;
 reg  [7:0]  sav_mem [0:131071];
 reg  [7:0]  sav_q;
@@ -403,6 +406,56 @@ task automatic save_read_check(input [8*34-1:0] what, input [23:0] addr,
     end
 endtask
 
+// ------------------------------------------------------------ pad map
+// The map is twelve nibbles in six bytes, button 11 in the top nibble of the
+// first.  `expect` is the 48-bit word the register must end up holding; the
+// identity value is what it powers up at, so a test that sends nothing proves
+// the default as well as a test that sends a map proves the write.
+localparam [47:0] PAD_MAP_IDENTITY = {4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
+                                      4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd0};
+
+task automatic pad_map_send(input [47:0] map);
+    begin
+        send_byte(8'hAA); send_byte(8'h00); send_byte(8'h07); send_byte(8'h1a);
+        send_byte(map[47:40]); send_byte(map[39:32]); send_byte(map[31:24]);
+        send_byte(map[23:16]); send_byte(map[15:8]);  send_byte(map[7:0]);
+        #(BIT_NS * 20);
+    end
+endtask
+
+task automatic want_map(input [8*40-1:0] what, input [47:0] want);
+    begin
+        if (pad_map !== want) begin
+            $display("FAIL: %0s: pad_map %012x, want %012x", what, pad_map, want);
+            fails = fails + 1;
+        end else
+            $display("ok    %0s: pad_map %012x", what, pad_map);
+    end
+endtask
+
+// The remap the top level instantiates, driven with the register's current
+// value.  Checking the module rather than a copy of its arithmetic is the point
+// of pad_remap.v existing: a rule restated in the bench would agree with itself
+// whatever the hardware did, which is exactly how the save read's frame_len
+// bug passed this bench two cycles ago.
+wire [11:0] remap_out;
+pad_remap dut_pad_remap (.map(pad_map), .src(remap_src), .out(remap_out));
+reg  [11:0] remap_src = 12'd0;
+
+task automatic want_remap(input [8*40-1:0] what, input [11:0] src,
+                          input [11:0] want);
+    begin
+        remap_src = src;
+        #(BIT_NS * 2);
+        if (remap_out !== want) begin
+            $display("FAIL: %0s: %03x mapped to %03x, want %03x",
+                     what, src, remap_out, want);
+            fails = fails + 1;
+        end else
+            $display("ok    %0s: %03x -> %03x", what, src, want);
+    end
+endtask
+
 // ------------------------------------------------------------ pad model
 // The next unsolicited frame, which must be a joypad report.
 task automatic next_pad(output [15:0] j1, output [15:0] j2);
@@ -588,6 +641,43 @@ initial begin : main
     frame1(8'h06, 8'h00);
     #(BIT_NS * 20);
     save_read_check("read after release", 24'h000100, 8'd16, 0, 1);
+
+    // ---- pad map.  The register powers up at identity, which is the wiring
+    // every build before this one had, so a host that never sends 0x1a gets a
+    // pad it cannot tell apart from before.
+    want_map("power-up identity", PAD_MAP_IDENTITY);
+    want_remap("identity is a pass-through", 12'hfff, 12'hfff);
+
+    // 12 to 15 are not button indices: a slot holding any of them produces
+    // nothing.  Both ends of that range are exercised -- 15 here, 12 in the
+    // mixed map below -- because the comparison is the whole rule.
+    pad_map_send({4'd15, 4'd15, 4'd15, 4'd15, 4'd15, 4'd15,
+                  4'd15, 4'd15, 4'd15, 4'd15, 4'd15, 4'd15});
+    want_map("all unbound", 48'hffff_ffff_ffff);
+    want_remap("all unbound: no button", 12'hfff, 12'h000);
+
+    // A swap: A and B exchanged (buttons 8 and 0), everything else identity.
+    pad_map_send({4'd11, 4'd10, 4'd9, 4'd0, 4'd7, 4'd6,
+                  4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd8});
+    want_map("A/B swapped", {4'd11, 4'd10, 4'd9, 4'd0, 4'd7, 4'd6,
+                             4'd5,  4'd4,  4'd3, 4'd2, 4'd1, 4'd8});
+    want_remap("A/B swapped: A becomes B", 12'h100, 12'h001);
+    want_remap("A/B swapped: B becomes A", 12'h001, 12'h100);
+    want_remap("A/B swapped: Y is untouched", 12'h002, 12'h002);
+
+    // One source driving two outputs: SELECT (2) takes B's button as well as
+    // B itself, which is a legitimate binding and must not be collapsed.
+    pad_map_send({4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
+                  4'd5,  4'd4,  4'd3, 4'd0, 4'd1, 4'd0});
+    want_map("SELECT also takes B",
+             {4'd11, 4'd10, 4'd9, 4'd8, 4'd7, 4'd6,
+              4'd5,  4'd4,  4'd3, 4'd0, 4'd1, 4'd0});
+    want_remap("SELECT also takes B: B gives both", 12'h001, 12'h001 | 12'h004);
+
+    // Back to identity, so nothing after this runs with a stale map.
+    pad_map_send(PAD_MAP_IDENTITY);
+    want_map("identity restored", PAD_MAP_IDENTITY);
+    want_remap("identity restored: pass-through", 12'hfff, 12'hfff);
 
     // ---- joypad report.  From here every frame from the FPGA is a report.
     joy1 = 12'h000;

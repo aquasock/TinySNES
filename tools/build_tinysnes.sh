@@ -125,6 +125,7 @@ sources=(
     "$src/src/cpu.v"
     "$src/src/smp.v"
     "$src/src/ppu.v"
+    "$src/src/pad_remap.v"
     "$src/src/dsp.v"
     "$src/src/swram.v"
     "$src"/src/spc700/alu.v
@@ -184,9 +185,11 @@ for f in "${sources[@]}" "${hdmi_slang[@]}"; do
     [[ -f "$f" ]] || { echo "missing source: $f" >&2; exit 2; }
 done
 
-# --------------------------------------------------------------- 1. synthesis
-if [[ ! -f "$out/tinysnes.json" || "${TINYSNES_FORCE_SYNTH:-0}" == 1 ]]; then
-echo "=== 1. synthesis ==="
+# -------------------------------------------------------------- 0. lint
+# A stage of its own, before the synthesis cache is consulted: a register
+# with two drivers is a property of the source, not of whether a netlist is
+# already here, and the first version of this gate sat inside the cached
+# block and never ran on any build that reused a synthesised netlist.
 # Primitive visibility: the Gowin cell libraries must be readable (so wrapper
 # instances resolve) and every primitive the design instantiates must be
 # blackboxed as well, or it is dropped without a word.
@@ -208,6 +211,24 @@ dnames=$(grep -rhoE '^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*' "$src" \
 bb=$(comm -12 <(echo "$libmods") <(echo "$dnames")) || true
 bbflags=$(echo "$bb" | sed 's/^/--blackboxed-module /' | paste -sd' ')
 
+read_cmds="read_verilog -lib $shim/cells_xtra_gw5a.v
+    read_slang --single-unit --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 -I $src/src/chip/DSP ${hdmi_slang[*]} ${sources[*]}"
+
+if [[ "$stage" == lint ]]; then
+    echo "=== 0. multiple drivers ==="
+    # `check` without -assert: the log is the evidence, and the baseline beside
+    # tools/multi_driver_check.py decides which names are function locals.
+    yosys -Q -T -q -l "$out/lint.log" -p "
+    $read_cmds
+    check
+" || { echo "lint: yosys failed; see $out/lint.log" >&2; exit 1; }
+    "$suite/py3bin/python3" "$root/tools/multi_driver_check.py" "$out/lint.log" || exit 1
+    exit 0
+fi
+
+# --------------------------------------------------------------- 1. synthesis
+if [[ ! -f "$out/tinysnes.json" || "${TINYSNES_FORCE_SYNTH:-0}" == 1 ]]; then
+echo "=== 1. synthesis ==="
 if [[ "$no_abc" == 1 ]]; then
     echo "synthesis: hand-built script, ABC9 omitted"
     synth_cmds="
@@ -220,25 +241,11 @@ else
     synth_gowin -family gw5a -top snestang_top"
 fi
 
-read_cmds="read_verilog -lib $shim/cells_xtra_gw5a.v
-    read_slang --single-unit --std 1800-2017 -U SYNTHESIS -D GW_IDE $defines --allow-use-before-declare --allow-lib-module-redef $bbflags -v $shim/cells_sim_nospecify.v -v $shim/cells_xtra_gw5a.v -I $src/hdmi -I $src/src -I $src/src/65C816 -I $src/src/spc700 -I $src/src/chip/DSP ${hdmi_slang[*]} ${sources[*]}"
-
 # A register written from two always blocks is a multiple driver: yosys keeps
 # one assignment and drops the other without failing, so the netlist is wrong
 # in a way no other gate can see.  On the board that left iosys's save address
 # frozen and a 16-byte battery-save read returned the same byte sixteen times,
 # with a correct reply length and a correct CRC.  `check -assert` names it.
-if [[ "$stage" == lint ]]; then
-    echo "=== 0. multiple drivers ==="
-    # `check` without -assert: the log is the evidence, and the baseline beside
-    # tools/multi_driver_check.py decides which names are function locals.
-    yosys -Q -T -q -l "$out/lint.log" -p "
-    $read_cmds
-    check
-" || { echo "lint: yosys failed; see $out/lint.log" >&2; exit 1; }
-    "$suite/py3bin/python3" "$root/tools/multi_driver_check.py" "$out/lint.log" || exit 1
-    exit 0
-fi
 
 yosys -Q -T -q -l "$out/synth.log" -p "
     $read_cmds

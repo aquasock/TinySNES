@@ -67,6 +67,7 @@ sources=(
     "$src/SNES.v"
     "$src/cpu.v"
     "$src/ppu.v"
+    "$src/pad_remap.v"
     "$src/smp.v"
     "$src/dsp.v"
     "$src/swram.v"

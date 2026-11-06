@@ -69,7 +69,7 @@ sources=(
     "$src/src/65C816/adder4.v" "$src/src/65C816/bit_adder.v" "$src/src/65C816/ALU.v"
     "$src/src/65C816/AddSubBCD.v" "$src/src/65C816/AddrGen.v" "$src/src/65C816/BCDAdder.v"
     "$src/src/65C816/P65C816.v" "$src/src/65C816/mcode.sv"
-    "$src/src/CEGen.v" "$src/src/cpu.v" "$src/src/smp.v" "$src/src/ppu.v"
+    "$src/src/CEGen.v" "$src/src/cpu.v" "$src/src/smp.v" "$src/src/ppu.v" "$src/src/pad_remap.v"
     "$src/src/dsp.v" "$src/src/swram.v"
     "$src/src/spc700/alu.v" "$src/src/spc700/addsub.v" "$src/src/spc700/addrgen.v"
     "$src/src/spc700/bcdadj.v" "$src/src/spc700/muldiv.v" "$src/src/spc700/mcode.v"

@@ -605,3 +605,40 @@ None.
 - User Test: PASS
 
 ---
+
+## 19 COMMIT Unreleased 2026-11-05T22:40:31-07:00
+
+#### Coming From:
+
+Unreleased 24eaa40
+
+#### Purpose:
+
+Give the pad a remapping that the desktop window can edit, since the pad is decoded in fabric and the BL616 cannot see it at all.
+
+#### Outcome:
+
+The pad can now be rebound from the desktop, and the reason it had to be done in fabric is the substance of this cycle. The Wii Classic Controller is read by `wii_pad.sv` over I2C bit-banged on USB-A port 2's data pair; the BL616 never sees that pad, and its own `wiipad` command goes through the desktop core's I2C engine, which is not loaded while this core runs. TinyNES applies its mapping because an AE350 player reads the file and builds the pad word in software. This core has no player, so a mapping can only live in RTL. The change is three parts. `iosys_bl616.v` gained frame 0x1A, six payload bytes carrying twelve 4-bit selectors, selector i in bits 4i+3 downto 4i, in the order the pad word carries the buttons; a selector of 12 to 15 means that output is not produced, which is how a binding is removed rather than moved. The register resets to identity, so a core that is never sent the frame behaves exactly as every earlier build did. `pad_remap.v` is a new module doing the twelve-way select, written as its own file rather than inline in the top level so the link bench instantiates the logic the board runs: a remap test that restates the rule in the testbench proves only that the restatement agrees with itself, which is precisely how the save read's frame length passed this bench two cycles ago. `snestang_top.v` applies it between the pad and `controller_adapter` and nowhere else, so iosys's joypad report and the HOME+SELECT exit chord still read the unmapped word -- a player who rebinds a button must not thereby lose the way out of a game. The desktop window's Input page is now built rather than a placeholder, in TinyNES's shape: a Player 1/Player 2 toggle, a row per SNES button reading `<button> <- <source>`, Change cycling the source through every button and then `none`, Restore returning a player to the default map, and Save writing the file. The file is `/sd/tinysnes.ini`, at the card root beside `/tinynes.ini` and `/tinygbc.ini`, and it is written from a temporary with the old file moved aside first and removed only once the new one is in place, because FatFS has no atomic replace and a card that fills up must not cost a player their bindings. `tang_snes_apply_pad_map()` sends the frame, which `tang_snes_load()` calls once the link is up and before anything else goes out, and a failure to send is not fatal because an unconfigured core keeps the identity map. The build is `build/padmap/tinysnes.bin`, SHA-256 `04ace533ad304ead69ebc7c19499cf6f0b8e59e7fe0d4421fb3e98d1900e0ca1`, seed 2 with `TINYSNES_CLK_FIRST=dbg.clk`, passing every gate at dbg.clk 29.535 against 21.505 MHz, fclk 270.856 against 64.516, hclk 104.341 against 74.250 and the GSU cache clock 337.838 against 65.000, with the clock-edge check passing, both chip assertions satisfied and no `multiple conflicting drivers` line naming `sav_` or `pad_`. It was deployed by `tools/tang_deploy.py` with all three verification points matching over 5,238,252 bytes, and the operator confirmed it on the board, having checked the pad's behaviour before making the first save and again after, with the buttons exchanged in the game. Two defects were found in this cycle's own instruments, both mine. The lint stage added in entry 17 sat inside the synthesis-cached block, so on any build that reused a synthesised netlist it never ran at all -- and a gate that silently does nothing is worse than no gate, because it is counted as one; it is now hoisted above the cache with the shim setup and the read commands it needs, and verified three ways: with a cached netlist present it prints `=== 0. multiple drivers ===`, a planted second driver on `pad_map` makes it exit 1 naming `iosys.pad_map [47]`, and restoring the file returns it to exit 0. The bench's first remap checks were also wrong twice -- the all-unbound register value and a two-output remap -- and both were expectations derived carelessly rather than from the rule, which the bench caught. Player 2 is deliberately not wired: `snestang_top.v` ties `joy2_btns_snes` and `joy2_btns_ds2` to zero and `config.v` says the BL616 never sends the 0x09 pad frame, so there is no second pad to map, and the frame carries one player's selectors. The window still offers the Player 2 toggle because it matches TinyNES and TinyGBC, and its keys are stored and read back, but they cannot change anything; the operator's decision was to leave it for now rather than change it in this cycle, and that is recorded here so the page is not later read as working. One gate in TinyTang was broken by this work and is fixed in this cycle's companion entry there: `test_tang_fpga_uart` links `tang_snes_load.c`, which now calls `tang_snes_settings_load` and `tang_snes_map_word`, and its link line had no module providing them. Another agent found it, established it predated their own cycle and left these files alone. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff, confirmed `.ai/core.md` was not changed, confirmed entries 1 to 18 were not rewritten, and validated this entry as entry 19 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, eight eligible Files Modified paths, permitted Status values, no self-referencing hash and a count of nineteen against the 100-entry limit.
+
+#### Next Steps:
+
+Player 2 is the one thing on the page that is drawn but cannot work, and it should be settled before the Video and Audio pages are built, because the same question -- whether a control is honest if the core cannot honour it -- will come up on both. The options as the operator left them are to hide the toggle while there is one pad, to keep it with a caption saying so, or to wire a second pad first, which is the only one that makes it real and is a cycle of its own: `wii_pad` is instantiated once, on USB-A port 2, and a second Classic Controller needs another adapter. The frame itself carries one player, so a real Player 2 needs a 0x1B or a widened 0x1A at the same time. The lint stage should be run as part of the standard recipe from now on and it is now correct, but the fact that it spent one cycle doing nothing is worth remembering as a reason to check that a new gate ever prints its own line. The remap is proven on player 1 only, on one cartridge; the other pad sources -- `hid1`, the DS2 and SNES adapter paths -- all pass through the same stage and none was exercised, so a remap on a pad that is not the Wii Classic Controller is untested. What remains open here is unchanged: the low-frequency artefact of entry 15, the pops, the GSU cache clock reaching no spine tap, and the LoRa conflict on PMOD0 pins 9 and 10.
+
+#### Files Modified:
+
+- fpga/snes/src/pad_remap.v
+- fpga/snes/src/iosys/iosys_bl616.v
+- fpga/snes/src/snestang_top.v
+- tools/build_tinysnes.sh
+- tools/sim/dbg_link_tb.sv
+- tools/sim/run_dbg_link_sim.sh
+- tools/sim/run_sim.sh
+- tools/sim/run_board_sim.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
