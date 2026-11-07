@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 """Wrap gsu_tb's +wav raw stereo s16le samples in a WAV header.
 
     tools/sim/raw2wav.py RAW OUT.wav [--rate HZ]

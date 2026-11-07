@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // SPC700 lockstep differential bench: this repository's core against MiSTer's.
 //

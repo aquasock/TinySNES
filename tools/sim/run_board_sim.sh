@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Build and run the board-level bench: snestang_top + the real SDRAM controller
 # + a modelled SDRAM part.

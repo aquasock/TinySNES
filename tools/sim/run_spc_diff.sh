@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Lockstep differential bench for the SPC700: this repository's core against
 # MiSTer's, on the same random program, compared at every instruction boundary.

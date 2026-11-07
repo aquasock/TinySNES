@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Run the cartridge-layout harness: which mapper does a header select, and what
 # cartridge offset does that produce for a given CPU address?

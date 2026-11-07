@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Build MiSTer's SPC700 as a Verilog reference for the lockstep bench.
 #

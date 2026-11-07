@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Build and run the HDMI audio clock bench (tools/sim/hdmi_audio_tb.sv).
 #

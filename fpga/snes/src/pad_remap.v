@@ -12,7 +12,7 @@
 // wiring exactly.  A selector of 12 to 15 means that button is not produced,
 // which is how a player removes a binding rather than moving it.
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 module pad_remap (
     input  [47:0] map,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Behavioural model of the Winbond W9825G6KH-6 the Tang Console carries, in the
 // shape sdram_cl2_2ch.v drives it.

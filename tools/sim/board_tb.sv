@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Board-level bench: the real snestang_top, the real SDRAM controller, and a
 // behavioural SDRAM part.

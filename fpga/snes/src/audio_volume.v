@@ -35,7 +35,7 @@
 // one clock after the S-DSP produced it.  Both consumers already latch on the
 // ready pulse, and one clock at 21.5 MHz is 46 ns.
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 module audio_volume (
     input      [15:0] audio_l,

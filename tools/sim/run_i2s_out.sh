@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Build and run the standalone Pmod resampler bench (tools/sim/i2s_out_tb.sv).
 #

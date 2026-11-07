@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Simulate the diagnostic samplers in fpga/snes/src/snestang_top.v.
 #

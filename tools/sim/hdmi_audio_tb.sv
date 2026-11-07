@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Standalone bench for the HDMI audio path: dual_clk_fifo plus
 // hdmi_audio_clock, fed the way the board feeds them.

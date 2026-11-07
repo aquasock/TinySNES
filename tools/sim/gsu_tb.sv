@@ -1,5 +1,5 @@
 `timescale 1ns/1ps
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Full-machine bench for the cartridge coprocessors, starting with the GSU.
 //

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // 27 MHz from the 50 MHz crystal: 50 * 27 / 50.
 //

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Build the two sim-only GSU variants that tools/sim/run_gsu_sim.sh --gsu takes,
 # so this repo's SuperFX can be diffed against MiSTer's in the same machine.

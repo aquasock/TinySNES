@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Build the TinySNES core with the open flow: yosys (read_slang for hdl-util's
 # HDMI transmitter, read_verilog for the rest), the nextpnr-himbaechel fork

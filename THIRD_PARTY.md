@@ -22,11 +22,29 @@ involved in a build.
   three hand-written PLL wrappers in `fpga/snes/pll/`, come from TinyTang's
   `tools/desktop_open/` and `fpga/desktop/pll/` and from TinyNES's
   `tools/build_ae350_soc.sh` (MIT). `tools/fs_to_bin.py` is TinyNES's file,
-  unmodified.
+  unmodified, and keeps its MIT licence: this repository is GPL-3.0-only, and
+  MIT is compatible with it, so a copied file is left saying what it said
+  where it came from rather than being relabelled as something it is not.
 
 - **Build tools** — yosys with the slang front end, `nextpnr-himbaechel` and
   `apicula` from the aquasock forks. They are build inputs, not vendored code.
 
-The licensing of this repository's own additions is not yet decided; the
-vendored GPL-3.0 sources mean a GPL-3.0-compatible licence is the practical
-choice, and that decision is the user's.
+## This repository's own licence
+
+TinySNES is **GPL-3.0-only**. The text is in `LICENSE`, and every file this
+repository wrote says so in its `SPDX-License-Identifier` header.
+
+The licence is not a preference here. `fpga/snes/src/` is SNESTang, which is
+GPL-3.0, vendored in-tree rather than fetched, and TinySNES's own RTL is
+compiled into the same bitstream as it, so the result is a single work and
+GPL-3.0 is the only licence that work can carry. `GPL-3.0-only` rather than
+`GPL-3.0-or-later` names what is actually granted: the SNESTang sources are
+the version 3 as published, with no "or later" in their notices.
+
+The decision was taken on 2026-11-07, replacing the earlier "not yet decided"
+state in which this file recorded that a GPL-3.0-compatible licence was the
+practical choice. Files carried in from TinyTang or TinyNES — `tools/fs_to_bin.py`
+— keep their own MIT licence, which GPL-3.0 permits; the three PLL wrappers are
+this repository's own hand-written work and moved with it. Vendored components
+keep their own terms: hdl-util's HDMI transmitter stays MIT
+(`fpga/snes/hdmi/LICENSE-MIT`).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 """Add architected-register outputs to GHDL's Verilog for MiSTer's SPC700.
 
     export_regs.py spc_raw.v spc_ref.v

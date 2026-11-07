@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // 371.25 MHz from the 27 MHz PLL: 27 * 55 / 4, the HDMI serialiser bit clock.
 //

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Standalone bench for i2s_out: the Pmod resampler fed the way the board feeds
 // it, so its output can be checked for clicks without a board or a full core.

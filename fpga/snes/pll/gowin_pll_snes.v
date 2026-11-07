@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // SNESTang's clock trio, from the 50 MHz crystal:
 //   clkout0 50 * 40 / 93 = 21.505 MHz  SNES master clock (mclk)

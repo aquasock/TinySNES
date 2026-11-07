@@ -778,3 +778,69 @@ The gate exists but nothing calls it, which is the same trap one level up: `chec
 - User Test: N/A
 
 ---
+
+## 24 COMMIT Unreleased 2026-11-07T09:20:41-07:00
+
+#### Coming From:
+
+Unreleased 514985e
+
+#### Purpose:
+
+Give TinySNES the GPL-3.0-only licence its SNESTang-derived RTL has always required, replacing the "not yet decided" state `THIRD_PARTY.md` has carried since the core was vendored.
+
+#### Outcome:
+
+The repository now has a `LICENSE` holding the FSF GPL-3 text verbatim, byte-identical to the copy the rest of the family ships (SHA-256 `3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986`), and 35 of its own files carry `SPDX-License-Identifier: GPL-3.0-only` in place of the MIT identifier they had. The count before the sweep was 36 MIT headers, and the one file left holding MIT is `tools/fs_to_bin.py`, which is deliberately not relabelled: `THIRD_PARTY.md` records it as "TinyNES's file, unmodified", and the file's own header names its origin as TinyTang's `tools/desktop_open/fs_to_bin.py` at `d68bc18` "under the MIT License". That sentence is still true, MIT is compatible with GPL-3.0, and relabelling the copy would have made a true provenance note false while buying nothing the repository `LICENSE` does not already grant. The three hand-written PLL wrappers did move, because reading their headers shows they are this repository's own work rather than copies: each says the configuration "is expressed here instead" of the Gowin wrapper. The licence is not a preference at this point and the new section of `THIRD_PARTY.md` says why: `fpga/snes/src/` is SNESTang, GPL-3.0, vendored in-tree rather than fetched, and this repository's own RTL is compiled into the same bitstream beside it, so the result is one work and GPL-3.0 is the only licence that work can carry. `-only` rather than `-or-later` matches what the SNESTang notices actually grant, which is version 3 as published with no "or later" phrase. The edit is comment-and-prose only: `git diff -U0` over the source files contains no changed line other than an `SPDX-License-Identifier` line, so no expression, port, parameter or shell command moved. Verification was therefore about the tree still being what it was rather than about new behaviour. All six hardware benches pass, `run_audio_volume_tb.sh`, `run_bootscreen_tb.sh`, `run_desk_tb.sh`, `run_i2s_tb.sh`, `run_padpath_tb.sh` and `run_wii_pad_tb.sh`, and `tools/tests/check_board_sim_lint.sh` exits 0 after elaborating all 91 modules into the board bench. The fifteen changed shell scripts pass `bash -n` and the three changed Python tools compile. Nothing was built into a bitstream and nothing was deployed, because a licence header cannot change a netlist and the question here is legal rather than electrical. The core-syntax audit re-read `.ai/core.md` and `.ai/core-syntax.md`, inspected the complete `.ai/` diff and confirmed it adds this entry and nothing else, that `.ai/core.md` was not changed and that entries 1 to 23 were not rewritten, and validated this entry as entry 24 with six sections in order, a one-sentence Purpose, prose Outcome and Next Steps, eligible Files Modified paths, permitted Status values, no self-referencing hash and a count of twenty-four against the 100-entry limit.
+
+#### Next Steps:
+
+The licence decision is closed and needs nothing further, but the same sweep is owed on the sibling cores and its shape differs by repository rather than being one rule: TinyNES can move to GPL-3.0-only because its only linked emulator is FCEUmm, whose 491 GPL-bearing files all grant "or later", while TinyGBC cannot move to version 3 at all because gambatte's notices say "version 2 as published" with no "or later" anywhere in 189 occurrences, so it takes GPL-2.0-only and that is a separate cycle with its own reasoning to record rather than a copy of this one. The day-to-day item from entry 23 still stands and is more pressing than either: `check_board_sim_lint.sh` exists and nothing invokes it, so it will rot exactly as the bench did unless a runner is built, and TinySNES still has no `tools/tests/run_all.sh` to run its seven benches the way TinyTang's gate does.
+
+#### Files Modified:
+
+- LICENSE
+- THIRD_PARTY.md
+- fpga/snes/pll/gowin_pll_27.v
+- fpga/snes/pll/gowin_pll_hdmi.v
+- fpga/snes/pll/gowin_pll_snes.v
+- fpga/snes/src/audio_volume.v
+- fpga/snes/src/pad_remap.v
+- tools/ab_capture.sh
+- tools/build_tinysnes.sh
+- tools/onewire.sh
+- tools/probe_fields.py
+- tools/sim/board_tb.sv
+- tools/sim/build_gsu_sdl.sh
+- tools/sim/gowin_sim.sv
+- tools/sim/gsu_ref/build_ref.sh
+- tools/sim/gsu_tb.sv
+- tools/sim/gsu_tb_top.sv
+- tools/sim/hdmi_audio_tb.sv
+- tools/sim/i2s_out_tb.sv
+- tools/sim/maptype_tb.sv
+- tools/sim/raw2wav.py
+- tools/sim/run_board_sim.sh
+- tools/sim/run_gsu_sim.sh
+- tools/sim/run_hdmi_audio.sh
+- tools/sim/run_i2s_out.sh
+- tools/sim/run_maptype.sh
+- tools/sim/run_sim.sh
+- tools/sim/run_spc_diff.sh
+- tools/sim/sim_main.cpp
+- tools/sim/sim_sdram.sv
+- tools/sim/snes_tb.sv
+- tools/sim/spc_diff_tb.sv
+- tools/sim/spc_ref/build_ref.sh
+- tools/sim/spc_ref/export_regs.py
+- tools/sim/test_loader.sv
+- tools/sweep_mclk.sh
+- tools/tests/probe_tb.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: N/A
+- User Test: N/A
+
+---

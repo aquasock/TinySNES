@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Build the live-window coprocessor bench (tools/sim/gsu_tb.sv + sim_main.cpp).
 #

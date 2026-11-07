@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # Record the Pmod and HDMI outputs while booting a cartridge, so every capture
 # starts at the same point in the boot.

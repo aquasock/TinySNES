@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 """One declarative field list per probe, driving both the RTL and the decoder.
 
 Why this exists.  Four cycles in a row (core-log entries 60, 61, 62 and 63)

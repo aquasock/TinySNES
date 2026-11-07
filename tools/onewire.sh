@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # One-wire test: flash a bitstream over the FT2232 and stream a cartridge at the
 # core's own UART, then read the picture back if a capture device is free.
