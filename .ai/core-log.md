@@ -844,3 +844,33 @@ The licence decision is closed and needs nothing further, but the same sweep is 
 - User Test: N/A
 
 ---
+
+## 25 COMMIT Unreleased 2026-11-22T10:29:23-07:00
+
+#### Coming From:
+
+Unreleased cb4b22b
+
+#### Purpose:
+
+Correct the README where TinyTang's later work made it wrong, about the BL616 link's pad frame and the ROM browser, at the operator's request during a documentation pass across the TinyTang ecosystem.
+
+#### Outcome:
+
+The controller paragraph said TinyTang's firmware never sends the `0x09` pad frame, so `hid1` and `hid2` stay zero; since TinyTang's core-log entry 66 it sends its Bluetooth Pad 1 and Pad 2 that way, and `snestang_top.v` OR-s `hid1` and `hid2` into the SNES pads at the two `snes_buttons` ports, which was read from the source, so the README now calls the link a second route and says plainly that no SNES game has yet been played with a Bluetooth pad. The overlay paragraph said the ROM browser was not built; it is TinyTang's TinySNES window, whose Library loads the core and streams the cartridge, whose Input, Video and Audio pages set the pad map, picture and volume, and whose Saves page shows the battery save in `/root/saves/snes`, with HOME and SELECT saving and returning, so it now says that and keeps only the in-core menu as unbuilt. The repository's GitHub description was changed the same day from "SNES emulator for the Tang 138k" to name nand2mario's SNESTang running in the fabric. Nothing was built or deployed. The core-syntax audit was run: `.ai/core.md` and `.ai/core-syntax.md` were re-read, `.ai/core.md` was confirmed unchanged, the complete `.ai/` diff was inspected and holds only this entry, and this entry was validated as number 25 of 100 with six canonical sections in order, a one-sentence Purpose, prose in Outcome and Next Steps, only eligible paths in Files Modified and allowed Status values.
+
+#### Next Steps:
+
+Playing a SNES game with a Bluetooth pad would confirm the 0x09 route on the board. Entry 24's other next steps stand.
+
+#### Files Modified:
+
+- README.md
+
+#### Status:
+
+- Build: N/A
+- Deployment: N/A
+- User Test: N/A
+
+---

@@ -69,13 +69,19 @@ Three changes go beyond that, and each has a measurement behind it:
   Nunchuck Breakout Adapter on USB-A port 2, read as I2C by fabric on D+ (SDA)
   and D- (SCL), drives the game. It needs two-wire mode: USB-A's VBUS is what
   powers the adapter's pull-ups, so in one-wire mode the pad is electrically
-  invisible and reports absent. The BL616 link is not a second route -- `hid1`
-  and `hid2` are wired into the top level but TinyTang's firmware never sends the
-  `0x09` pad frame, so they stay zero.
+  invisible and reports absent. The BL616 link is a second route: TinyTang
+  sends its Bluetooth Pad 1 and Pad 2 as the `0x09` pad frame (TinyTang's
+  core-log entry 66), which arrives as `hid1` and `hid2` and is OR-ed into the
+  SNES pads in `snestang_top.v`, but no SNES game has yet been played with a
+  Bluetooth pad.
 - **TinyDesk overlay: working.** `desk_layer.v` draws TinyTang's 80x45 desk over
   the picture and a tap of the Wii Classic Controller's HOME button opens and
-  closes it; game input is held idle while it is shown. The rest of the UI -- a
-  ROM browser and a core menu -- is not built.
+  closes it; game input is held idle while it is shown. The ROM browser is
+  TinyTang's TinySNES window, whose Library loads this core and streams the
+  cartridge, whose Input, Video and Audio pages set the pad map, the picture
+  and the volume, and whose Saves page shows the battery save kept in
+  `/root/saves/snes`; HOME with SELECT in a game saves it and returns to the
+  desktop. A menu inside the core is not built.
 - **Desk video settings: working.** The desk's Video page sets the picture's
   aspect and whether a 239-line game's extra fifteen lines are drawn or
   cropped, sent to the core in frame `0x1B` and stored in `/tinysnes.ini` at the
