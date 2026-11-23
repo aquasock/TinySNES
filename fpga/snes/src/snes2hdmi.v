@@ -644,21 +644,23 @@ assign linefill_dbg = lf_dbg;
     end
     
 
-    // HDMI TX audio, nominally 32 kHz, with clk_audio servoed to the S-DSP's
-    // real rate (see hdmi_audio_clock.v).
-    localparam AUDIO_OUT_RATE = 32000;              // header value only
+    // HDMI TX audio at exactly 48 kHz from the pixel clock, resampled from
+    // the S-DSP's real rate (see hdmi_audio_resample.v).  The header, N and
+    // the measured CTS all say 48 kHz, so a sink's DAC runs at the rate the
+    // samples arrive.
+    localparam AUDIO_OUT_RATE = 48000;
     reg [15:0] audio_sample_word [1:0];
     wire [15:0] audio_word_l, audio_word_r;
     wire clk_audio;
-    wire audio_rinc;
+    wire audio_rinc, audio_unf;
     wire audio_full, audio_empty;
     wire [31:0] audio_sample;
     wire [4:0] audio_level;
 
-    hdmi_audio_clock #(.CLK_HZ(CLKFRQ * 1000)) audio_clock (
+    hdmi_audio_resample #(.CLK_HZ(CLKFRQ * 1000), .OUT_HZ(AUDIO_OUT_RATE)) audio_resample (
         .clk(clk_pixel), .resetn(resetn),
         .level(audio_level), .empty(audio_empty), .sample(audio_sample),
-        .clk_audio(clk_audio), .rinc(audio_rinc),
+        .clk_audio(clk_audio), .rinc(audio_rinc), .underrun(audio_unf),
         .word_l(audio_word_l), .word_r(audio_word_r)
     );
 
@@ -678,7 +680,7 @@ assign linefill_dbg = lf_dbg;
 
     // The two ways this path can lose a sample, each as a toggle that the debug
     // bank counts.  Overflow is a write the FIFO refused; underrun is a read
-    // that found nothing, which the clock regenerator repeats as a held sample.
+    // that found nothing, which the resampler repeats as a held sample.
     // With the audio servo locked neither should ever move.
     reg audio_ovf_tog_r = 1'b0;
     reg audio_unf_tog_r = 1'b0;
@@ -690,7 +692,7 @@ assign linefill_dbg = lf_dbg;
             audio_ovf_tog_r <= ~audio_ovf_tog_r;
 
     always @(posedge clk_pixel)
-        if (resetn && audio_rinc && audio_empty)
+        if (resetn && audio_unf)
             audio_unf_tog_r <= ~audio_unf_tog_r;
 
     //

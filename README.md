@@ -65,6 +65,21 @@ Three changes go beyond that, and each has a measurement behind it:
   title and the DSP-1 title. The S-DSP is complete in this core -- BRR with all
   four filters, Gaussian interpolation, ADSR and the GAIN modes, pitch
   modulation, noise and echo with its FIR filter.
+- **HDMI audio: 48 kHz, resampled.** The SNES pauses each frame to hold
+  60.000 Hz HDMI, so the S-DSP makes about 32,127 samples a second, a rate no
+  HDMI sink is told to expect. Until core-log entry 26 they went out as they
+  came under a 32 kHz header, which a capture card accepted and an HDMI audio
+  DAC did not: it played at the promised rate and cut out every 199 ms as its
+  buffer overflowed. `hdmi_audio_resample.v` now sends exactly 48 kHz counted
+  from the pixel clock, so N is 6144 and the CTS the transmitter measures is
+  74,250 every time, and converts the S-DSP's stream to it with a Catmull-Rom
+  cubic whose ratio is steered by the FIFO's fill level, so nothing is dropped
+  or repeated. Its images sit 81 dB under a 1 kHz tone, 52 dB under 3 kHz and
+  24 dB under 8 kHz, with 0.5 dB of droop at 8 kHz. `tools/sim/run_hdmi_resample.sh`
+  checks the rate, the CTS, the FIFO and every output word against
+  `tools/sim/hdmi_resample_model.py`. The Pmod I2S2 path is unchanged. The
+  operator passed it on the board on 2026-11-22 through the same external DAC,
+  and the Pmod I2S2, playing Yoshi's Island.
 - **Controller input: working.** A Wii Classic Controller in Adafruit's Wii
   Nunchuck Breakout Adapter on USB-A port 2, read as I2C by fabric on D+ (SDA)
   and D- (SCL), drives the game. It needs two-wire mode: USB-A's VBUS is what

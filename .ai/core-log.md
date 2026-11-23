@@ -874,3 +874,43 @@ Playing a SNES game with a Bluetooth pad would confirm the 0x09 route on the boa
 - User Test: N/A
 
 ---
+
+## 26 COMMIT Unreleased 2026-11-22T17:17:10-07:00
+
+#### Coming From:
+
+Unreleased ba215ef
+
+#### Purpose:
+
+Send HDMI audio at exactly 48 kHz, resampled from the S-DSP's real rate, because an external HDMI audio DAC cut out on the off-nominal 32 kHz stream that only the capture card had been tested with.
+
+#### Outcome:
+
+The operator found HDMI audio choppy through an external HDMI audio DAC feeding the PC's line in, and to some extent on other HDMI monitors, while every earlier test had gone through the capture card. Recording both at once, with the line in's gain set to 0 dB for the recording because at its usual level it clipped, showed the DAC dropping to its noise floor for 14 to 28 ms every 199 ms, 84 times in 20 s, while the capture card played through each gap. The cause is entry 3's `hdmi_audio_clock.v`, which sent the S-DSP's samples at the rate they are made, about 32,127 a second because the SNES pauses each frame to hold 60.000 Hz HDMI, under a 32 kHz header, accepting, as that entry recorded, that a strict sink might reject the 0.4 percent offset. A sink that plays at the promised 32,000 Hz gains 127 samples a second, about 25 in 199 ms, which fits a small buffer overflowing on that period; that is an inference from the arithmetic, not a look inside the DAC. A new PLL would not cure it: the master clock is 50 x 40 / 93 = 21.505 MHz against the real 21.477 MHz, but the frame pause alone makes the rate 60 times a frame's samples, and an exact NTSC clock still gives about 32,040 Hz. The operator approved entry 3's recorded fallback, a 48 kHz resampler, and chose cubic interpolation. `fpga/snes/src/hdmi_audio_resample.v` replaces `hdmi_audio_clock.v`: it ticks exactly 48,000 times per 74,250,000 pixel clocks by an accumulator, so any 48 periods are 74,250 clocks and the HDMI core's measured CTS is constant with N 6144, raises `clk_audio` half a period after each tick, advances a 32-bit input phase by a step that is the nominal 32,127 to 48,000 ratio steered by the FIFO's read-side level through a PI servo, `KP_SHIFT` 19 and an integrator shifted up by 6 and clamped to about 1.2 percent, moves a four-sample history on each carry, and computes the Catmull-Rom cubic at t, the phase's top 16 bits, on one shared multiplier in eight cycles a channel with each product rounded and the result saturated. `snes2hdmi.v` instantiates it with `AUDIO_OUT_RATE` 48000, so the audio sample packets' header says 48 kHz, and its underrun counter now counts the module's `underrun` pulse. `tools/build_tinysnes.sh` and `tools/sim/run_board_sim.sh` take the new file, and the old module, its bench `tools/sim/hdmi_audio_tb.sv` and `tools/sim/run_hdmi_audio.sh` were removed. The new bench `tools/sim/hdmi_resample_tb.sv`, run by `tools/sim/run_hdmi_resample.sh`, feeds a sine through the board's bursty production model and checks that every whole second of pixel clock holds exactly 48,000 audio periods, that every 48 periods are 74,250 pixel clocks, and that there is no overflow and, from reset, no underrun; `tools/sim/hdmi_resample_model.py` checks every output word against the same arithmetic in Python, that the input position advances by the ratio within 2 percent at every sample, and the SNR against the ideal sine. It passed at 0 and plus and minus 300 ppm over 5 s with the FIFO between 6 and 9 and every word bit-exact; the fixed point matches an ideal floating-point Catmull-Rom, whose images and distortion sit 81 dB under a 1 kHz tone, 52 dB under 3 kHz, 37.5 dB under 5 kHz and 24 dB under 8 kHz, with 0.5 dB of droop at 8 kHz. Of eight planted faults five were caught at first, and six once the checks below were added: the `+1` in the tick comparison is equivalent because the accumulator only ever holds multiples of 6,000, and taking t from the old phase was missed because the SNR used the core's own t, which the position check now catches; the start gate that waited for the FIFO to reach its midpoint made no observable difference, since production begins within about 30 microseconds of reset, so it was removed rather than kept untested. A first build was lost to the script: `tools/build_tinysnes.sh` takes its output directory only from `TINYSNES_BUILD_DIR`, not the positional argument its usage line shows, and reuses any `tinysnes.json` already there whatever its age, so it placed an old netlist in `build/tinysnes` and stopped; the rebuild in a fresh `build/hdmi48_s2` synthesised the current sources and was refused by the clock-plane gate for `dbg.clk`'s unmeasured SPINE9 tap and the GSU cache clock's point-to-point routing, both identical in the shipped `build/audio1` image, so it was completed with this tree's documented `TINYSNES_CLK_FIRST=dbg.clk TINYSNES_SEED=2 TINYSNES_ALLOW_HOLD=1 TINYSNES_ALLOW_UNMEASURED_CLOCKS=1`. It passed every gate with no hold violation at dbg.clk 28.297 against 21.505 MHz, fclk 228.624 against 64.516, hclk 96.108 against 74.250 and the GSU cache clock 337.838 against 65.000, using 46,848 LUT4 or 33 percent and 255 of 340 BSRAM, and `build/hdmi48_s2/tinysnes.bin`, 5,238,252 bytes with SHA-256 `c962f49d0ed3d30d6eebd7727b6ee447ad2781d6a0a60f7cdab13423c6821a5a`, was put on the operator's go at `/root/cores/console138k/tinysnes.bin` with TinyTang's `tools/tinytang_put.py` over the by-id console port, replacing the v0.2.1 image. The operator reported that the Pmod I2S2 and the HDMI audio both sound perfect now, through the same DAC, and passed the cycle. `README.md` describes the 48 kHz path. The core-syntax audit was run: `.ai/core.md` and `.ai/core-syntax.md` were re-read, `.ai/core.md` was confirmed unchanged, the complete `.ai/` diff was inspected and holds only this entry, entries 1 to 25 were not rewritten, and this entry was validated as number 26 with six canonical sections in order, a one-sentence Purpose, prose in Outcome and Next Steps, only eligible paths in Files Modified and allowed Status values.
+
+#### Next Steps:
+
+The build script's usage line should name `TINYSNES_BUILD_DIR` rather than a positional output directory, and its synthesis cache could compare the netlist's age with the sources', in the next cycle that touches it. If treble grit is ever heard on HDMI, a longer polyphase filter is the step up from the cubic. Playing a SNES game with a Bluetooth pad would confirm the 0x09 route on the board, and sending the wired Classic's report as 0x21, as TinyNES and TinyGBC now do, would let it drive TinyDesk over a running game. Entry 24's other next steps stand.
+
+#### Files Modified:
+
+- README.md
+- fpga/snes/src/hdmi_audio_clock.v
+- fpga/snes/src/hdmi_audio_resample.v
+- fpga/snes/src/snes2hdmi.v
+- tools/build_tinysnes.sh
+- tools/sim/hdmi_audio_tb.sv
+- tools/sim/hdmi_resample_model.py
+- tools/sim/hdmi_resample_tb.sv
+- tools/sim/run_board_sim.sh
+- tools/sim/run_hdmi_audio.sh
+- tools/sim/run_hdmi_resample.sh
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
