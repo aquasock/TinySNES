@@ -78,6 +78,15 @@ module wii_pad #(
     // HOME, 1 = pressed.  Not a SNES button, so not in `buttons`: iosys_bl616
     // turns a tap of it into the desk overlay's toggle.
     output reg         home,
+    // The last data report as the controller sent it, for TinyTang (frame
+    // 0x21, iosys_bl616.v): report bytes 0 to 3 -- the stick axes LX, RX, LY,
+    // RY -- in 31:0 with byte 0 in 7:0, then the button bytes 6 and 7 in
+    // 47:32, active low.  Taken whole at the end of each good read, so it is
+    // never half one report and half the next.  report_valid is 1 once a
+    // read has landed since the controller was identified, and 0 again from
+    // the moment it is given up as absent.
+    output reg  [47:0] report,
+    output reg         report_valid,
     // The two raw button bytes of the last data report, byte 6 in 15:8 and
     // byte 7 in 7:0, active low.  Present so a probe build can show what the
     // controller actually sent rather than what this module decoded it to.
@@ -329,6 +338,8 @@ module wii_pad #(
             fails <= 8'd0;
             ident_pending <= 1'b0;
             consec_fail <= 4'd0;
+            report <= 48'd0;
+            report_valid <= 1'b0;
         end else begin
             go <= 1'b0;
             case (q)
@@ -387,6 +398,7 @@ module wii_pad #(
                             if (consec_fail == GIVE_UP) begin
                                 present <= 1'b0;
                                 classic <= 1'b0;
+                                report_valid <= 1'b0;
                                 q_next <= Q_WAKE1;
                                 wait_us <= 17'd100000;
                             end else begin
@@ -423,6 +435,14 @@ module wii_pad #(
                             end else if (classic) begin
                                 present <= 1'b1;
                                 if (reads != 16'hFFFF) reads <= reads + 16'd1;
+                                // The data read, not the pointer write before
+                                // it: rd is still the direction of the
+                                // transfer that just finished.
+                                if (rd) begin
+                                    report <= {rbuf[7], rbuf[6], rbuf[3],
+                                               rbuf[2], rbuf[1], rbuf[0]};
+                                    report_valid <= 1'b1;
+                                end
                             end
                         end
                     end

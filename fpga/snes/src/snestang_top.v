@@ -294,6 +294,8 @@ wire [1:0] snes_joy1_di, snes_joy2_di;
 wire [11:0] joy1_btns_ds2, joy2_btns_ds2;
 wire [11:0] joy1_btns_snes, joy2_btns_snes;
 wire [11:0] joy1_usb, joy2_usb;
+// Bluetooth pads 1 and 2 from TinyTang (iosys frame 0x09), in the SNES order
+// below; iosys keeps HOME, bit 12, for the desk and exit gestures itself.
 wire [11:0] hid1, hid2;
 
 wire [5:0] ph;
@@ -3084,6 +3086,8 @@ wire [15:0] pad_reads;
 wire [7:0]  pad_fails;
 wire [15:0] pad_dbg_bytes;
 wire        pad_dbg_fmt3;
+wire [47:0] pad_report;
+wire        pad_report_valid;
 
 `ifdef WII_PAD
 `ifndef USB1
@@ -3102,6 +3106,7 @@ wii_pad #(
     .reads(pad_reads), .fails(pad_fails),
     .buttons(wii_buttons),
     .home(wii_home),
+    .report(pad_report), .report_valid(pad_report_valid),
     .dbg_bytes(pad_dbg_bytes),
     .dbg_format3(pad_dbg_fmt3)
 );
@@ -3119,6 +3124,8 @@ assign pad_reads = 16'd0;
 assign pad_fails = 8'd0;
 assign pad_dbg_bytes = 16'd0;
 assign pad_dbg_fmt3  = 1'b0;
+assign pad_report = 48'd0;
+assign pad_report_valid = 1'b0;
 `endif
 
 // ------------------------------------------------------------- Pmod I2S audio
@@ -3150,8 +3157,14 @@ assign i2s_dbg_taken = 16'd0, i2s_dbg_overwritten = 16'd0, i2s_dbg_underrun = 16
 // Only the game's copy is mapped.  iosys's joypad report and its HOME+SELECT
 // exit chord read the unmapped word deliberately: the exit gesture is the way
 // out of a game, and it must not move because a player rebound a button.
+//
+// Bluetooth pad 1 is player 1 as much as the wired Classic is, so the two are
+// ORed before the map, position for position (both are in this order), and
+// the Input page's map applies to either, as in TinyGBC.  Pad 2 has no map in
+// the core -- frame 0x1A carries player 1's only -- so it goes to player 2 as
+// it comes.
 wire [11:0] pad_mapped;
-pad_remap pad0_map (.map(pad_map), .src(wii_buttons), .out(pad_mapped));
+pad_remap pad0_map (.map(pad_map), .src(wii_buttons | hid1), .out(pad_mapped));
 
 // The master volume, from the desktop window's Audio page (frame 0x1C).  It is
 // applied here, between the S-DSP and both of its consumers, so HDMI and the
@@ -3169,7 +3182,7 @@ audio_volume volume (
 // output button presses to SNES
 controller_adapter joy1_adapter (
     .clk(mclk), .snes_joy_strb(snes_joy_strb), 
-    .snes_buttons(joy1_btns_ds2 | joy1_btns_snes | hid1 | joy1_usb | {4'b0, pad_mapped}), .snes_joy_clk(snes_joy1_clk), .snes_joy_di(snes_joy1_di[0])
+    .snes_buttons(joy1_btns_ds2 | joy1_btns_snes | joy1_usb | {4'b0, pad_mapped}), .snes_joy_clk(snes_joy1_clk), .snes_joy_di(snes_joy1_di[0])
 );
 controller_adapter joy2_adapter (
     .clk(mclk), .snes_joy_strb(snes_joy_strb), 
@@ -3446,6 +3459,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000)) iosys (
     .overlay_color(overlay_color),
     .joy1(joy1_btns_ds2 | joy1_btns_snes | joy1_usb | wii_buttons), .joy2(joy2_btns_ds2 | joy2_btns_snes | joy2_usb), .hid1(hid1), .hid2(hid2),
     .home(wii_home),
+    .wii_report(pad_report), .wii_valid(pad_report_valid),
     .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr), .desk_wr_data(desk_wr_data),
     .uart_tx(UART_TXD), .uart_rx(UART_RXD),
     .rom_loading(loading), .rom_do(loader_do), .rom_do_valid(loader_do_valid),

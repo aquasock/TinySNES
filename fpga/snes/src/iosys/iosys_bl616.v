@@ -14,7 +14,12 @@ module iosys_bl616 #(
     parameter [7:0] LOADING_STATE=0,
     // Clocks between joypad report ticks: 20 ms, the rate TinyTang expects.
     // A bench shortens it so a report does not take a simulated 20 ms.
-    parameter integer REPORT_CLOCKS=FREQ/50
+    parameter integer REPORT_CLOCKS=FREQ/50,
+    // How long a Bluetooth pad word (frame 0x09) is held after the last one:
+    // 250 ms, as TinyNES and TinyGBC hold it.  TinyTang sends the frame every
+    // 40 ms poll while a button is down, so a word that stops being renewed
+    // is a link that stopped, and the buttons let go rather than stay held.
+    parameter integer HID_HOLD_CLOCKS=FREQ/4
 )
 (
     input clk,                      // main logic clock
@@ -29,9 +34,16 @@ module iosys_bl616 #(
     output [14:0] overlay_color,    // BGR5
     input [11:0] joy1,              // DS2/SNES joystick 1: (R L X A RT LT DN UP START SELECT Y B)
     input [11:0] joy2,              // DS2/SNES joystick 2
-    output reg [15:0] hid1,         // USB HID joystick 1
-    output reg [15:0] hid2,         // USB HID joystick 2
+    // Bluetooth pads 1 and 2 from TinyTang (frame 0x09), in its pad order
+    // (tang_pad.h), which is joy1's order for bits 11:0, with HOME in bit 12.
+    output reg [15:0] hid1,
+    output reg [15:0] hid2,
     input home,                     // Wii Classic HOME, 1 = pressed
+    // The wired Classic's last format-3 report, bytes 0 to 3, 6 and 7, byte 0
+    // in 7:0 (wii_pad.sv `report`), and whether it holds one.  Sent as frame
+    // 0x21; see SEND_WII.
+    input [47:0] wii_report,
+    input wii_valid,
 
     // TinyDesk overlay, drawn by desk_layer in snes2hdmi.  desk_on is 1 while
     // the desk should be shown and the game's pads should read idle.  Each cell
@@ -146,6 +158,14 @@ localparam [7:0] SAVE_READ  = 8'h19;
 // which is not loaded while this core runs.  A remapping UI can therefore only
 // be honoured here.
 localparam [7:0] PAD_MAP = 8'h1a;
+// The wired Classic's report, sent up to TinyTang as TinyNES and TinyGBC send
+// theirs (TinyTang ports/bl616/fpga_frames.h, FPGA_RESP_WII): six bytes, no
+// CRC.  While these keep coming TinyTang drives TinyDesk over the game with
+// this controller as it does with the one on its own bus -- the left stick
+// the pointer, the d-pad the arrows -- and takes only LB, the HOME tap, from
+// the 0x03 pad word.  Without them it falls back to that pad word's d-pad as
+// the pointer, which is the old way.
+localparam [7:0] WII_REPORT = 8'h21;
 // The picture's shape: one byte, bits 1:0 the aspect (0 4:3, 1 8:7, 2 1:1)
 // and bit 2 whether the PPU's extra fifteen lines are shown when a game asks
 // for them.  Out of reset it is 4:3 with the extra lines shown, which is the
@@ -261,6 +281,8 @@ localparam RECV_PARAM        = 7'b0010000; // receiving parameters
 localparam RECV_RESPONSE_REQ = 7'b0100000; // sending response
 localparam RECV_RESPONSE_ACK = 7'b1000000; // waiting for response sending to finish 
 reg [6:0] recv_state = RECV_IDLE;
+// Clocks since the last whole 0x09 frame, stopping at HID_HOLD_CLOCKS.
+reg [$clog2(HID_HOLD_CLOCKS+1)-1:0] hid_age = 0;
 
 // UART command buffer
 reg [7:0] cmd_reg;
@@ -338,7 +360,9 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // 0x06 loading_state[7:0]    set loading state (0: core running, non-0: loading)
 // 0x07 <data>                load data to rom_do (len implied by frame header)
 // 0x08 x[7:0]                x[0]: turn overlay on/off
-// 0x09 hid1[15:0] hid2[15:0] send USB joystick state to FPGA
+// 0x09 hid1[15:0] hid2[15:0] TinyTang's Bluetooth pads, in its pad order
+//                            with HOME in bit 12; taken on the fourth byte and
+//                            let go HID_HOLD_CLOCKS after the last frame
 // 0x0a <data_sector>         send a sector (512 bytes) of data to floppy data FIFO
 // 0x0b addr[15:0] data[15:0] write to disk management interface (mgmt_address and mgmt_writedata)
 // 0x0c <scancode>            send PS/2 scancode (len specified by frame header)
@@ -369,6 +393,9 @@ reg fdd_read_start, fdd_read_finish, fdd_write_finish;
 // 0x04 lba[15:0] <data_512>  write a sector to disk
 // 0x05 lba[15:0]             read a sector from disk (followed by command 0x0a)
 // 0x10 <extended response>   TinySNES: debug register reply with CRC-16
+// 0x21 r0 r1 r2 r3 r6 r7     TinySNES: the wired Classic's last format-3
+//                            report, at every 20 ms tick while it has one
+//                            (SEND_WII)
 
 // UART RX: command processing
 always @(posedge clk) begin
@@ -392,6 +419,9 @@ always @(posedge clk) begin
         desk_nth <= 0;
         desk_wr_tog <= 0;
         sav_wr_addr <= 0;
+        hid1 <= 0;
+        hid2 <= 0;
+        hid_age <= 0;
         sav_wdata <= 0;
         sav_we <= 1'b0;
         sav_base <= 0;
@@ -413,6 +443,15 @@ always @(posedge clk) begin
         debug_valid <= 0;
         debug_write <= 0;
         sav_we <= 1'b0;
+
+        // The Bluetooth pads let go HID_HOLD_CLOCKS after the last 0x09
+        // frame.  Before the frame handler, which restarts the count, so a
+        // frame on the expiring clock still wins.
+        if (hid_age == HID_HOLD_CLOCKS) begin
+            hid1 <= 0;
+            hid2 <= 0;
+        end else
+            hid_age <= hid_age + 1'b1;
 
         case (recv_state)
 
@@ -563,13 +602,14 @@ always @(posedge clk) begin
                         endcase
                     end
                     9: begin
-                        case (data_cnt)
-                            0: hid1[15:8] <= rx_data;
-                            1: hid1[7:0] <= rx_data;
-                            2: hid2[15:8] <= rx_data;
-                            3: hid2[7:0] <= rx_data;
-                            default: ;
-                        endcase
+                        // Both words at once on the fourth byte, so a frame
+                        // cut short changes nothing; data_reg holds the first
+                        // three bytes by then.  The hold restarts with it.
+                        if (data_cnt == 3) begin
+                            hid1 <= data_reg[23:8];
+                            hid2 <= {data_reg[7:0], rx_data};
+                            hid_age <= 0;
+                        end
                     end
                     'ha: begin                      // send read data to disk controller
                         mgmt_rx <= 1;
@@ -689,6 +729,7 @@ localparam SEND_HEADER = 6;
 localparam SEND_DONE = 7;
 localparam SEND_DEBUG = 8;          // header type byte is EXT_COMMAND, not the state
 localparam SEND_SAVE_READ = 9;      // header type byte is SAVE_READ, not the state
+localparam SEND_WII = 10;           // header type byte is WII_REPORT, not the state
 
 // One owner per direction, because a register written from two always blocks is
 // a multiple driver: the synthesiser keeps one assignment and drops the other
@@ -704,10 +745,11 @@ reg [3:0] send_state, send_state_next;
 reg [7:0] send_idx;
 
 // Every state number below 0x10 doubles as its own frame type, which is why
-// SEND_JOYPAD is 3 and SEND_CONFIG_STRING is 2.  The two states whose type
+// SEND_JOYPAD is 3 and SEND_CONFIG_STRING is 2.  The three states whose type
 // byte is above the state range get it from this mux instead.
 wire [7:0] resp_type_byte = send_state_next == SEND_DEBUG     ? EXT_COMMAND
                           : send_state_next == SEND_SAVE_READ ? SAVE_READ
+                          : send_state_next == SEND_WII       ? WII_REPORT
                           : {4'b0, send_state_next};
 reg [15:0] tx_crc;
 reg [7:0] debug_tx_byte;
@@ -747,15 +789,25 @@ wire tick = tick_count == REPORT_CLOCKS - 1;
 reg [4:0] refresh = 5'd0;
 reg [7:0] tap = 8'd0;
 reg home_prev = 1'b0, home_alone = 1'b0;
+// Player 1's controls for the two gestures: the wired Classic and Bluetooth
+// pad 1 together, so either pad can tap HOME for the desk and hold HOME with
+// SELECT to leave.  TinyTang leaves a Bluetooth pad's HOME to the core while
+// a game is shown (it sends the pads as nothing while the desk is up), so
+// this is the only place it can act.  The 0x03 word's buttons stay the wired
+// pad's alone: TinyTang reads Bluetooth pads itself.
+wire [11:0] pad1 = joy1 | hid1[11:0];
+wire home1 = home | hid1[12];
 // HOME with SELECT is the exit-and-save gesture, reported as bit 15 of the pad
 // word.  It is a level, not a tap, so the app sees it for as long as the two
 // are held.  SELECT being down means `home_alone` never arms, so the desk does
 // not open at the same moment the exit is asked for.
-wire save_exit = home & joy1[2];            // joy1[2] is SELECT
+wire save_exit = home1 & pad1[2];           // bit 2 is SELECT
 wire [15:0] joy1_now = pad_word(joy1) | (tap != 8'd0 ? 16'h0400 : 16'h0000)
                      | (save_exit ? 16'h8000 : 16'h0000);
 wire [15:0] joy2_now = pad_word(joy2);
 reg pad_pending = 1'b0;
+reg wii_pending = 1'b0;
+reg [47:0] wii_frame = 48'd0;
 reg [15:0] joy1_reg = 16'd0;
 reg [15:0] joy2_reg = 16'd0;
 reg [15:0] resp_frame_len;
@@ -769,6 +821,8 @@ always @(posedge clk) begin
         home_prev <= 0;
         home_alone <= 0;
         pad_pending <= 0;
+        wii_pending <= 0;
+        wii_frame <= 0;
         joy1_reg <= 0;
         joy2_reg <= 0;
         send_state <= 0;
@@ -790,16 +844,21 @@ always @(posedge clk) begin
                 joy1_reg <= joy1_now;
                 joy2_reg <= joy2_now;
             end
+            // The Classic's report at every tick it has one, whether it
+            // changed or not, because TinyTang takes a gap in them as the
+            // controller gone.  One still waiting from the last tick is
+            // overtaken, not queued.
+            wii_pending <= wii_valid;
         end
 
         // A tap of HOME: pressed and released with nothing else held.  After
         // the tick, so a new tap wins over the count running down.
-        home_prev <= home;
-        if (home && !home_prev)
-            home_alone <= joy1 == 12'd0;
-        else if (home && joy1 != 12'd0)
+        home_prev <= home1;
+        if (home1 && !home_prev)
+            home_alone <= pad1 == 12'd0;
+        else if (home1 && pad1 != 12'd0)
             home_alone <= 1'b0;
-        if (!home && home_prev && home_alone)
+        if (!home1 && home_prev && home_alone)
             tap <= TAP_TICKS;
 
         // UART transmission state machine
@@ -811,6 +870,12 @@ always @(posedge clk) begin
                     send_state_next <= SEND_JOYPAD;
                     send_state <= SEND_HEADER;
                     resp_frame_len <= 5;
+                end else if (wii_pending) begin
+                    wii_pending <= 1'b0;
+                    wii_frame <= wii_report;    // whole, as of this moment
+                    send_state_next <= SEND_WII;
+                    send_state <= SEND_HEADER;
+                    resp_frame_len <= 7;
                 end else if (fdd_request[1] && fdd_state == FDD_READY) begin
                     send_state_next <= SEND_FDD_WRITE;
                     send_state <= SEND_HEADER;
@@ -941,6 +1006,17 @@ always @(posedge clk) begin
                     // a reply, and acking on it dropped whatever reply was
                     // pending when a button changed -- a debug read included.
                     if (send_idx == 3)
+                        send_state <= SEND_IDLE;
+                end
+            end
+
+            // The Classic's report, byte 0 first.  Not a reply, so no ack.
+            SEND_WII: begin
+                if (tx_ready && ~tx_valid) begin
+                    tx_data <= wii_frame[8*send_idx[2:0] +: 8];
+                    tx_valid <= 1;
+                    send_idx <= send_idx + 1;
+                    if (send_idx == 5)
                         send_state <= SEND_IDLE;
                 end
             end

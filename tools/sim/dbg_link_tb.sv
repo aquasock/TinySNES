@@ -46,6 +46,7 @@ iosys_bl616 #(.CORE_ID(2), .FREQ(21_484_000), .REPORT_CLOCKS(REPORT_CLOCKS)) ios
     .clk(clk), .hclk(clk), .resetn(resetn),
     .overlay(), .overlay_x(8'd0), .overlay_y(8'd0), .overlay_color(),
     .joy1(joy1), .joy2(12'd0), .hid1(), .hid2(), .home(home),
+    .wii_report(48'd0), .wii_valid(1'b0),          // pad_link_tb covers 0x21
     .desk_on(desk_on), .desk_wr_tog(desk_wr_tog), .desk_wr_addr(desk_wr_addr),
     .desk_wr_data(desk_wr_data),
     .uart_tx(uart_tx), .uart_rx(uart_rx),

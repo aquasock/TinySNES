@@ -86,17 +86,28 @@ Three changes go beyond that, and each has a measurement behind it:
   powers the adapter's pull-ups, so in one-wire mode the pad is electrically
   invisible and reports absent. The BL616 link is a second route: TinyTang
   sends its Bluetooth Pad 1 and Pad 2 as the `0x09` pad frame (TinyTang's
-  core-log entry 66), which arrives as `hid1` and `hid2` and is OR-ed into the
-  SNES pads in `snestang_top.v`, but no SNES game has yet been played with a
-  Bluetooth pad.
+  core-log entry 66). `iosys_bl616.v` takes a frame's two words together on
+  its fourth byte and lets both go 250 ms after the last one, so a button
+  cannot stay held when TinyTang stops sending. Pad 1 is player 1 alongside
+  the wired Classic: the two are OR-ed before the Input page's map, so the map
+  applies to either, and its HOME and SELECT join the gestures below, either
+  half from either pad. Pad 2 goes to player 2 unmapped, because frame `0x1a`
+  carries player 1's map only. The operator played a SNES game with an 8BitDo
+  pad on 2026-11-22.
 - **TinyDesk overlay: working.** `desk_layer.v` draws TinyTang's 80x45 desk over
   the picture and a tap of the Wii Classic Controller's HOME button opens and
-  closes it; game input is held idle while it is shown. The ROM browser is
-  TinyTang's TinySNES window, whose Library loads this core and streams the
-  cartridge, whose Input, Video and Audio pages set the pad map, the picture
-  and the volume, and whose Saves page shows the battery save kept in
-  `/root/saves/snes`; HOME with SELECT in a game saves it and returns to the
-  desktop. A menu inside the core is not built.
+  closes it; game input is held idle while it is shown. Over a game the wired
+  Classic drives the desk as the Classic on TinyTang's own bus does, the left
+  stick the pointer and the d-pad the arrows: the core sends its last data
+  report up the link as frame `0x21` every 20 ms while it has one (bytes 0 to 3
+  and 6 and 7, as TinyNES and TinyGBC send it), and TinyTang then takes only the
+  HOME tap from the `0x03` pad word. `tools/sim/run_pad_link_sim.sh` covers both
+  link frames, and `tools/tests/run_wii_pad_tb.sh` the report `wii_pad.sv`
+  keeps. The ROM browser is TinyTang's TinySNES window, whose Library loads this
+  core and streams the cartridge, whose Input, Video and Audio pages set the pad
+  map, the picture and the volume, and whose Saves page shows the battery save
+  kept in `/root/saves/snes`; HOME with SELECT in a game saves it and returns to
+  the desktop. A menu inside the core is not built.
 - **Desk video settings: working.** The desk's Video page sets the picture's
   aspect and whether a 239-line game's extra fifteen lines are drawn or
   cropped, sent to the core in frame `0x1B` and stored in `/tinysnes.ini` at the

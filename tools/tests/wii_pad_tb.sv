@@ -10,6 +10,13 @@
 // turn and the decoded 12-bit word is checked, so a wrong bit assignment or a
 // wrong polarity fails here instead of on the board.
 //
+// It also checks `report`, the six bytes sent to TinyTang as frame 0x21: that
+// it is report bytes 0 to 3, 6 and 7 in that order and nothing else, that it
+// is only ever a whole report (a monitor checks every clock while it is valid,
+// with every byte of the model's report changing together), that the identity
+// read never lands in it, and that report_valid falls when the controller is
+// unplugged and is set again only by a read after it is found again.
+//
 // The bus is modelled without tristate.  Both ends only ever pull a line low or
 // release it, and a released line is high, so the resolved level is simply
 // "neither end is pulling low".  That keeps the bench two-state and
@@ -43,6 +50,8 @@ module wii_pad_tb;
     wire [15:0] reads;
     wire [7:0]  fails;
     wire [11:0] buttons;
+    wire [47:0] report;
+    wire        report_valid;
 
     wii_pad #(
         .US_CLOCKS(US_CLOCKS), .QUARTER(QUARTER), .CONVERT_US(CONVERT_US)
@@ -51,7 +60,8 @@ module wii_pad_tb;
         .sda_low(sda_low_dut), .scl_low(scl_low_dut),
         .sda_in(sda_in), .scl_in(scl_in),
         .present(present), .classic(classic),
-        .reads(reads), .fails(fails), .buttons(buttons)
+        .reads(reads), .fails(fails), .buttons(buttons),
+        .report(report), .report_valid(report_valid)
     );
 
     // ------------------------------------------------ Classic Controller model
@@ -68,10 +78,21 @@ module wii_pad_tb;
     end
 
     // Format 3 report: LX RX LY RY LT RT then the two button bytes.
-    // Buttons are active low, so idle is FF FF.
-    reg [7:0] rep_lx = 8'h80, rep_rx = 8'h80, rep_ly = 8'h80, rep_ry = 8'h80;
-    reg [7:0] rep_lt = 8'h00, rep_rt = 8'h00;
-    reg [7:0] btn_lo = 8'hFF, btn_hi = 8'hFF;
+    // Buttons are active low, so idle is FF FF.  The six other bytes all come
+    // from one generation number g, each differently, so a report built from
+    // two reads, or with a byte in the wrong place, is not any generation's.
+    // The triggers are distinct from all of them, so one that leaks into
+    // `report` shows.  In the last phase (gen_buttons) the button bytes are
+    // made from g too, and the model moves g on after every read.
+    reg [7:0] g = 8'h10;
+    reg       gen_buttons = 1'b0;
+    reg       gen_check = 1'b0;    // the monitor checks the buttons too
+    reg       unplugged = 1'b0;    // the model acknowledges nothing
+    wire [7:0] rep_lx = g, rep_rx = g ^ 8'h11, rep_ly = g ^ 8'h22, rep_ry = g ^ 8'h33;
+    reg [7:0] rep_lt = 8'hE7, rep_rt = 8'hE8;
+    reg [7:0] btn_lo_p = 8'hFF, btn_hi_p = 8'hFF;
+    wire [7:0] btn_lo = gen_buttons ? g ^ 8'h44 : btn_lo_p;
+    wire [7:0] btn_hi = gen_buttons ? g ^ 8'h55 : btn_hi_p;
 
     function [7:0] report_byte(input [3:0] b);
         case (b)
@@ -94,6 +115,12 @@ module wii_pad_tb;
     reg       rd_xfer  = 1'b0;     // current transfer is a read
     reg       ident_rd = 1'b0;     // the read in progress is the identity
     reg       armed    = 1'b0;     // an SDA update is pending
+    // The master NACKed a read byte: the read is over, so the slave lets go
+    // of SDA until the next START.  Without this the model drove a seventh
+    // identity byte's first bit into the master's STOP, missed the STOP, and
+    // answered the next few transfers out of step -- the first reports after
+    // identification were garbage in the bench only.
+    reg       mnack    = 1'b0;
     integer   settle   = 0;        // clocks waited for SCL to be low
 
     reg sda_prev = 1'b1, scl_prev = 1'b1;
@@ -132,13 +159,18 @@ module wii_pad_tb;
             shin <= 8'd0;
             sda_low_slv <= 1'b0;
             armed <= 1'b0;
+            mnack <= 1'b0;
         end else if (stop_bit) begin
             active <= 1'b0;
             sda_low_slv <= 1'b0;
             armed <= 1'b0;
+            if (gen_buttons && rd_xfer && !ident_rd)
+                g <= g + 8'd1;
         end else if (active && scl_rise) begin
             if (k % 9 < 8)
                 shin <= {shin[6:0], sda_in};
+            if (k % 9 == 8 && rd_xfer && k / 9 >= 1 && sda_in)
+                mnack <= 1'b1;
             if (k % 9 == 8) begin
                 // A whole byte has just finished.
                 if (k / 9 == 0) begin
@@ -162,7 +194,9 @@ module wii_pad_tb;
             settle <= settle + 1;
             if (settle >= 2) begin
                 armed <= 1'b0;
-                if (k % 9 == 8)
+                if (unplugged || mnack)
+                    sda_low_slv <= 1'b0;
+                else if (k % 9 == 8)
                     // The slave acknowledges its address byte and every byte
                     // it is sent.  During a read the MASTER owns the
                     // acknowledge, so the slave must release here -- holding
@@ -196,8 +230,8 @@ module wii_pad_tb;
     task press(input [7:0] lo, input [7:0] hi, input [11:0] want, input [8*48-1:0] name);
         integer settle;
         begin
-            btn_lo = lo;
-            btn_hi = hi;
+            btn_lo_p = lo;
+            btn_hi_p = hi;
             // Several poll cycles: the sequencer re-reads about every
             // millisecond of its own scaled time.
             repeat (15000) @(posedge clk);
@@ -210,8 +244,30 @@ module wii_pad_tb;
                 errors = errors + 1;
                 $display("FAIL  %0s: buttons has X", name);
             end
+            if (report !== {hi, lo, rep_ry, rep_ly, rep_rx, rep_lx}) begin
+                errors = errors + 1;
+                $display("FAIL  %0s: report=%012h expected %012h", name, report,
+                         {hi, lo, rep_ry, rep_ly, rep_rx, rep_lx});
+            end
         end
     endtask
+
+    // Every clock the report is valid it must be one generation's sticks --
+    // and in the last phase one generation's buttons too.
+    integer torn = 0, valid_clocks = 0;
+    wire [7:0] rg = report[7:0];
+    wire whole = report[15:8] == (rg ^ 8'h11) && report[23:16] == (rg ^ 8'h22) &&
+                 report[31:24] == (rg ^ 8'h33) &&
+                 (!gen_check || (report[39:32] == (rg ^ 8'h44) &&
+                                   report[47:40] == (rg ^ 8'h55)));
+    always @(posedge clk) if (resetn && report_valid) begin
+        valid_clocks = valid_clocks + 1;
+        if (!whole) begin
+            if (torn < 5)
+                $display("FAIL  report %012h is not one whole report", report);
+            torn = torn + 1;
+        end
+    end
 
     initial begin
         $display("wii_pad bench: Classic Controller decode over I2C");
@@ -219,9 +275,14 @@ module wii_pad_tb;
         repeat (20) @(posedge clk);
         resetn = 1;
 
+        // Halfway through the wake-up nothing has been read.
+        repeat (150000) @(posedge clk);
+        check(report_valid === 1'b0, "no report before the controller is read");
+
         // The wake-up sequence is 20 + 10 + 20 + 20 ms before the identity
         // read; at four bench clocks per microsecond that is 280k clocks.
-        repeat (400000) @(posedge clk);
+        repeat (250000) @(posedge clk);
+        check(report_valid === 1'b1, "the report is valid once data is read");
 
         $display("  present=%b classic=%b reads=%0d fails=%0d",
                  present, classic, reads, fails);
@@ -255,6 +316,35 @@ module wii_pad_tb;
 
         // Home is not in the SNES word: pressing it must not invent a button.
         press(8'hF7, 8'hFF, 12'h000, "Home maps to nothing");
+        press(8'hFF, 8'hFF, 12'h000, "released");
+
+        // Every byte changing at every read: the report must stay whole.
+        gen_buttons = 1'b1;
+        // The report already held is the last press's, so the monitor starts
+        // checking its buttons once a few reads have replaced it.
+        repeat (20000) @(posedge clk);
+        gen_check = 1'b1;
+        begin : gens
+            reg [7:0] g0;
+            g0 = g;
+            repeat (150000) @(posedge clk);
+            check(g - g0 > 8'd10, "the model changed its report at every read");
+            check(report_valid === 1'b1 && whole, "report follows a changing controller");
+        end
+
+        // Unplugged: every transfer fails until the controller is given up.
+        unplugged = 1'b1;
+        repeat (200000) @(posedge clk);
+        check(present === 1'b0, "an unplugged controller is given up");
+        check(report_valid === 1'b0, "and its report is no longer valid");
+
+        // Plugged back in: found, identified and read again.
+        unplugged = 1'b0;
+        repeat (500000) @(posedge clk);
+        check(present === 1'b1 && report_valid === 1'b1, "replugged, read again");
+
+        check(torn == 0, "the report was whole at every valid clock");
+        $display("  report valid for %0d clocks, %0d torn", valid_clocks, torn);
 
         $display("");
         if (errors == 0) $display("PASS  Classic Controller decode is correct for every button");

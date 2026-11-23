@@ -914,3 +914,40 @@ The build script's usage line should name `TINYSNES_BUILD_DIR` rather than a pos
 - User Test: PASS
 
 ---
+
+## 27 COMMIT Unreleased 2026-11-22T20:07:39-07:00
+
+#### Coming From:
+
+Unreleased c066f7a
+
+#### Purpose:
+
+Let the wired Classic drive TinyDesk over a running game by sending its report up the link as frame 0x21, and make Bluetooth Pad 1 a full player 1 with the Input map, the HOME tap and the HOME+SELECT exit.
+
+#### Outcome:
+
+Over a running game the wired Classic still moved TinyDesk's pointer the old way, with the d-pad from the `0x03` pad word, because this core never sent frame `0x21`, the Classic's own report, which TinyTang reads as the Classic on its own bus and which TinyNES and TinyGBC already send. Bluetooth Pad 1 reached the game through frame `0x09` in the same bit order as the wired pad, but it was OR-ed in after the pad map, so the Input page did not apply to it, its HOME did nothing because TinyTang leaves a Bluetooth pad's HOME to the core while a game is shown and `iosys_bl616.v` only looked at the wired one, and its words were written a byte at a time and held until the next frame, however long that took. The operator approved the plan. `wii_pad.sv` now keeps `report`, the last data read's bytes 0 to 3 and 6 and 7 with byte 0 in 7:0, taken whole when a data read completes and never on the pointer write before it, and `report_valid`, set by that read and cleared when the controller is given up. `iosys_bl616.v` takes them as `wii_report` and `wii_valid` and, in a new sender state `SEND_WII`, sends type `0x21` with length 7 and no CRC at every 20 ms report tick while the report is valid, after any pending `0x03` report and latching the six bytes when the frame starts. Frame `0x09` is now taken whole on its fourth byte, so a frame cut short changes nothing, and `HID_HOLD_CLOCKS`, 250 ms by default as TinyNES and TinyGBC hold it, lets both pads go after the last frame. The HOME tap and the HOME+SELECT exit now read the wired pad and Bluetooth Pad 1 together, either half from either pad, while the `0x03` word's buttons stay the wired pad's. `snestang_top.v` wires the report through and ORs `hid1` with the wired buttons before `pad_remap`, so the map applies to both; Pad 2 still goes to player 2 unmapped, because frame `0x1a` carries player 1's map only. The new bench `tools/sim/pad_link_tb.sv`, run by `tools/sim/run_pad_link_sim.sh`, with a 2,000-clock report tick so a `0x21` frame fits inside one, checks that no `0x21` goes without a report, then 40 in 40 ticks a tick apart with the bytes in order and length 7, the `0x03` report still arriving among them, 200 frames each one whole value while the report changed under the sender, and none once the report is invalid; that `0x09` sets both pads, that a short frame changes nothing, that renewed pads stay held and are let go a hold after the last frame; and that the Bluetooth HOME tap is LB, Bluetooth HOME+SELECT and both mixed pairings are the exit with no LB, HOME with B is no tap, and Bluetooth buttons stay out of the `0x03` word. `tools/tests/wii_pad_tb.sv` now checks that no report is valid before the controller is read, that each report equals the model's six bytes, that a monitor finds every valid report whole at every clock while every byte of the model changes at every read, and that the report goes invalid when the controller is unplugged and valid again when it is read after replugging. Extending it showed a fault in the bench's own controller model, not the core: after the master NACKed the last byte of a read the model kept driving SDA, missed the STOP and answered the next few transfers out of step, so the first reports after identification were garbage in the bench only; the old checks looked later and never saw it, and the model now lets go on the NACK until the next START. `tools/sim/dbg_link_tb.sv` ties the new ports off. Of sixteen planted faults fifteen were caught; the sixteenth removed a clear of `report_valid` on a fresh identity, which cannot be observed because an identity is only read after reset or a give-up, both of which already clear it, so that line was removed. `dbg_link_tb`, `padpath_tb` and the board-sim lint still pass. Seed 2 failed placement with nextpnr unable to legalise, with use unchanged within 170 LUT4 and 144 DFF of entry 26's image, so seeds 1 and 3 to 6 were run in parallel from the same netlist with the same flags as entry 26; seeds 4, 5 and 6 passed, with the same unmeasured SPINE9 tap on `dbg.clk` as the shipped images. Seed 4 has the most margin, with no hold violation reported, at dbg.clk 29.695 against 21.505 MHz, fclk 205.719 against 64.516, hclk 102.396 against 74.250 and the GSU cache clock 296.296 against 65.000, using 47,018 LUT4 or 34 percent and 255 of 340 BSRAM. `build/pads_s4/tinysnes.bin`, 5,222,380 bytes with SHA-256 `7d469e5cf630b1d9dff1d89421aef928127aad914f6fcf883a7d405f9f3ee8af`, was put on the operator's go at `/root/cores/console138k/tinysnes.bin` with TinyTang's `tools/tinytang_put.py`, which reported the full byte count, replacing entry 26's image. The operator played a SNES game with the 8BitDo pad and the wired Classic, with the HOME tap, the desk driven by the Classic's stick and d-pad over the game, the exit and an unplug, and passed the cycle. `README.md` describes both frames. The core-syntax audit was run: `.ai/core.md` and `.ai/core-syntax.md` were re-read, `.ai/core.md` was confirmed unchanged, the complete `.ai/` diff was inspected and holds only this entry, entries 1 to 26 were not rewritten, and this entry was validated as number 27 with six canonical sections in order, a one-sentence Purpose, prose in Outcome and Next Steps, only eligible paths in Files Modified and allowed Status values.
+
+#### Next Steps:
+
+Player 2's map is saved by the Input page but never sent; applying it needs frame `0x1a` or a second frame to carry it, in a cycle of its own. Entry 26's next steps on the build script's usage line and synthesis cache, and on a polyphase filter if treble grit is ever heard, stand, as do entry 24's.
+
+#### Files Modified:
+
+- README.md
+- fpga/snes/src/iosys/iosys_bl616.v
+- fpga/snes/src/snestang_top.v
+- fpga/snes/src/wii_pad.sv
+- tools/sim/dbg_link_tb.sv
+- tools/sim/pad_link_tb.sv
+- tools/sim/run_pad_link_sim.sh
+- tools/tests/wii_pad_tb.sv
+
+#### Status:
+
+- Build: PASS
+- Deployment: PASS
+- User Test: PASS
+
+---
